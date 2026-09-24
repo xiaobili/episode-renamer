@@ -1,0 +1,20 @@
+services:
+  episode-renamer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: episode-renamer
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - UVICORN_WORKERS=1
+    volumes:
+      - /path/to/your/media:/media:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+from pathlib import PurePosixPath
+from typing import Optional
+
+from ..models.file import (
+    FileInfo, RenamePlan, RenameResult, BatchRenameResult, OverrideInfo,
+)
+from ..config import settings
+from .parser import parse_filename
+from .template import apply_template, apply_folder_template
+from .utils import generate_id
+from .openlist_client import OpenListClient, RenameObject
+
+
+def build_openlist_rename_plan(
+    file: FileInfo,
+    template: str,
+    folder_template: str = "",
+    create_season_folder: bool = False,
+    override: Optional[OverrideInfo] = None,
+) -> RenamePlan:
+    parsed = parse_filename(file.filename, file.parent_dir)
+
+    if override:
+        if override.show_name is not None:
+            parsed.show_name = override.show_name
+        if override.season is not None:
+            parsed.season = override.season
+        if override.episode is not None:
+            parsed.episode = override.episode
+
+    new_filename = apply_template(template, parsed)
+    new_dir = file.parent_dir
+
+    if create_season_folder and folder_template:
+        folder_name = apply_folder_template(folder_template, parsed)
+        if folder_name:
+            new_dir = str(PurePosixPath(file.parent_dir) / folder_name)
+
+    new_path = str(PurePosixPath(new_dir) / new_filename)
+
+    return RenamePlan(
+        id=generate_id(),
+        file_id=file.id,
+        original_path=file.path,
+        new_path=new_path,
+        original_filename=file.filename,
+        new_filename=new_filename,
+        original_dir=file.parent_dir,
+        new_dir=new_dir,
+        parsed=parsed,
+        file_info=file,
+    )
+
+
+async def _ensure_dir(client: OpenListClient, dir_path: str, _cache: dict[str, bool]) -> None:
+    if dir_path in _cache:
+        return
+    parent = str(PurePosixPath(dir_path).parent)
+    folder = PurePosixPath(dir_path).name
+    try:
+        await client.mkdir(parent, folder)
+    except Exception:
+        pass
+    _cache[dir_path] = True
+
+
+async def execute_openlist_batch(
+    client: OpenListClient,
+    plans: list[RenamePlan],
+    dry_run: bool = False,
+) -> BatchRenameResult:
+    results: list[RenameResult] = []
+    dir_cache: dict[str, bool] = {}
+
+    same_dir_plans = [p for p in plans if p.original_dir == p.new_dir]
+    move_plans = [p for p in plans if p.original_dir != p.new_dir]
+
+    executed = skipped = failed = 0
+
+    if same_dir_plans:
+        rename_objs = [
+            RenameObject(src_name=p.original_filename, new_name=p.new_filename)
+            for p in same_dir_plans
+            if p.original_filename != p.new_filename
+        ]
+        name_map = {p.original_filename: p for p in same_dir_plans}
+
+        if not dry_run and rename_objs:
+            try:
+                await client.batch_rename(same_dir_plans[0].original_dir, rename_objs)
+            except Exception as e:
+                failed += len(rename_objs)
+                for obj in rename_objs:
+                    p = name_map[obj.src_name]
+                    results.append(RenameResult(
+                        id=p.id,
+                        original_path=p.original_path,
+                        new_path=p.new_path,
+                        original_filename=p.original_filename,
+                        new_filename=p.new_filename,
+                        success=False,
+                        error=str(e),
+                        status="failed",
+                    ))
+                for p in same_dir_plans:
+                    if p.original_filename == p.new_filename:
+                        skipped += 1
+                        results.append(RenameResult(
+                            id=p.id,
+                            original_path=p.original_path,
+                            new_path=p.new_path,
+                            original_filename=p.original_filename,
+                            new_filename=p.new_filename,
+                            success=True,
+                            status="skipped_same",
+                        ))
+                return BatchRenameResult(
+                    success=failed == 0,
+                    source="openlist",
+                    executed=executed,
+                    skipped=skipped,
+                    failed=failed,
+                    total=len(plans),
+                    results=results,
+                )
+
+        for p in same_dir_plans:
+            if p.original_filename == p.new_filename:
+                skipped += 1
+                results.append(RenameResult(
+                    id=p.id,
+                    original_path=p.original_path,
+                    new_path=p.new_path,
+                    original_filename=p.original_filename,
+                    new_filename=p.new_filename,
+                    success=True,
+                    status="skipped_same",
+                ))
+            else:
+                executed += 1
+                results.append(RenameResult(
+                    id=p.id,
+                    original_path=p.original_path,
+                    new_path=p.new_path,
+                    original_filename=p.original_filename,
+                    new_filename=p.new_filename,
+                    success=True,
+                    status="renamed",
+                ))
+
+    if move_plans:
+        move_groups: dict[tuple[str, str], list[RenamePlan]] = {}
+        for p in move_plans:
+            key = (p.original_dir, p.new_dir)
+            move_groups.setdefault(key, []).append(p)
+
+        for (src_dir, dst_dir), group in move_groups.items():
+            if dry_run:
+                for p in group:
+                    executed += 1
+                    results.append(RenameResult(
+                        id=p.id,
+                        original_path=p.original_path,
+                        new_path=p.new_path,
+                        original_filename=p.original_filename,
+                        new_filename=p.new_filename,
+                        success=True,
+                        status="dry_run",
+                    ))
+                continue
+
+            try:
+                if src_dir != dst_dir:
+                    await _ensure_dir(client, dst_dir, dir_cache)
+
+                names_to_move = [p.original_filename for p in group]
+                await client.move(src_dir, dst_dir, names_to_move)
+
+                rename_objs = [
+                    RenameObject(src_name=p.original_filename, new_name=p.new_filename)
+                    for p in group
+                    if p.original_filename != p.new_filename
+                ]
+                if rename_objs:
+                    try:
+                        await client.batch_rename(dst_dir, rename_objs)
+                    except Exception:
+                        for p in group:
+                            if p.original_filename != p.new_filename:
+                                try:
+                                    await client.rename(p.new_path, p.new_filename)
+                                except Exception:
+                                    pass
+
+                for p in group:
+                    executed += 1
+                    results.append(RenameResult(
+                        id=p.id,
+                        original_path=p.original_path,
+                        new_path=p.new_path,
+                        original_filename=p.original_filename,
+                        new_filename=p.new_filename,
+                        success=True,
+                        status="renamed_moved",
+                    ))
+            except Exception as e:
+                for p in group:
+                    try:
+                        await client.rename(p.original_path, p.new_filename)
+                        executed += 1
+                        results.append(RenameResult(
+                            id=p.id,
+                            original_path=p.original_path,
+                            new_path=p.new_path,
+                            original_filename=p.original_filename,
+                            new_filename=p.new_filename,
+                            success=True,
+                            status="renamed_fallback",
+                        ))
+                    except Exception as e2:
+                        failed += 1
+                        results.append(RenameResult(
+                            id=p.id,
+                            original_path=p.original_path,
+                            new_path=p.new_path,
+                            original_filename=p.original_filename,
+                            new_filename=p.new_filename,
+                            success=False,
+                            error=f"{e} | {e2}",
+                            status="failed",
+                        ))
+
+    return BatchRenameResult(
+        success=failed == 0,
+        source="openlist",
+        executed=executed,
+        skipped=skipped,
+        failed=failed,
+        total=len(plans),
+        results=results,
+    )
