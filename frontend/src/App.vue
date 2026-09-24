@@ -1,98 +1,72 @@
 <template>
-  <el-container class="app-container">
-    <el-header class="app-header">
-      <div class="header-left">
-        <span class="logo">🎬</span>
-        <h1 class="title">Episode Renamer</h1>
-        <span class="subtitle">电视剧 / 番剧 自动化重命名</span>
+  <div class="flex h-screen overflow-hidden">
+    <aside class="w-60 shrink-0 bg-surface border-r border-border flex flex-col px-4 py-6">
+      <div class="flex items-center gap-3 px-2 pb-5 border-b border-border mb-4">
+        <div class="w-10 h-10 bg-primary text-white rounded-lg flex items-center justify-center text-xl shrink-0">🎬</div>
+        <div>
+          <div class="text-[15px] font-bold text-text -tracking-[0.01em]">Episode Renamer</div>
+          <div class="text-xs text-text-muted mt-0.5">影视自动化重命名</div>
+        </div>
       </div>
-      <div class="header-right">
-        <el-menu mode="horizontal" :default-active="route.path" router class="nav-menu">
-          <el-menu-item index="/">
-            <el-icon><FolderOpened /></el-icon>
-            <span>重命名</span>
-          </el-menu-item>
-          <el-menu-item index="/settings">
-            <el-icon><Setting /></el-icon>
-            <span>设置</span>
-          </el-menu-item>
-        </el-menu>
+
+      <nav class="flex-1 flex flex-col gap-1">
+        <div
+          class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium cursor-pointer transition-all select-none"
+          :class="route.path === '/'
+            ? 'bg-primary-light text-primary font-semibold'
+            : 'text-text-secondary hover:bg-surface-muted hover:text-text'"
+          @click="$router.push('/')"
+        >
+          <FolderOpen class="w-4 h-4" />
+          <span>重命名工作区</span>
+        </div>
+        <div
+          class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium cursor-pointer transition-all select-none"
+          :class="route.path === '/settings'
+            ? 'bg-primary-light text-primary font-semibold'
+            : 'text-text-secondary hover:bg-surface-muted hover:text-text'"
+          @click="$router.push('/settings')"
+        >
+          <Settings class="w-4 h-4" />
+          <span>设置</span>
+        </div>
+      </nav>
+
+      <div class="pt-4 border-t border-border">
+        <div class="text-xs text-text-faint px-2">v1.0.0</div>
       </div>
-    </el-header>
-    <el-main class="app-main">
-      <router-view />
-    </el-main>
-  </el-container>
+    </aside>
+
+    <main class="flex-1 overflow-auto bg-bg">
+      <div class="p-8 max-w-[1400px] mx-auto">
+        <router-view v-slot="{ Component, route }">
+          <transition name="page-fade" mode="out-in">
+            <component :is="Component" :key="route.fullPath" />
+          </transition>
+        </router-view>
+      </div>
+    </main>
+  </div>
 </template>
 
 <script setup>
 import { useRoute } from 'vue-router'
+import { FolderOpen, Settings } from 'lucide-vue-next'
+
 const route = useRoute()
 </script>
 
 <style>
-html, body, #app {
-  height: 100%;
-  margin: 0;
-  padding: 0;
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
 }
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background: #f5f7fa;
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
 }
-
-.app-container {
-  height: 100vh;
-}
-
-.app-header {
-  background: #fff;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
-  height: 60px;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.logo {
-  font-size: 28px;
-}
-
-.title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
-  color: #303133;
-}
-
-.subtitle {
-  font-size: 13px;
-  color: #909399;
-  margin-left: 8px;
-  padding-left: 12px;
-  border-left: 1px solid #dcdfe6;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-}
-
-.nav-menu {
-  border-bottom: none !important;
-}
-
-.app-main {
-  padding: 20px;
-  overflow: auto;
-  background: #f5f7fa;
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 </style>
