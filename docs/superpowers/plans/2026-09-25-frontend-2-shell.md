@@ -550,6 +550,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 ```js
 import { onMounted } from 'vue'
 
+import { useFilesStore } from '../stores/files'
+import { useTemplateStore } from '../stores/template'
+import { useOpenListStore } from '../stores/openlist'
 import { useWorkspaceStore } from '../stores/workspace'
 
 import SourceTabs from '../components/SourceTabs.vue'
@@ -565,6 +568,22 @@ import Toast from '../components/Toast.vue'
 
 const ws = useWorkspaceStore()
 
+// 这三个 store 实例**必须保留**：模板里仍要把它们当 prop 传给本期尚未改造
+// 的子组件（FileTable 的 :files-store、TemplateConfig 的 :tpl-store、
+// ScanPanel 的 :ol-store）。漏掉任何一个，对应的 prop 会收到 undefined。
+// filesStore 会一直留到第四期 FileTable 彻底改用 workspace store 之后。
+const filesStore = useFilesStore()
+const tplStore = useTemplateStore()
+const olStore = useOpenListStore()
+
+// 旧 SourceTabs 的数据源列表（含 emoji）。Task 2 会用顶栏的 segmented
+// control 取代 SourceTabs 并删掉这个数组；本任务先原样保留，否则中间态里
+// SourceTabs 收不到 sources，会渲染成一个空的 tab bar 而报不出错。
+const sources = [
+  { name: 'local', label: '本地磁盘', icon: '📁' },
+  { name: 'openlist', label: 'OpenList 云盘', icon: '☁️' },
+]
+
 onMounted(() => { ws.initialize() })
 ```
 
@@ -572,7 +591,7 @@ onMounted(() => { ws.initialize() })
 
 | 原写法 | 新写法 |
 |---|---|
-| `v-model="activeSource"` | `v-model="ws.activeSource"` |
+| `v-model="activeSource"`（在 `<SourceTabs>` 上） | `:model-value="ws.activeSource"` + `@update:model-value="ws.switchSource($event)"`（**不能用 `v-model`**，见下） |
 | `:local-path="localPath"` | `:local-path="ws.path"` |
 | `:recursive="recursive"` | `:recursive="ws.recursive"` |
 | `:include-subs="includeSubs"` | `:include-subs="ws.includeSubs"` |
@@ -614,6 +633,14 @@ onMounted(() => { ws.initialize() })
 | `@confirm="browseConfirm"` | `@confirm="ws.browseConfirm"` |
 | `@error="(m) => showToast(m, 'error')"` | `@error="(m) => ws.showToast(m, 'error')"` |
 | `:show="toast.show" :type="toast.type" :msg="toast.msg"` | `:show="ws.toast.show" :type="ws.toast.type" :msg="ws.toast.msg"` |
+| `:files-store="filesStore"`（FileTable） | **不变** —— `filesStore` 保留在 HomeView |
+| `:tpl-store="tplStore"`（TemplateConfig） | **不变** —— `tplStore` 保留 |
+| `@update:createSeasonFolder="v => tplStore.createSeasonFolder = v"` | **不变**（引用的 `tplStore` 仍在） |
+| `@update:folderTemplate="v => tplStore.folderTemplate = v"` | **不变** |
+| `:ol-store="olStore"` / `:ol-form="olForm"`（ScanPanel） | `:ol-store="olStore"` **不变**；`:ol-form="ws.olForm"` |
+| `:sources="sources"`（SourceTabs） | **不变** —— `sources` 数组保留到 Task 2 |
+
+**为什么 `SourceTabs` 上不能用 `v-model="ws.activeSource"`：** `v-model` 只是给 `ws.activeSource` 直接赋值，会**绕过 `switchSource()`** —— 而「存下旧源的文件列表、载入新源的文件列表」正是 `switchSource()` 在做的事。绕过它的话，切源后 `activeSource` 变了、`path`/`previewRows` 也跟着变（它们是按 `activeSource` 取值的 computed），但 `filesStore.files` 仍停留在旧源，表格会显示错的文件。Task 2 把源切换搬进顶栏后同样用 `ws.switchSource($event)`，不要图省事改成 `v-model`。
 
 `<style scoped>` 块暂时**保留不动**（`source-fade` 过渡到 Task 3 再删）。
 
@@ -784,9 +811,10 @@ const ws = useWorkspaceStore()
 
 编辑 `frontend/src/views/HomeView.vue`：
 
-1. 删除 `<template>` 里第 3 行 `<SourceTabs v-model="activeSource" :sources="sources" />`
-2. 删除 `<script setup>` 里 `import SourceTabs from '../components/SourceTabs.vue'` 那一行（Task 1 后的 import 块中）
-3. 下面这个 `<Transition name="source-fade" mode="out-in"><div :key="activeSource" ...>` 包裹层**先保留不动**（Task 3 统一处理），只把里面的 `activeSource` 改成 `ws.activeSource`
+1. 删除 `<template>` 里整个 `<SourceTabs ... />` 元素（Task 1 之后它长这样：`:model-value="ws.activeSource"` + `@update:model-value="ws.switchSource($event)"` + `:sources="sources"`）
+2. 删除 `<script setup>` 里 `import SourceTabs from '../components/SourceTabs.vue'` 那一行
+3. 删除 `<script setup>` 里的 `sources` 数组（Task 1 保留了它，现在它唯一的消费者 SourceTabs 没了，留着就是死代码）
+4. 下面这个 `<Transition name="source-fade" mode="out-in"><div :key="ws.activeSource" ...>` 包裹层**先保留不动**（Task 3 统一处理）
 
 - [ ] **Step 4: 给 `SettingsView` 加外层滚动容器**
 
