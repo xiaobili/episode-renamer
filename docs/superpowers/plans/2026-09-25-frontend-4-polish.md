@@ -29,6 +29,8 @@
 
 - **源码文件的注释里不要写字面类名**（`.vue` / `.js`；`style.css` 的注释不受影响）。实测 Tailwind 4.3.3：CSS 入口文件注释里的 `border-line-strong` 不生成规则，而 **`.vue` 注释里的 `rounded-[12px]` 与 `grid-rows-[56px_1fr]` 各生成一条真实规则**。两个后果：①产出无人使用的死 CSS；②**类名闸门会因为「注释提过」而通过** —— 一个没有任何元素使用的类名，只要在源码注释里出现过就会命中，闸门于是为它开绿灯。（受害的是**只存在于注释里**的类名；一个确在真实标记里用过的类名，注释里再提一次无害。判断标准是这一条，不是「注释里能不能出现类名」。）需要提到某个类名时，**描述它而不要写字面量**（「两行 grid / 上方滚动区 / 下方 56px 底栏」而不是把类名抄一遍）。
 
+- **`style.css` 里作用于元素的基线与 Tailwind 工具类冲突时，基线必须放进 `@layer base`。** Tailwind v4 把工具类放在 `@layer utilities` 里，而**层外样式优先于任何层内样式，与特异性无关** —— 写在层外的基线（如 `input { font-family: inherit }`）会静默压掉同属性的工具类。实测：在本期之前，`font-mono` 在所有 `input` / `select` / `textarea` / `button` 上都是失效的（模板输入框与变量芯片都算不出等宽栈），而这正是 spec §6.2 的等宽纪律所依赖的。判断方法：产物里按花括号配对找出目标规则所属的 `@layer`，层外的一方永远赢。
+
 ## Review Focus
 
 1. **`prefers-reduced-motion` 兜底不能漏掉任何一种动效承载方式** —— 本项目的动效分布在三个地方：Tailwind 的 `transition-*` / `animate-*` 工具类、`AppModal` 与 `Toast` 的 `<style>` 块里的 `transiton`、以及 `ExecutingOverlay` 与 `AppButton` 的 `animate-spin`。兜底用的是 `*, *::before, *::after` 通配选择器 + `!important`，能覆盖全部三者。期望：系统开启「减弱动态效果」后，模态直接出现/消失、Toast 不再位移、`loading` 图标不再旋转，**且功能完全不受影响**。→ Task 4
