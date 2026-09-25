@@ -15,7 +15,7 @@
         <option label="自动编号" value="rename_dup" />
       </AppSelect>
 
-      <span class="truncate text-[13px] text-ink-2">
+      <span class="hidden truncate text-[13px] text-ink-2 sm:inline">
         已选 <span class="tabular-nums text-ink">{{ selectedCount }}</span>
         / <span class="tabular-nums">{{ totalCount }}</span>
       </span>
@@ -31,7 +31,8 @@
         :disabled="!selectedCount"
         @click="$emit('execute')"
       >
-        {{ executing ? '执行中…' : '执行重命名' }}
+        <span class="sm:hidden">{{ executing ? '执行中…' : '执行' }}</span>
+        <span class="hidden sm:inline">{{ executing ? '执行中…' : '执行重命名' }}</span>
       </AppButton>
     </div>
   </footer>

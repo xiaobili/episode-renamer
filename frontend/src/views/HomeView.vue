@@ -2,8 +2,14 @@
   <!-- 两行骨架：第一行是「左栏 + 工作区」，第二行是常驻底栏。根自身也是滚动链上
        的一环 —— 它必须限制自身高度，否则中段的内容会把行撑破，底栏被推出视口。
        中段自己不再滚动：左栏滚自己，工作区里的表滚自己（见下面各自的 overflow）。
-       对话框与提示条全部挪到网格之外，网格里只留两个子项，不会产生隐式空行。 -->
-  <div class="grid h-full min-h-0 grid-rows-[1fr_56px] overflow-hidden">
+       对话框与提示条全部挪到网格之外，网格里只留两个子项，不会产生隐式空行。
+
+       grid-cols-1 不是赘述，删不得：裸的 grid 只有隐式列，隐式列取 auto，
+       auto 的下限是内容的 min-content —— 窄屏下底栏内容（固定宽下拉 + 两个
+       nowrap 按钮）比视口还宽，整条轨道就跟着撑宽，右侧被本层的 overflow-hidden
+       静默切掉。显式声明 minmax(0, 1fr) 的列把下限归零，轨道才能缩到视口以内。
+       代价是溢出的责任回到底栏内容自身，故两者必须同时成立。 -->
+  <div class="grid h-full min-h-0 grid-cols-1 grid-rows-[1fr_56px] overflow-hidden">
     <!-- 窄屏是一行「可展开的左栏条带 + 其下的工作区」，两行高度由内容决定，
          所以用 flex-col；lg 起才是严格的两列等高分栏。 -->
     <div class="flex min-h-0 flex-col overflow-hidden lg:grid lg:grid-cols-[280px_1fr]">
