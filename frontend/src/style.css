@@ -113,6 +113,16 @@ button {
   font-family: inherit;
 }
 
+/* Tailwind v4 的 preflight 移除了 v3 的 `button { cursor: pointer }`，
+   而本应用的 <button> 全部是可点击控件（改造前有 9 处手写 cursor-pointer）。
+   在基线上恢复一次，胜过在 15+ 个裸 <button> 与每个原语里各写一遍 ——
+   而且新写的按钮不会漏。
+   :not(:disabled) 让 Tailwind 的 `disabled:cursor-not-allowed` 继续生效：
+   该工具类的特异性 (0,2,0) 高于本规则 (0,1,1)。 */
+button:not(:disabled) {
+  cursor: pointer;
+}
+
 input, select, textarea {
   font-family: inherit;
 }
