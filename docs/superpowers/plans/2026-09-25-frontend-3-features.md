@@ -351,6 +351,8 @@ git commit -m "feat(frontend): 新增设置 schema 纯函数模块与 node 断�
 - Create: `frontend/src/stores/settings.js`
 - Modify: `frontend/src/main.js`
 
+**关于 `apply(data)` 的语义（Task 2 的实现者提出，此处记明以免误用）**：`apply` 是「**用这份数据替换全部设置**」，内部委派给 `normalizeSettings`，而后者是**对着默认值**逐字段合并的 —— 所以传入残缺对象意味着**其余字段回落默认值，而不是保持不变**。本任务与 Task 3 都传完整对象（`load()` 传 `readSettings()` 的结果、设置页传 `toObject()` 的快照），故无影响；但若将来有人想「只改一个字段」，**不能**用 `apply`，要自己合并后再传完整对象。这是刻意保留的语义（`load()` 正需要「替换」而非「补丁」），不是遗漏。
+
 **Interfaces:**
 - Consumes: `settingsSchema.js` 的 `SETTINGS_KEY` / `defaultSettings` / `normalizeSettings` / `readSettings` / `writeSettings`（Task 1）
 - Produces: `useSettingsStore()`：
