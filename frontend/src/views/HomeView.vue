@@ -1,53 +1,62 @@
 <template>
-  <!-- 两行骨架：第一行是内容区（滚动归它），第二行是常驻底栏。根自身也是滚动链上
+  <!-- 两行骨架：第一行是「左栏 + 工作区」，第二行是常驻底栏。根自身也是滚动链上
        的一环 —— 它必须限制自身高度，否则中段的内容会把行撑破，底栏被推出视口。
+       中段自己不再滚动：左栏滚自己，工作区里的表滚自己（见下面各自的 overflow）。
        对话框与提示条全部挪到网格之外，网格里只留两个子项，不会产生隐式空行。 -->
   <div class="grid h-full min-h-0 grid-rows-[1fr_56px] overflow-hidden">
-    <div class="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">
+    <!-- 窄屏是一行「可展开的左栏条带 + 其下的工作区」，两行高度由内容决定，
+         所以用 flex-col；lg 起才是严格的两列等高分栏。 -->
+    <div class="flex min-h-0 flex-col overflow-hidden lg:grid lg:grid-cols-[280px_1fr]">
+      <AppLeftRail>
+        <template #source>
+          <SourceConfigPanel
+            :source="ws.activeSource"
+            :local-path="ws.path"
+            :recursive="ws.recursive"
+            :include-subs="ws.includeSubs"
+            :scanning="ws.scanning"
+            :openlist-browse-path="ws.path"
+            :ol-store="olStore"
+            :ol-form="ws.olForm"
+            @update:local-path="ws.path = $event"
+            @update:recursive="ws.recursive = $event"
+            @update:include-subs="ws.includeSubs = $event"
+            @scan="ws.activeSource === 'local' ? ws.doScan() : ws.doOpenListScan()"
+            @login="ws.doOpenListLogin"
+            @logout="ws.doOpenListLogout"
+            @browse="ws.openOpenListBrowseDialog"
+            @browse-local="ws.openLocalBrowseDialog"
+            @mount-change="ws.onMountChange"
+          />
+        </template>
 
-      <SourceConfigPanel
-        :source="ws.activeSource"
-        :local-path="ws.path"
-        :recursive="ws.recursive"
-        :include-subs="ws.includeSubs"
-        :scanning="ws.scanning"
-        :openlist-browse-path="ws.path"
-        :ol-store="olStore"
-        :ol-form="ws.olForm"
-        @update:local-path="ws.path = $event"
-        @update:recursive="ws.recursive = $event"
-        @update:include-subs="ws.includeSubs = $event"
-        @scan="ws.activeSource === 'local' ? ws.doScan() : ws.doOpenListScan()"
-        @login="ws.doOpenListLogin"
-        @logout="ws.doOpenListLogout"
-        @browse="ws.openOpenListBrowseDialog"
-        @browse-local="ws.openLocalBrowseDialog"
-        @mount-change="ws.onMountChange"
-      />
+        <template #template>
+          <TemplateConfig
+            :tpl-store="tplStore"
+            :source="ws.activeSource"
+            @preset-change="ws.onPresetChange"
+            @template-edit="ws.onTemplateEdit"
+            @update:createSeasonFolder="v => tplStore.createSeasonFolder = v"
+            @update:folderTemplate="v => tplStore.folderTemplate = v"
+          />
+        </template>
+      </AppLeftRail>
 
-      <TemplateConfig
-        :tpl-store="tplStore"
-        :source="ws.activeSource"
-        @preset-change="ws.onPresetChange"
-        @template-edit="ws.onTemplateEdit"
-        @update:createSeasonFolder="v => tplStore.createSeasonFolder = v"
-        @update:folderTemplate="v => tplStore.folderTemplate = v"
-      />
-
-      <FileTable
-        :files-store="filesStore"
-        :preview-rows="ws.previewRows"
-        :scanned-info="ws.scannedInfo"
-        :all-selected="ws.allSelected"
-        :active-source="ws.activeSource"
-        @preview-all="ws.previewAll"
-        @clear-all="ws.clearAll"
-        @toggle-all="ws.toggleAll"
-        @select-row="({ row, val }) => row.selected = val"
-        @update-row="ws.updatePreview"
-        @quick-scan="ws.doScan"
-      />
-
+      <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <FileTable
+          :files-store="filesStore"
+          :preview-rows="ws.previewRows"
+          :scanned-info="ws.scannedInfo"
+          :all-selected="ws.allSelected"
+          :active-source="ws.activeSource"
+          @preview-all="ws.previewAll"
+          @clear-all="ws.clearAll"
+          @toggle-all="ws.toggleAll"
+          @select-row="({ row, val }) => row.selected = val"
+          @update-row="ws.updatePreview"
+          @quick-scan="ws.doScan"
+        />
+      </main>
     </div>
 
     <AppBottomBar
@@ -97,6 +106,7 @@ import SourceConfigPanel from '../components/SourceConfigPanel.vue'
 import TemplateConfig from '../components/TemplateConfig.vue'
 import FileTable from '../components/FileTable.vue'
 import AppBottomBar from '../components/layout/AppBottomBar.vue'
+import AppLeftRail from '../components/layout/AppLeftRail.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ExecutingOverlay from '../components/ExecutingOverlay.vue'
 import ResultDialog from '../components/ResultDialog.vue'
