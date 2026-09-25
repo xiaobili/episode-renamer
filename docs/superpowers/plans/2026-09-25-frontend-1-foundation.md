@@ -706,11 +706,14 @@ cd frontend && npm run build && \
     n=$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)
     printf "%-40s %s\n" "$c" "$n"
   done
-  echo "--- 按钮光标基线（应为 1）---" && \
-  grep -o "cursor:pointer" dist/assets/*.css | wc -l
+  echo "--- 按钮光标基线（必须为 1）---" && \
+  grep -o "button:not(:disabled){cursor:pointer}" dist/assets/*.css | wc -l
 ```
 
-预期：全部 ≥ `1`。
+预期：11 个类名全部 ≥ `1`，**且光标基线为 `1`**。
+
+**光标检查为什么要用锚点串 `button:not(:disabled){cursor:pointer}` 而不是 `cursor:pointer`**：改造前应用里那 9 处手写 `cursor-pointer`（`App.vue` / `ScanPanel` / `TemplateConfig` / `BrowseDialog`）会生成 `.cursor-pointer{cursor:pointer}`，它要到第四期才被原语替换掉。所以 `grep -o "cursor:pointer"` 在第一至三期会读到 **2**（基线 1 + 旧工具类 1），第四期才降到 1 —— 用未锚点的写法，`2` 很容易被误读成「基线被重复加了」。锚定到规则全文则始终为 1，且能真正区分「基线在不在」与「恰好有个无关的 cursor 工具类」。
+
 
 **这是本期唯一能自动发现的失败模式**：类名拼错时 Tailwind 不会报错，只是不生成这条规则，按钮会静默少一个变体样式。任何一个为 `0` 就必须修正拼写。
 
