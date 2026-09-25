@@ -1246,7 +1246,7 @@ defineEmits(['update:modelValue', 'ok', 'cancel'])
   >
     <div class="flex max-h-[85vh] w-full max-w-[700px] flex-col overflow-hidden rounded-[12px] bg-surface shadow-overlay">
       <div class="flex shrink-0 items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-        <h2 class="text-[15px] font-semibold text-ink">重命名结果</h2>
+        <h2 class="text-[14px] font-semibold text-ink">重命名结果</h2>
         <button
           type="button"
           aria-label="关闭"
@@ -1351,7 +1351,7 @@ defineEmits(['update:modelValue'])
   >
     <div class="w-full max-w-[520px] overflow-hidden rounded-[12px] bg-surface shadow-overlay">
       <div class="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-        <h2 class="text-[15px] font-semibold text-ink">选择目录</h2>
+        <h2 class="text-[14px] font-semibold text-ink">选择目录</h2>
         <button
           type="button"
           aria-label="关闭"
