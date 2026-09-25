@@ -527,10 +527,14 @@ digits = pad.season if pad else settings.season_pad_digits
 
 ```python
 pad = None
-if req.episode_pad_digits or req.season_pad_digits:
+if req.episode_pad_digits is not None or req.season_pad_digits is not None:
+    # 必须显式判 None，不能用 `x or default` —— 0 是合法输入，
+    # 用 or 会让 0 短路成全局默认值，钳制逻辑永远不触发。
     pad = PadConfig(
-        episode=req.episode_pad_digits or settings.episode_pad_digits,
-        season=req.season_pad_digits or settings.season_pad_digits,
+        episode=(req.episode_pad_digits if req.episode_pad_digits is not None
+                 else settings.episode_pad_digits),
+        season=(req.season_pad_digits if req.season_pad_digits is not None
+                else settings.season_pad_digits),
     )
 ```
 
