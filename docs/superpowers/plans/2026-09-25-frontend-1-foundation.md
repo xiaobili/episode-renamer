@@ -535,7 +535,7 @@ import { FolderOpen, Settings } from 'lucide-vue-next'
 import BrandMark from './components/BrandMark.vue'
 ```
 
-这里用 `text-primary`（过渡别名，等价于新 token `text-accent`）而不是 `text-accent`：**本期是地基期，旧组件一律不动 token 名**，等第二期整体重写 `App.vue` 时统一改成新名。第四期删除别名层之前，这个文件会被第二期覆盖掉，所以不存在遗漏。
+这里用 `text-accent`（**新** token）而不是 `text-primary`（过渡别名）：本期不动的是那 11 个**尚未改造的旧组件**，而这一行是新写的代码 —— 新代码一律用新 token，没有理由再去挂一个第四期要删的别名。`App.vue` 会在第二期整体重写，届时这一行原样保留即可。
 
 `App.vue` 在第二期会被整体重写为三段式 App Shell，本次改动只是让 emoji 债务提前结清一部分。
 
