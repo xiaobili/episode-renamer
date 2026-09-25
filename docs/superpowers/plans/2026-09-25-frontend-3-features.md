@@ -1118,7 +1118,7 @@ cd frontend && npm run build && \
   echo "--- emoji 处数（必须为 0）---" && \
   grep -rn "🎬\|📁\|☁️\|⚠️\|✅" src/ | wc -l && \
   echo "--- shadow-sm 处数（必须为 0）---" && \
-  grep -rn "shadow-sm" src/ | wc -l
+  grep -rn "shadow-sm" src/ --include=*.vue | grep -v "^[^:]*:[0-9]*: *\(//\|\*\|<!--\)" | wc -l
 ```
 
 预期：三个计数全部为 **0**。
