@@ -74,14 +74,14 @@
                 </td>
                 <td class="px-4 py-2.5">
                   <input
-                    :value="row.show_name"
+                    v-model="row.show_name"
                     @change="$emit('update-row', row)"
                     class="w-full h-8 px-2.5 rounded-md border border-border bg-surface text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
                 </td>
                 <td class="px-4 py-2.5">
                   <input
-                    :value="row.season"
+                    v-model.number="row.season"
                     @change="$emit('update-row', row)"
                     type="number" min="1" max="30"
                     class="w-full h-8 px-2.5 rounded-md border border-border bg-surface text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
@@ -89,7 +89,7 @@
                 </td>
                 <td class="px-4 py-2.5">
                   <input
-                    :value="row.episode"
+                    v-model.number="row.episode"
                     @change="$emit('update-row', row)"
                     type="number" min="1" max="999"
                     class="w-full h-8 px-2.5 rounded-md border border-border bg-surface text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
