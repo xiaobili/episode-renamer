@@ -222,7 +222,20 @@ git commit -m "feat(frontend): 自托管 Geist 字体并切换字体栈"
 ```css
 @import "tailwindcss";
 
-@theme {
+/* 已跟踪的 frontend/dist 会被 Tailwind 自动扫描（它不在 .gitignore 里），
+   把上一版构建出的类名当成候选，产出 .hidden/.static/.table/.filter 这类
+   幽灵工具类，并且让产物大小随 dist 是否存在而变 —— 构建因此不确定。
+   显式排除掉它。src/ 与 index.html 仍在自动扫描范围内。 */
+@source not "../dist";
+
+/* static 修饰符：无条件发射下面这些变量，即使没有任何源码引用它们。
+   默认（非 static）下 Tailwind v4 会 tree-shake 掉未被引用的主题变量 ——
+   实测 4.3.3 下 --color-danger-hover 与 --shadow-overlay 会因此缺席 :root。
+   这两个 token 迟早会被用到（前者是 danger 按钮的 hover，后者是模态/浮层的
+   阴影），而设计 token 作为「系统的公开接口」不该取决于谁碰巧用了它 ——
+   组件 <style> 块里的 var(--shadow-overlay) 引用一旦遇上 tree-shaking 就是
+   静默失效。代价实测为 2 个变量、72 字节。 */
+@theme static {
   /* ---------- 背景三级：用明度差做层级，不用阴影 ---------- */
   --color-canvas:  #F6F7F8;  /* 页面底，比纯白低一档 */
   --color-surface: #FFFFFF;  /* 面板 / 表格底 */
@@ -277,6 +290,8 @@ git commit -m "feat(frontend): 自托管 Geist 字体并切换字体栈"
 
    删除前提：第四期 Task 8 的 grep 校验必须零命中。
    ========================================================================== */
+/* 注意：这一块**不加** static —— 它是第四期要删除的过渡脚手架，
+   按需发射正好：旧组件用到哪个别名就发射哪个，删掉之后不留残留。 */
 @theme {
   --color-primary:        var(--color-accent);
   --color-primary-hover:  var(--color-accent-hover);
@@ -345,27 +360,31 @@ input, select, textarea {
 
 注意：**不要**保留 `--color-secondary: #7C3AED` —— 它是零引用的死 token（spec §3.2 第 9 条）。
 
-- [ ] **Step 2: 构建并校验新 token 的**变量**都落到 `:root`**
+- [ ] **Step 2: 构建并校验**变量**都落到 `:root`**
 
 ```bash
-cd frontend && npm run build && \
+cd frontend && rm -rf dist && npm run build && \
   grep -oE -- "--color-(canvas|surface|sunken|line|line-strong|border-control|ink|ink-2|ink-3|accent|accent-hover|accent-soft|warn|warn-soft|danger|danger-hover|danger-soft):[^;}]*" dist/assets/*.css | sort -u && \
   echo "--- 阴影与字体 ---" && \
   grep -oE -- "--(shadow-overlay|font-sans|font-mono):[^;}]*" dist/assets/*.css | sort -u
 ```
 
-预期：上面共打印出 **17 条** `--color-*` 变量 + **3 条** 阴影/字体变量，全部非空。例如应看到 `--color-accent:#0f766e`、`--color-sunken:#edeff1`、`--color-border-control:#8a9199`。
+预期：**17 条** `--color-*` 变量 + **3 条**阴影/字体变量，一条不少，全部非空。例如应看到 `--color-accent:#0f766e`、`--color-sunken:#edeff1`、`--color-border-control:#8a9199`、`--color-danger-hover:#8e1d17`、`--shadow-overlay:0 8px 28px -6px …`。
 
-**这里查的是「变量」而不是「工具类」，是本节的关键。** Tailwind v4 的 `@theme` 会无条件把所有主题变量写进 `:root`，但**只为在源码里出现过的候选类名生成工具类**。本期 Task 2 只改 `style.css`，还没有任何组件使用新 token，所以下面这些工具类此时**必然是 `0`**，这是正常的，不是 bug：
+**为什么查的是「变量」而不是「工具类」** —— Tailwind v4 只为在源码里出现过的候选类名生成工具类。本期只改 `style.css`，还没有任何组件使用新 token，所以下面这些工具类此时**必然是 `0`**，这是正常的：
 
 ```bash
-# 全部为 0 是正确的 —— 新 token 要等到 Task 3 起的组件改造才会被用到
+# 全为 0 是正确的 —— 新 token 要到 Task 3 起的组件改造才会被用到
 for c in bg-canvas text-ink-2 border-border-control bg-sunken bg-accent; do
-  printf "%-24s %s\n" "$c" "$(grep -o "\.$c{" dist/assets/*.css | wc -l)"
+  printf "%-24s %s\n" "$c" "$(grep -o "\\.$c{" dist/assets/*.css | wc -l)"
 done
 ```
 
-**不要去「修」这些 0** —— 它们不是错误，而是 Tailwind 按需生成的表现。若你去改 `@theme` 里的名字来「让它们出现」，反而会破坏后面的所有任务。
+**不要去「修」这些 0** —— 它们不是错误。若你去改 `@theme` 里的 token 名来「让它们出现」，会破坏后面所有任务。
+
+**为什么要 `rm -rf dist` 再构建** —— `frontend/dist` 被 git 跟踪、不在 `.gitignore` 里，Tailwind 会自动扫描它，把上一版构建产出的类名当候选，多出 `.hidden` / `.static` / `.table` / `.filter` 这类幽灵工具类，并让产物大小依赖于「dist 是否存在」。快照里的 `@source not "../dist";` 已经从根上排除它，这条 `rm -rf dist` 是双保险，也让本步的产物计数可复现。
+
+**为什么 token 块用 `@theme static`** —— 实测 Tailwind 4.3.3 默认会 tree-shake 掉没有任何源码引用的主题变量：不写 `static` 时 `--color-danger-hover` 与 `--shadow-overlay` **不会**出现在 `:root`（这两个此时恰好无人引用，其余变量都因别名块的 `var()` 引用而幸存）。设计 token 是系统的公开接口，不该取决于谁碰巧用了它 —— 组件 `<style>` 块里的 `var(--shadow-overlay)` 一旦遇上 tree-shaking 就是静默失效。`static` 的代价实测为 2 个变量、72 字节，而**工具类仍然按需生成**，不会因此膨胀。
 
 - [ ] **Step 3: 确认过渡别名既生成工具类、又能在运行时可解析**
 
