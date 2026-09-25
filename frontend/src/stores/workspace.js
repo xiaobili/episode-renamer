@@ -218,15 +218,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function browseConfirm(pick) {
     if (!pick) return
-    if (browse.source === 'openlist') {
-      if (pick.path === olStore.selectedMount) {
-        showToast('不能选择云盘根目录，请进入子文件夹后再选择', 'warning')
-        return
-      }
-      path.value = pick.path
-    } else {
-      path.value = pick.path
+    if (browse.source === 'openlist' && pick.path === olStore.selectedMount) {
+      showToast('不能选择云盘根目录，请进入子文件夹后再选择', 'warning')
+      return
     }
+    // 写回 browse.source 那一份，而不是 path.value。顶栏的源切换让 activeSource
+    // 可以在对话框打开期间改变：source-fade 的 180ms 离场过渡里，旧的 ScanPanel
+    // 仍然可点，用户点它的「浏览」时 activeSource 已经翻到另一源了。path.value
+    // 会写到**当前**源上，于是本地绝对路径会落进 openlist 的状态（反向同理）。
+    sourceStates[browse.source].path = pick.path
     browse.open = false
   }
 
