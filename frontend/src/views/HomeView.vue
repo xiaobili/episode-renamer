@@ -1,5 +1,12 @@
 <template>
-  <div class="flex flex-col gap-4">
+  <!-- 一次性容器: App.vue 的路由出口是 `min-h-0 overflow-hidden`，本文件若不自己
+       管滚动，旧卡片栈超出「视口 − 56px」的部分就会被裁掉且不可达（FileTable 下半
+       部、ActionBar 的执行按钮）。Task 3 Step 3 会把这一行换成两行的 grid（上方滚
+       动区 / 下方 56px 底栏，根带 min-h-0），并把滚动下移到内层 —— 所以这里的
+       h-full + overflow-y-auto 是**临时代管，不是承重结构**。
+       刻意不在这里写出那串替换类名：Tailwind 扫描源码文本，注释里的类名字面量会被
+       真的编译进 CSS，生成一条没有任何元素使用的规则。 -->
+  <div class="flex h-full flex-col gap-4 overflow-y-auto">
     <Transition name="source-fade" mode="out-in">
     <div :key="ws.activeSource" class="flex flex-col gap-4">
 
@@ -110,15 +117,6 @@ const ws = useWorkspaceStore()
 const filesStore = useFilesStore()
 const tplStore = useTemplateStore()
 const olStore = useOpenListStore()
-
-// 旧的源切换卡片留下的数据源列表（含 emoji）。那张卡片已在 Task 2 被顶栏的
-// segmented control 取代并删除，这个数组因此失去了唯一的消费者；它的清理留给
-// Task 3 ——那时旧卡片栈整体重构，本文件的其他旧结构也一并消失。本任务不制造
-// 这份死代码，所以不动它。
-const sources = [
-  { name: 'local', label: '本地磁盘', icon: '📁' },
-  { name: 'openlist', label: 'OpenList 云盘', icon: '☁️' },
-]
 
 onMounted(() => { ws.initialize() })
 

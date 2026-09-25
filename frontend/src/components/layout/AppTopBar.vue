@@ -44,8 +44,8 @@ import { ArrowLeft, Settings as SettingsIcon } from 'lucide-vue-next'
 
 import BrandMark from '../BrandMark.vue'
 
-// 本地磁盘 / OpenList 两段。这里不再有 emoji —— 旧的源切换卡片上那对 📁☁️
-// 随它一起删除（spec §3.5 第 12 条）。
+// 本地磁盘 / OpenList 两段。这里不再有 emoji —— 旧的源切换卡片上那对文件夹 /
+// 云朵图标随它一起删除（spec §3.5 第 12 条）。
 const SOURCES = [
   { name: 'local', label: '本地磁盘' },
   { name: 'openlist', label: 'OpenList' },
