@@ -1575,7 +1575,7 @@ const isAlert = computed(() => props.type === 'error')
   transition: opacity 0.2s ease-out, transform 0.2s ease-out;
 }
 .toast-leave-active {
-  transition: opacity 0.18s ease-in, transform 0.18s ease-in;
+  transition: opacity 0.2s ease-in, transform 0.2s ease-in;
 }
 .toast-enter-from,
 .toast-leave-to {
