@@ -154,7 +154,10 @@ onBeforeUnmount(() => {
 </script>
 
 <style>
-/* 模态进出 200ms —— spec §11 的动效表。只做透明度与极小的位移，
+/* 模态进出 200ms —— spec §11 的动效表。进出**都用 200ms**：旧文件里离场是
+   150/130ms、进场是 200ms，既是本文件内部的不一致，也不符合 §11 的「模态进出
+   200ms」。不要因为「收起可以更快」而改回去 —— 那属于该表未列出的动效。
+   只做透明度与极小的位移，
    意图是「让用户看清层级来自哪里」，不做弹跳。 */
 .modal-enter-active {
   transition: opacity 0.2s ease-out;
@@ -163,10 +166,10 @@ onBeforeUnmount(() => {
   transition: opacity 0.2s ease-out, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .modal-leave-active {
-  transition: opacity 0.15s ease-in;
+  transition: opacity 0.2s ease-in;
 }
 .modal-leave-active > * {
-  transition: opacity 0.13s ease-in, transform 0.13s ease-in;
+  transition: opacity 0.2s ease-in, transform 0.2s ease-in;
 }
 .modal-enter-from,
 .modal-leave-to {
