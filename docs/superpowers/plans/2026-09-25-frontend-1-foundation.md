@@ -1382,7 +1382,7 @@ cd frontend && npm run build && \
 cd frontend && grep -rn "AppButton\|AppInput\|AppSelect\|AppCheckbox\|AppBadge\|AppPanel\|BrandMark" src --include=*.vue | grep -v "src/components/ui/"
 ```
 
-预期：**只有一行** —— `src/App.vue` 引用 `BrandMark`。六个 UI 原语本期不接调用方（spec §16 阶段 2 的完成判据就是「六个组件就位，尚无调用方」），第三期才落地使用。
+预期：**只有 `src/App.vue`** —— 且是两处命中（`import BrandMark` 与模板里的 `<BrandMark>`），因为 grep 按行计数。除它之外不应出现任何原语名。六个 UI 原语本期不接调用方（spec §16 阶段 2 的完成判据就是「六个组件就位，尚无调用方」），第三期才落地使用。
 
 - [ ] **Step 6: 建编译校验脚本，覆盖「构建不会编译的文件」**
 
@@ -1463,7 +1463,9 @@ process.exitCode = failed === 0 ? 0 : 1
 cd frontend && node scripts/check-sfc-compile.mjs
 ```
 
-预期：每个 `.vue` 打印一行 `OK`，最后一行 `全部 SFC 可编译`，退出码 `0`。此时 `src/` 下应有 18 个 `.vue`（含六个原语）。
+预期：每个 `.vue` 打印一行 `OK`，最后一行 `全部 SFC 可编译`，退出码 `0`。
+
+**这个脚本本身也要可信**：跑一次负向验证 —— 往一个临时目录放一个有语法错误的 `.vue`，跑脚本应打印 `FAIL` 并以退出码 1 结束，然后删掉临时文件。否则你无法区分「全部通过」与「脚本没在检查任何东西」。此时 `src/` 下应有 **21** 个 `.vue`（改造前的 15 个 + 本期的六个原语；`BrandMark` 也在其中）。
 
 **这个脚本要提交进仓库**，不是一次性工具 —— 第二、三期还会继续新建「先建后接线」的组件，同样的盲区会重复出现。每次新建了尚无调用方的组件之后都跑一次。
 
