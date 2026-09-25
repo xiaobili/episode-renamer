@@ -772,7 +772,7 @@ git commit -m "feat(backend): 三个重命名路由支持请求级补零位数"
 
 后端改完即可独立验证：`curl` 或前端调用 `/api/rename/preview` 时传 `episode_pad_digits`，返回的 `new_filename` 随之变化。
 
-前端接线在另一份计划 `docs/superpowers/plans/2026-09-25-frontend-refactor.md` 的对应任务中完成（发送这两个字段的请求体）。
+前端接线在 `docs/superpowers/plans/2026-09-25-frontend-3-features.md` 的 **Task 8** 中完成（`buildPreview()` 与 `executeAction()` 两处请求体各加 `episode_pad_digits` / `season_pad_digits`，值取自 `settings` store）。该任务的第一步就是核对本计划的两个请求模型字段是否已就位 —— 若本计划尚未实施，Task 8 必须跳过。
 
 ## Self-Review
 
