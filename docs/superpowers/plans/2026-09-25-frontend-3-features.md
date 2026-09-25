@@ -26,7 +26,7 @@
   ```
 - 圆角只允许 `rounded-[8px]`（控件）/ `rounded-[12px]`（面板 / 模态 / 下拉）。**禁止** `rounded-full` / `rounded-xl` / `rounded-2xl` / `rounded-md` / `rounded-lg`
 - 默认无阴影，唯一例外 `shadow-overlay`（浮层：模态、下拉、Toast）
-- 交互控件边框用 `border-border-control`；`line` / `line-strong` 禁止用于交互控件
+- 交互控件边框：**表单控件**（input / select / checkbox / textarea）用 `border-border-control`；**按钮不在此限**，其边框是装饰包装，按 spec §8.2 用 `border-line-strong`（理由见第一期 Global Constraints）。
 - **不使用绿色表达「成功」**（spec §5.2）：成功态 = 中性底（`sunken`）+ `ink-2` 文字 + 对勾图标；只有「待确认」用 `warn`，失败用 `danger`
 - 路径与文件名**不用** `font-mono`（spec §6.2）；表格数字列加 `tabular-nums`（spec §6.4）
 - 补零位数合法区间 `[1, 6]`，与后端 `PadConfig` 一致（spec §13.2、§17）
@@ -42,7 +42,7 @@
 1. **前端改完补零位数却毫无变化，且零报错**（本期最高风险）—— 若后端未合入 `episode_pad_digits` 字段，Pydantic 会**静默丢弃**未知字段，请求返回 200，界面一切正常，只有「新文件名」列固执地显示 `S01E02`。期望：设置页把集数补零位数改成 3 → 表格新文件名列出现 `S01E001`。→ Task 8 Step 2 专门给出区分「后端未合入」与「前端没接上」的检查
 2. **`localStorage` 里是残缺或损坏的 JSON** —— 旧的 `SettingsView` 写盘的字段名是 `defaultTemplate`，新 store 读的是 `defaultTemplateId`；用户浏览器里可能还躺着旧结构、缺字段、甚至被手工改坏的字符串。期望：不白屏、不抛错，缺的字段逐个回落默认值。→ Task 1
 3. **`localStorage` 不可用**（隐私模式 / 禁用存储）—— 未捕获的异常会在 store 初始化时抛出，**整个应用白屏**。期望：退化为纯内存态，应用照常启动，只是设置不持久化。→ Task 1、Task 2
-4. **补零位数输入框被清空后保存** —— `AppInput` 在 `type="number"` 下清空会 emit `null`。若把它当成 `0` 存下来，后端钳到 1、界面显示 0，两侧不一致；若存成 `null`，请求会发 `null`。期望：视为「未设置」回落默认值 2。→ Task 1
+4. **补零位数输入框被清空后保存** —— `AppInput` 在 `type="number"` 下清空会 emit `null`。若把它当成 `0` 存下来，后端钳到 1、界面显示 0，两侧不一致；若存成 `null`，请求会发 `null`。期望：视为「未设置」回落默认值 2。→ Task 1。**另注（第一期 Task 6 的实现者实测）**：`type="number"` 下用户输入半截非法内容（`-`、`1e`）时浏览器会把 `value` 规范化成 `''`，于是也在 emit `null` —— 可见文本还在、值已是「未设置」。这与清空同义，行为可接受，但排查「设置没生效」时要记得这一条
 5. **设置页有未保存改动时离开** —— 设置页保留「草稿 + 保存」语义，改动在点「保存设置」之前**不应**影响工作区。期望：改了补零位数但不点保存，切回工作区，预览仍是旧位数。→ Task 3
 
 ---

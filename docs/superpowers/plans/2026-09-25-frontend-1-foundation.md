@@ -34,7 +34,7 @@
 - 圆角只允许两种：控件（Button / Input / Select / Checkbox / Badge）`rounded-[8px]`；面板 / 模态 / 下拉 `rounded-[12px]`（spec §5.3）。**禁止** `rounded-md` / `rounded-lg` / `rounded-xl` / `rounded-2xl` / `rounded-full`
 - **默认无阴影。** 唯一例外是浮层用的 `shadow-overlay`（spec §5.4）。禁止 `shadow-sm` / `shadow-lg` / `shadow-2xl`
 - 全站唯一强调色 `--color-accent`（`#0F766E`）。**不使用绿色表达「成功」**（spec §5.2）
-- 交互控件边框必须用 `border-border-control`（`#8A9199`）。`line` / `line-strong` **禁止**用于交互控件（spec §5.1）
+- 交互控件边框：**表单控件**（input / select / checkbox / textarea）必须用 `border-border-control`（`#8A9199`，对白底 3.19:1）—— 这类控件的边框是它**唯一的识别线索**，须满足 WCAG 1.4.11 的 3:1（这是 spec §5.1 第 151 行给出的理由：`#CDD2D7` 对白底仅 1.52:1，「用作 input 边框是不合格的」）。**按钮不在此限**：它靠文字标签识别（`ink-2` 对白底 7.94:1），边框属装饰包装，`AppButton` 的 `secondary` 变体按 spec §8.2 用 `border-line-strong`。§5.1 第 172 行那句「`line`/`line-strong` 禁用于交互控件边框」写宽了，按上面两条具体规则执行，不要去「修」按钮的边框。
 - 禁用态统一 `opacity-45`，不新增更浅的文字 token（spec §5.1）
 - 表格表头文字用 `text-ink-2`，**不得**用 `text-ink-3`（对 `sunken` 底仅 4.23:1，低于 AA）
 - 路径与文件名**不用** `font-mono`（含中文，等宽下中文回退导致列对不齐，spec §6.2）。等宽只用于纯技术值：季数、集数、模板变量名、并发数、补零位数
