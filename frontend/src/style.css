@@ -1,6 +1,19 @@
 @import "tailwindcss";
 
-@theme {
+/* 已跟踪的 frontend/dist 会被 Tailwind 自动扫描（它不在 .gitignore 里），
+   把上一版构建出的类名当成候选，产出 .hidden/.static/.table/.filter 这类
+   幽灵工具类，并且让产物大小随 dist 是否存在而变 —— 构建因此不确定。
+   显式排除掉它。src/ 与 index.html 仍在自动扫描范围内。 */
+@source not "../dist";
+
+/* static 修饰符：无条件发射下面这些变量，即使没有任何源码引用它们。
+   默认（非 static）下 Tailwind v4 会 tree-shake 掉未被引用的主题变量 ——
+   实测 4.3.3 下 --color-danger-hover 与 --shadow-overlay 会因此缺席 :root。
+   这两个 token 迟早会被用到（前者是 danger 按钮的 hover，后者是模态/浮层的
+   阴影），而设计 token 作为「系统的公开接口」不该取决于谁碰巧用了它 ——
+   组件 <style> 块里的 var(--shadow-overlay) 引用一旦遇上 tree-shaking 就是
+   静默失效。代价实测为 2 个变量、72 字节。 */
+@theme static {
   /* ---------- 背景三级：用明度差做层级，不用阴影 ---------- */
   --color-canvas:  #F6F7F8;  /* 页面底，比纯白低一档 */
   --color-surface: #FFFFFF;  /* 面板 / 表格底 */
@@ -55,6 +68,8 @@
 
    删除前提：第四期 Task 8 的 grep 校验必须零命中。
    ========================================================================== */
+/* 注意：这一块**不加** static —— 它是第四期要删除的过渡脚手架，
+   按需发射正好：旧组件用到哪个别名就发射哪个，删掉之后不留残留。 */
 @theme {
   --color-primary:        var(--color-accent);
   --color-primary-hover:  var(--color-accent-hover);
