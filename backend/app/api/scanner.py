@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from typing import Optional
+import os
 
 from ..models.api import ScanRequest, ScanResponse
 from ..models.file import FileInfo
@@ -97,3 +98,40 @@ async def scan_directory(req: ScanRequest) -> ScanResponse:
 
     else:
         raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
+
+
+@router.post("/browse")
+async def browse_local_directory(req: dict):
+    path = req.get("path") or os.path.expanduser("~")
+    path = os.path.abspath(os.path.expanduser(path))
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"目录不存在: {path}")
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail=f"不是目录: {path}")
+
+    try:
+        entries = sorted(
+            os.listdir(path),
+            key=lambda n: (not os.path.isdir(os.path.join(path, n)), n.lower()),
+        )
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"无权限访问: {path}")
+
+    dirs = []
+    for name in entries:
+        full = os.path.join(path, name)
+        if os.path.isdir(full):
+            dirs.append({"name": name, "path": full, "type": "dir"})
+
+    parent = os.path.dirname(path) if path != "/" else "/"
+    if not parent:
+        parent = "/"
+
+    return {
+        "success": True,
+        "path": path,
+        "dirs": dirs,
+        "write_access": os.access(path, os.W_OK),
+        "parent": parent,
+    }
