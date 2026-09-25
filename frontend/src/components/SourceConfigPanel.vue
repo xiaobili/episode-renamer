@@ -64,16 +64,13 @@
           <span class="truncate">已连接: {{ olStore.serverUrl }}</span>
         </div>
 
-        <div class="flex flex-col gap-1.5">
-          <label class="text-[13px] font-medium text-ink-2" for="ol-mount">挂载点</label>
-          <AppSelect
-            id="ol-mount"
-            :model-value="olStore.selectedMount"
-            @update:model-value="$emit('mount-change', $event)"
-          >
-            <option v-for="m in olStore.mountPoints" :key="m" :value="m">{{ m }}</option>
-          </AppSelect>
-        </div>
+        <AppSelect
+          label="挂载点"
+          :model-value="olStore.selectedMount"
+          @update:model-value="$emit('mount-change', $event)"
+        >
+          <option v-for="m in olStore.mountPoints" :key="m" :value="m">{{ m }}</option>
+        </AppSelect>
 
         <div class="flex items-end gap-2">
           <AppInput
