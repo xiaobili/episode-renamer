@@ -23,8 +23,12 @@
   --color-text-muted: #71717A;
   --color-text-faint: #A1A1AA;
 
-  --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: Fira Code, 'JetBrains Mono', ui-monospace, monospace;
+  /* fontsource 声明的族名是 "Geist Variable" / "Geist Mono Variable"，不是 "Geist"。
+     照抄 "Geist" 会静默回退到中文字体，且没有任何报错。 */
+  --font-sans: "Geist Variable", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+               "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono Variable", "JetBrains Mono", ui-monospace,
+               "SFMono-Regular", Menlo, monospace;
 }
 
 html, body, #app {
