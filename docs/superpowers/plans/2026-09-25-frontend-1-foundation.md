@@ -737,6 +737,7 @@ git commit -m "feat(frontend): 新增 AppButton 按钮原语"
 
 **Files:**
 - Modify: `frontend/src/components/ui/AppModal.vue`（整文件重写）
+- Modify: `frontend/package.json` + `frontend/package-lock.json`（把 `vue` 的版本底线从 `^3.4.21` 提到 `^3.5.0`，见 Step 1 末尾）
 
 **Interfaces:**
 - Consumes: 新 token `ink`（遮罩色 `bg-ink/40`）
@@ -913,7 +914,10 @@ onBeforeUnmount(() => {
 </script>
 
 <style>
-/* 模态进出 200ms —— spec §11 的动效表。只做透明度与极小的位移，
+/* 模态进出 200ms —— spec §11 的动效表。进出**都用 200ms**：旧文件里离场是
+   150/130ms、进场是 200ms，既是本文件内部的不一致，也不符合 §11 的「模态进出
+   200ms」。不要因为「收起可以更快」而改回去 —— 那属于该表未列出的动效。
+   只做透明度与极小的位移，
    意图是「让用户看清层级来自哪里」，不做弹跳。 */
 .modal-enter-active {
   transition: opacity 0.2s ease-out;
@@ -922,10 +926,10 @@ onBeforeUnmount(() => {
   transition: opacity 0.2s ease-out, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .modal-leave-active {
-  transition: opacity 0.15s ease-in;
+  transition: opacity 0.2s ease-in;
 }
 .modal-leave-active > * {
-  transition: opacity 0.13s ease-in, transform 0.13s ease-in;
+  transition: opacity 0.2s ease-in, transform 0.2s ease-in;
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -948,6 +952,18 @@ onBeforeUnmount(() => {
 - `useId()` 生成 `aria-labelledby` 的目标 id —— 页面上可能有多个模态实例，硬编码 id 会互相覆盖。
 - **没有** `Teleport` 之外的重排 —— `Teleport to="body"` 是为了避免模态被祖先元素的 `transform`（过渡动画会产生）劫持 `position: fixed` 的包含块。
 - 过渡曲线从原来的 `scale(0.94) translateY(8px)` 收紧到 `scale(0.96) translateY(6px)` —— spec §11 把 modal 动效定为「状态转换：层级来源」，幅度过大会变成装饰。
+
+- [ ] **Step 1b: 把 `vue` 的版本底线提到 `^3.5.0`**
+
+本任务的 `AppModal` 用了 `useId()`（生成 `aria-labelledby` 的目标 id，页面上可能有多个模态实例，硬编码 id 会互相覆盖）。`useId` 是 **Vue 3.5 才有的 API**，而 `frontend/package.json:20` 声明的是 `vue: ^3.4.21` —— 声明与代码的实际要求不符。装的是 3.5.43（`node_modules/vue/package.json` 可查），且 caret 范围允许 3.5.x，所以**当前不会坏**；但清单低估了真实底线，一旦有人把 vue 固定到 3.4.x，三个对话框都会在 setup 阶段抛 `useId is not a function`。
+
+```bash
+cd frontend && npm i vue@^3.5.0
+```
+
+预期：`package.json` 的 `vue` 变为 `^3.5.0`，`package-lock.json` 的根依赖范围同步更新，`node_modules/vue` 仍是 3.5.43（不降级、不升级）。
+
+这是「清单诚实」的修正，不是应急修复 —— 因此它是本任务里唯一一个从评审 Minor 提升上来处理的事项，理由见 `progress.md` 的裁定记录。
 
 - [ ] **Step 2: 构建并确认三个调用方未受影响**
 
