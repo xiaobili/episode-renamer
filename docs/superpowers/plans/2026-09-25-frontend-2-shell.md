@@ -1925,6 +1925,20 @@ cd frontend && npm run dev
 
 **不要**用 `overflow-x-hidden` 之类的兜底去「隐藏」溢出 —— 那只会把内容切掉而不解决布局。
 
+**（d）极窄屏下整条网格轨道被底栏的 max-content 撑宽，右侧内容被 `overflow-hidden` 裁掉。**
+
+这条是 Task 4 的实现者用真实 Chromium 实测出来的，不是推演：400px 视口下面板列被排成 **423.67px** 并右溢、`浏览` 按钮丢掉 7.7px；把底栏隐藏后轨道回到正好 400px —— 也就是说驱动源是 `AppBottomBar` 内容的 max-content（`w-[132px]` 的下拉 + 计数 + 两个 `whitespace-nowrap` 按钮）。
+
+根因：`HomeView` 的根只有 `grid-rows-[1fr_56px]`、**没有声明列**，于是那条唯一的隐式列按 `auto` 取 max-content，内容比容器宽时轨道就跟着撑宽。修法是给根补一个**可收缩**的显式列：
+
+```html
+<div class="grid h-full min-h-0 grid-cols-1 grid-rows-[1fr_56px] overflow-hidden">
+```
+
+`grid-cols-1` 是 `repeat(1, minmax(0, 1fr))`：宽屏下与原来的 `auto` 表现一致（容器有确定宽度，两者都填满），窄屏下则**允许轨道缩到容器宽度以下**，于是溢出的责任回到内容本身 —— 这正是上面 (a)(b) 两项要处理的。**两半必须一起做**：只补 `grid-cols-1` 而不处理底栏内容，会把「整条轨道右溢」换成「底栏内容左溢出界」。
+
+补齐后重跑 Step 1 的 375px 档，确认 `document.querySelector('table')` 或中段容器的宽度不再超过视口。
+
 - [ ] **Step 3: 构建并复跑四档**
 
 ```bash
