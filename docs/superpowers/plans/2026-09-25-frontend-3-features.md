@@ -758,7 +758,11 @@ cd frontend && npm run build && \
   grep -rn "focus:border-primary focus:ring-2 focus:ring-primary/20" src/ | wc -l
 ```
 
-预期：`grep` 只列出 `components/FileTable.vue` 的 3 行，计数为 **3**。
+预期：**计数为 0，`grep` 无输出**。换句话说本任务是这一笔债务的**终点**，不是中途站。
+
+**这处判据的原稿是错的，此处按实测记录真况**（F3-T3 的实现者实测后按指令「不调整判据、只报告测量」上报）：计划原来说「17 → 10，剩 `TemplateConfig` 3 + `FileTable` 3」，实测是 **7 → 0**。原因：全项目那 18 处手写输入框样式**随时间用了两套写法** —— 第二期重写 `FileTable` 行内控件与 `TemplateConfig` 时，直接按当时已存在的新 token 写成了新模式（`focus-visible:border-accent … ring-accent/35`），而本判据的 grep 只匹配**旧模式**（`focus:border-primary …`）。所以旧模式只剩设置页这 7 处，本任务清零后即为 **0**。
+
+**顺带更正 F3-T5 的同类判据**：它原本也按旧模式计数并预期「清零」—— 该预期现在**已经成立**（旧模式早已是 0），F3-T5 不必再为此负责；它真正该证明的是**行内控件改用原语**这件事本身，而不是一个已经归零的手写样式计数。
 
 - [ ] **Step 3: 走查设置页**
 
