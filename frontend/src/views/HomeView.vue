@@ -5,7 +5,7 @@
   <div class="grid h-full min-h-0 grid-rows-[1fr_56px] overflow-hidden">
     <div class="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">
 
-      <ScanPanel
+      <SourceConfigPanel
         :source="ws.activeSource"
         :local-path="ws.path"
         :recursive="ws.recursive"
@@ -93,7 +93,7 @@ import { useTemplateStore } from '../stores/template'
 import { useOpenListStore } from '../stores/openlist'
 import { useWorkspaceStore } from '../stores/workspace'
 
-import ScanPanel from '../components/ScanPanel.vue'
+import SourceConfigPanel from '../components/SourceConfigPanel.vue'
 import TemplateConfig from '../components/TemplateConfig.vue'
 import FileTable from '../components/FileTable.vue'
 import AppBottomBar from '../components/layout/AppBottomBar.vue'
@@ -107,7 +107,7 @@ const ws = useWorkspaceStore()
 
 // 这三个 store 实例**必须保留**：模板里仍要把它们当 prop 传给本期尚未改造
 // 的子组件（FileTable 的 :files-store、TemplateConfig 的 :tpl-store、
-// ScanPanel 的 :ol-store）。漏掉任何一个，对应的 prop 会收到 undefined。
+// SourceConfigPanel 的 :ol-store）。漏掉任何一个，对应的 prop 会收到 undefined。
 // filesStore 会一直留到第四期 FileTable 彻底改用 workspace store 之后。
 const filesStore = useFilesStore()
 const tplStore = useTemplateStore()
