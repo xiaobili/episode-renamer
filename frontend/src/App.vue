@@ -2,7 +2,7 @@
   <div class="flex h-screen overflow-hidden">
     <aside class="w-60 shrink-0 bg-surface border-r border-border flex flex-col px-4 py-6">
       <div class="flex items-center gap-3 px-2 pb-5 border-b border-border mb-4">
-        <div class="w-10 h-10 bg-primary text-white rounded-lg flex items-center justify-center text-xl shrink-0">🎬</div>
+        <BrandMark :size="40" class="text-accent" />
         <div>
           <div class="text-[15px] font-bold text-text -tracking-[0.01em]">Episode Renamer</div>
           <div class="text-xs text-text-muted mt-0.5">影视自动化重命名</div>
@@ -52,6 +52,7 @@
 <script setup>
 import { useRoute } from 'vue-router'
 import { FolderOpen, Settings } from 'lucide-vue-next'
+import BrandMark from './components/BrandMark.vue'
 
 const route = useRoute()
 </script>
