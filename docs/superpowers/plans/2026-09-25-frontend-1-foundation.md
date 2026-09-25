@@ -666,8 +666,13 @@ Tailwind v4 的 preflight **删掉了** v3 里那条 `button { cursor: pointer }
    而本应用的 <button> 全部是可点击控件（改造前有 9 处手写 cursor-pointer）。
    在基线上恢复一次，胜过在 15+ 个裸 <button> 与每个原语里各写一遍 ——
    而且新写的按钮不会漏。
-   :not(:disabled) 让 Tailwind 的 `disabled:cursor-not-allowed` 继续生效：
-   该工具类的特异性 (0,2,0) 高于本规则 (0,1,1)。 */
+   `:not(:disabled)` 是**必需的**，而且原因不是特异性 —— Tailwind v4 把
+   `.disabled\:cursor-not-allowed:disabled` 放在 `@layer utilities` 里，而本规则是
+   **层外**（unlayered）的。按 CSS 级联层的规则，无层样式优先于任何层内样式，
+   **与特异性无关**。所以若这里偷懒写成裸 `button { cursor: pointer }`，哪怕那个
+   工具类的特异性更高（0,2,0 > 0,1,1），禁用态也会被本规则覆盖成指针光标。
+   `:not(:disabled)` 让两者根本不在同一个元素上竞争，这才是它起作用的原因。
+   （实测产物：`.disabled\:cursor-not-allowed` 在 `@layer utilities` 内，本规则在层外。） */
 button:not(:disabled) {
   cursor: pointer;
 }

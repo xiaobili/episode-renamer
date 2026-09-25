@@ -48,7 +48,7 @@
 
 - **组件 `<style>` 块里不得出现 `var(--color-*)` 对「旧别名」的引用**（`--color-primary` / `--color-text` / `--color-border*` / `--color-surface-muted` / `--color-success*` / `--color-warning*` / `--color-error*`）。别名块是本期的过渡脚手架且**刻意非 `static`** —— 没有任何工具类引用它的别名会被 Tailwind tree-shake 掉，`var()` 于是静默解析为空；何况第四期会整块删除。需要颜色时一律用工具类（`bg-accent` / `text-ink-2` …）。本期新建或重写的组件如需自定义过渡，只用**新** token（`--color-ink` 等，它们在 `@theme static` 块里，一定存在）。
 
-- **按钮光标由 `style.css` 的基线规则统一提供**（`button:not(:disabled) { cursor: pointer }`，Tailwind v4 的 preflight 删掉了 v3 的等价声明）。因此新写的裸 `<button>` **不需要**再写 `cursor-pointer`，也**不得**给它加与之冲突的 cursor 类。禁用态由 `disabled:cursor-not-allowed` 负责 —— 它的特异性高于这条基线规则。
+- **按钮光标由 `style.css` 的基线规则统一提供**（`button:not(:disabled) { cursor: pointer }`，Tailwind v4 的 preflight 删掉了 v3 的等价声明）。因此新写的裸 `<button>` **不需要**再写 `cursor-pointer`，也**不得**给它加与之冲突的 cursor 类。禁用态由 `disabled:cursor-not-allowed` 负责：`:not(:disabled)` 让两者不在同一个元素上竞争。**不要**把它简化成裸 `button { cursor: pointer }` —— 该基线规则是层外样式，按 CSS 级联层规则优先于 Tailwind 的层内工具类，**与特异性无关**，写成裸选择器会覆盖掉禁用态的 `not-allowed`。
 
 ## Review Focus
 

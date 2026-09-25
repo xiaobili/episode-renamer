@@ -25,7 +25,7 @@
 - 路由路径、API 路径与响应结构不变
 - 不做暗色主题
 
-- **按钮光标由 `style.css` 的基线规则统一提供**（`button:not(:disabled) { cursor: pointer }`，Tailwind v4 的 preflight 删掉了 v3 的等价声明）。因此新写的裸 `<button>` **不需要**再写 `cursor-pointer`，也**不得**给它加与之冲突的 cursor 类。禁用态由 `disabled:cursor-not-allowed` 负责 —— 它的特异性高于这条基线规则。
+- **按钮光标由 `style.css` 的基线规则统一提供**（`button:not(:disabled) { cursor: pointer }`，Tailwind v4 的 preflight 删掉了 v3 的等价声明）。因此新写的裸 `<button>` **不需要**再写 `cursor-pointer`，也**不得**给它加与之冲突的 cursor 类。禁用态由 `disabled:cursor-not-allowed` 负责：`:not(:disabled)` 让两者不在同一个元素上竞争。**不要**把它简化成裸 `button { cursor: pointer }` —— 该基线规则是层外样式，按 CSS 级联层规则优先于 Tailwind 的层内工具类，**与特异性无关**，写成裸选择器会覆盖掉禁用态的 `not-allowed`。
 
 ## Review Focus
 
