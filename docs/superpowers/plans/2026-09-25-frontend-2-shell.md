@@ -1949,6 +1949,8 @@ cd .. && git add frontend/dist && \
 
 **为什么按阶段而不是按任务提交**：本系列 29 个任务几乎每个都会重建 dist（约 400 KB/new commit，含字体二进制），逐任务提交会给仓库历史增加约 12 MB 且无法在不改写历史的前提下回收。阶段边界是一个「可构建、可运行、可部署」的完整状态，足够。
 
+4. 跑一次 `cd frontend && node scripts/check-sfc-compile.mjs` —— 本阶段新建但尚未接线的组件不在 Vite 的模块图里，`npm run build` 不会编译它们（脚本在第一期 Task 7 建立）。
+
 **任务内的纪律**：计划里每个任务给出的 `git add <具体文件>` 列表都**不含** dist，照做即可。构建后 dist 会在工作区里显示为已修改但未暂存 —— 这**不影响**任务评审，因为评审包用的是 BASE..HEAD 的**提交**区间，不是工作区。不要去 `git checkout` 还原 dist（Task 1 的实现者那样做是多余的），也不要顺手 `git add` 它。
 
 ## Self-Review

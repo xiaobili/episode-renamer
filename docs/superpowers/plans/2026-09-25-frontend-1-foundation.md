@@ -1384,7 +1384,90 @@ cd frontend && grep -rn "AppButton\|AppInput\|AppSelect\|AppCheckbox\|AppBadge\|
 
 预期：**只有一行** —— `src/App.vue` 引用 `BrandMark`。六个 UI 原语本期不接调用方（spec §16 阶段 2 的完成判据就是「六个组件就位，尚无调用方」），第三期才落地使用。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: 建编译校验脚本，覆盖「构建不会编译的文件」**
+
+**为什么必须做这一步**：Vite 只打包从入口**可达**的模块。本期新建的六个 UI 原语**刻意没有调用方**，因此它们不在模块图里 —— `npm run build` 通过**不证明**它们能编译。`AppButton` / `AppInput` / `AppSelect` 的语法错误、模板里的非法指令、`<script setup>` 里调用的未定义函数，构建都不会报错，要到第二、三期第一次 import 时才炸。
+
+创建 `frontend/scripts/check-sfc-compile.mjs`：
+
+```js
+// 编译校验：把 src/ 下每个 .vue 都过一遍 vue/compiler-sfc。
+//
+// 为什么需要它：Vite 只打包从入口**可达**的模块。未被 import 的组件不在模块图里，
+// 因此 `npm run build` 通过**不能证明**它能编译 —— 一个尚未接线的组件里若有语法
+// 错误、模板里引用了不存在的指令、或 <script setup> 里调用了未定义的函数，构建
+// 不会报任何错；要到它第一次被 import 时才炸。
+//
+// 本项目第一期会先建好六个 UI 原语而**刻意不接线**（第二、三期才逐个换上去），
+// 所以这个盲区会持续数期。每一次「新建了组件但还没有调用方」之后都应该跑一次。
+//
+// 用法：cd frontend && node scripts/check-sfc-compile.mjs
+// 退出码非 0 表示有文件编译失败，失败清单打印在 stdout。
+
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
+
+const SRC = 'src'
+
+function walk(dir) {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) return walk(path)
+    return path.endsWith('.vue') ? [path] : []
+  })
+}
+
+let failed = 0
+
+for (const file of walk(SRC)) {
+  const source = readFileSync(file, 'utf8')
+  const { descriptor, errors } = parse(source, { filename: file })
+  const problems = [...errors]
+
+  try {
+    if (descriptor.scriptSetup || descriptor.script) {
+      compileScript(descriptor, { id: file })
+    }
+    if (descriptor.template) {
+      const result = compileTemplate({
+        source: descriptor.template.content,
+        filename: file,
+        id: file,
+      })
+      problems.push(...result.errors)
+    }
+  } catch (error) {
+    problems.push(error)
+  }
+
+  if (problems.length) {
+    failed += 1
+    console.log('FAIL', file)
+    for (const problem of problems) {
+      console.log('    ', String(problem).split('\n')[0])
+    }
+  } else {
+    console.log('OK  ', file)
+  }
+}
+
+console.log(failed === 0 ? '\n全部 SFC 可编译' : `\n${failed} 个文件编译失败`)
+process.exitCode = failed === 0 ? 0 : 1
+
+```
+
+运行：
+
+```bash
+cd frontend && node scripts/check-sfc-compile.mjs
+```
+
+预期：每个 `.vue` 打印一行 `OK`，最后一行 `全部 SFC 可编译`，退出码 `0`。此时 `src/` 下应有 18 个 `.vue`（含六个原语）。
+
+**这个脚本要提交进仓库**，不是一次性工具 —— 第二、三期还会继续新建「先建后接线」的组件，同样的盲区会重复出现。每次新建了尚无调用方的组件之后都跑一次。
+
+- [ ] **Step 7: 提交**
 
 ```bash
 git add frontend/src/components/ui/AppCheckbox.vue frontend/src/components/ui/AppBadge.vue frontend/src/components/ui/AppPanel.vue
@@ -1418,6 +1501,8 @@ cd .. && git add frontend/dist && \
 **为什么 dist 需要跟踪**：`backend/app/main.py:60-73` 会把 `frontend/dist` 挂成 `/assets` 并对未知路径回退到 `dist/index.html` —— 也就是 `python run.py` 的单端口模式（Dockerfile 里反而是 node 阶段现构建，不用仓库里的 dist）。所以 dist 必须保持与源码一致，否则从检出直接起后端会serve 一个过期的前端。
 
 **为什么按阶段而不是按任务提交**：本系列 29 个任务几乎每个都会重建 dist（约 400 KB/new commit，含字体二进制），逐任务提交会给仓库历史增加约 12 MB 且无法在不改写历史的前提下回收。阶段边界是一个「可构建、可运行、可部署」的完整状态，足够。
+
+4. 跑一次 `cd frontend && node scripts/check-sfc-compile.mjs` —— 本阶段新建但尚未接线的组件不在 Vite 的模块图里，`npm run build` 不会编译它们（脚本在第一期 Task 7 建立）。
 
 **任务内的纪律**：计划里每个任务给出的 `git add <具体文件>` 列表都**不含** dist，照做即可。构建后 dist 会在工作区里显示为已修改但未暂存 —— 这**不影响**任务评审，因为评审包用的是 BASE..HEAD 的**提交**区间，不是工作区。不要去 `git checkout` 还原 dist（Task 1 的实现者那样做是多余的），也不要顺手 `git add` 它。
 
