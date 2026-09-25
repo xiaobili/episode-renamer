@@ -666,12 +666,22 @@ cd frontend && npm run build && \
 # ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器；
 # ③ 类名列表若照 CSS 的转义写法抄（`"hover\\:bg-accent-hover"`），bash 解析后
 #    会多出一层反斜杠，同样匹配不到。
-# 剥掉 CSS 里的反斜杠再做固定串匹配，既不漏也不误报；`--` 是必需的，否则
-# `-translate-y-1/2` 这类以 `-` 开头的类名会被 grep 当成选项而报错。
-# 列表里一律写**未转义**的原样类名。
+# 剥掉 CSS 里的反斜杠再做固定串匹配；`--` 是必需的，否则 `-translate-y-1/2`
+# 这类以 `-` 开头的类名会被 grep 当成选项而报错。
+#
+# **这个闸门能证明什么、不能证明什么**（不要过度信任它）：
+#   · 能抓：拼写与真实类名不同的错误 —— `bg-acccent`、`rounded-[9px]`、
+#     `disabled:opacity-44` 都会归零。
+#   · 抓不到：**截断型**写法 —— `rounded-[8p`、`hover:bg-accent-hove` 仍是真实
+#     类名的子串，会假通过。
+#   · 分不清：`bg-sunken` 与 `hover:bg-sunken`（子串匹配）。所以下面列表里必须写
+#     **组件实际使用的完整形式**，否则会因命中带前缀的那个而假通过。
+#   · 不用正则加锚点（`\.$c(\{|:)`）的原因：任意值类的 `[` `]` `.` 在 ERE 里需要
+#     再转义一层，那比它要检查的东西更容易出错。
+# 列表里一律写**未转义**的、组件里真实出现过的完整类名。
   for c in "bg-accent" "hover:bg-accent-hover" "bg-danger" "hover:bg-danger-hover"  \
-           "border-line-strong" "bg-sunken" "rounded-[8px]" "whitespace-nowrap"  \
-           "active:scale-[.98]" "disabled:opacity-45" "ring-offset-canvas"; do
+           "border-line-strong" "hover:bg-sunken" "rounded-[8px]" "whitespace-nowrap"  \
+           "active:scale-[.98]" "disabled:opacity-45" "focus-visible:ring-offset-canvas"; do
     n=$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)
     printf "%-40s %s\n" "$c" "$n"
   done
@@ -1137,7 +1147,7 @@ const selectId = computed(() => props.id || `select-${generatedId}`)
 ```bash
 cd frontend && npm run build && \
 # 注意 `sed 's/\\//g' | grep -oF --` 的写法与未转义的类名列表 —— 理由见 Task 4 Step 2。
-  for c in "border-border-control" "placeholder:text-ink-3" "ring-accent/35"  \
+  for c in "border-border-control" "placeholder:text-ink-3" "focus-visible:ring-accent/35"  \
            "focus-visible:border-accent" "appearance-none" "pr-8" "-translate-y-1/2"  \
            "text-ink-2" "text-ink-3" "text-danger"; do
     n=$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)
