@@ -25,6 +25,8 @@
 - 路由路径、API 路径与响应结构不变
 - 不做暗色主题
 
+- **按钮光标由 `style.css` 的基线规则统一提供**（`button:not(:disabled) { cursor: pointer }`，Tailwind v4 的 preflight 删掉了 v3 的等价声明）。因此新写的裸 `<button>` **不需要**再写 `cursor-pointer`，也**不得**给它加与之冲突的 cursor 类。禁用态由 `disabled:cursor-not-allowed` 负责 —— 它的特异性高于这条基线规则。
+
 ## Review Focus
 
 1. **`prefers-reduced-motion` 兜底不能漏掉任何一种动效承载方式** —— 本项目的动效分布在三个地方：Tailwind 的 `transition-*` / `animate-*` 工具类、`AppModal` 与 `Toast` 的 `<style>` 块里的 `transiton`、以及 `ExecutingOverlay` 与 `AppButton` 的 `animate-spin`。兜底用的是 `*, *::before, *::after` 通配选择器 + `!important`，能覆盖全部三者。期望：系统开启「减弱动态效果」后，模态直接出现/消失、Toast 不再位移、`loading` 图标不再旋转，**且功能完全不受影响**。→ Task 4

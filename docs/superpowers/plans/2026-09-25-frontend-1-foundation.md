@@ -579,6 +579,7 @@ git commit -m "feat(frontend): 用 SVG 品牌标记替换 emoji, 换 favicon"
 
 **Files:**
 - Create: `frontend/src/components/ui/AppButton.vue`
+- Modify: `frontend/src/style.css`（补一条按钮光标的基线规则，见 Step 2 的说明）
 
 **Interfaces:**
 - Consumes: 新 token `accent` / `accent-hover` / `danger` / `danger-hover` / `line-strong` / `surface` / `sunken` / `ink` / `ink-2` / `canvas`（Task 2）
@@ -654,6 +655,26 @@ defineProps({
 - `aria-busy` 用 `undefined` 而不是 `false` —— Vue 会把 `undefined` 从 DOM 里移除属性，不会给每个按钮挂上 `aria-busy="false"` 的噪音。
 - `transition-colors` 而非 `transition-all` —— spec §11 只要求色彩/边框过渡 150ms；`active:scale-[.98]` 按 spec 是「即时」，不该被过渡拖慢。
 
+- [ ] **Step 2: 在 `frontend/src/style.css` 里恢复按钮光标基线**
+
+Tailwind v4 的 preflight **删掉了** v3 里那条 `button { cursor: pointer }`（实测 4.3.3 的 `preflight.css` 全文没有任何 button 光标声明）。后果：改造后所有按钮都会退回浏览器的默认箭头光标 —— 而改造前的应用有 **9 处手写 `cursor-pointer`**（`App.vue` / `ScanPanel` / `TemplateConfig` / `BrowseDialog`），说明「按钮是可点的」是这个应用明确的视觉意图；设计里也专门规定了 `disabled:cursor-not-allowed`。
+
+在 `style.css` 的 `button { font-family: inherit; }` 之后加：
+
+```css
+/* Tailwind v4 的 preflight 移除了 v3 的 `button { cursor: pointer }`，
+   而本应用的 <button> 全部是可点击控件（改造前有 9 处手写 cursor-pointer）。
+   在基线上恢复一次，胜过在 15+ 个裸 <button> 与每个原语里各写一遍 ——
+   而且新写的按钮不会漏。
+   :not(:disabled) 让 Tailwind 的 `disabled:cursor-not-allowed` 继续生效：
+   该工具类的特异性 (0,2,0) 高于本规则 (0,1,1)。 */
+button:not(:disabled) {
+  cursor: pointer;
+}
+```
+
+因此 `AppButton` 的基类串**不需要**再加 `cursor-pointer`（加了是冗余）。第二、三期新写的裸 `<button>` 同样不需要 —— 但**不得**给它们加与基线冲突的 cursor 类。
+
 - [ ] **Step 2: 构建并校验变体类名全部生成**
 
 ```bash
@@ -685,6 +706,8 @@ cd frontend && npm run build && \
     n=$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)
     printf "%-40s %s\n" "$c" "$n"
   done
+  echo "--- 按钮光标基线（应为 1）---" && \
+  grep -o "cursor:pointer" dist/assets/*.css | wc -l
 ```
 
 预期：全部 ≥ `1`。
