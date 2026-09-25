@@ -607,6 +607,8 @@ spec §3.4 实测的两项零值（`aria-*` 0 处、`focus-visible` 0 处）在�
 - Consumes: 前三期的全部产物
 - Produces: 无新接口；表格容器新增 `aria-busy`、表格元素新增 `aria-label`
 
+**本任务还要补一处键盘可达性缺口**（第三期 Task 6 的评审发现，brief 级别遗留）：`BrowseDialog.vue` 的目录项用 `@dblclick="navigate(d.path)"` 下钻，而该事件**只有鼠标能触发** —— 键盘用户能移动焦点、能选中目录（Enter 触发 `click`），但**无法进入子目录**，面包屑又只能往上。修法：把「下钻」也接到键盘上，例如让 `onListKeydown` 处理 `ArrowRight`，或在聚焦项上按 `Enter` 时改为下钻（并据此决定「选中」是否改用 Space）。`BrowseDialog` 的其余交互（焦点在按钮间循环、Esc 归位）已在第三期实测通过，不要动。
+
 - [ ] **Step 1: 审计 —— 找出所有缺 `focus-visible` 的原生控件**
 
 ```bash
