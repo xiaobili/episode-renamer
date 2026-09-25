@@ -345,39 +345,47 @@ input, select, textarea {
 
 注意：**不要**保留 `--color-secondary: #7C3AED` —— 它是零引用的死 token（spec §3.2 第 9 条）。
 
-- [ ] **Step 2: 构建并校验新旧 token 都生成**
+- [ ] **Step 2: 构建并校验新 token 的**变量**都落到 `:root`**
 
 ```bash
 cd frontend && npm run build && \
-  for c in bg-canvas bg-surface bg-sunken text-ink text-ink-2 text-ink-3 \
-           border-line border-line-strong border-border-control \
-           bg-accent bg-accent-soft bg-warn-soft bg-danger bg-danger-soft \
-           ring-accent ring-offset-canvas shadow-overlay \
-           bg-primary text-text border-border bg-surface-muted \
-           bg-success-light text-success text-warning text-error; do
-    n=$(grep -o "\.$c{" dist/assets/*.css | wc -l)
-    printf "%-24s %s\n" "$c" "$n"
-  done
+  grep -oE -- "--color-(canvas|surface|sunken|line|line-strong|border-control|ink|ink-2|ink-3|accent|accent-hover|accent-soft|warn|warn-soft|danger|danger-hover|danger-soft):[^;}]*" dist/assets/*.css | sort -u && \
+  echo "--- 阴影与字体 ---" && \
+  grep -oE -- "--(shadow-overlay|font-sans|font-mono):[^;}]*" dist/assets/*.css | sort -u
 ```
 
-预期：每一行都是 `1`（或更大）。任何一行是 `0` 说明该类名不会被当前源码用到，属正常 —— 但**新 token 那一组**（前 15 个）如果为 `0`，说明 `@theme` 里写错了名字，必须修。
+预期：上面共打印出 **17 条** `--color-*` 变量 + **3 条** 阴影/字体变量，全部非空。例如应看到 `--color-accent:#0f766e`、`--color-sunken:#edeff1`、`--color-border-control:#8a9199`。
 
-- [ ] **Step 3: 确认过渡别名在运行时可解析**
+**这里查的是「变量」而不是「工具类」，是本节的关键。** Tailwind v4 的 `@theme` 会无条件把所有主题变量写进 `:root`，但**只为在源码里出现过的候选类名生成工具类**。本期 Task 2 只改 `style.css`，还没有任何组件使用新 token，所以下面这些工具类此时**必然是 `0`**，这是正常的，不是 bug：
 
 ```bash
-cd frontend && grep -o -- "--color-primary:[^;]*" dist/assets/*.css && \
-  grep -o -- "--color-accent:[^;]*" dist/assets/*.css
+# 全部为 0 是正确的 —— 新 token 要等到 Task 3 起的组件改造才会被用到
+for c in bg-canvas text-ink-2 border-border-control bg-sunken bg-accent; do
+  printf "%-24s %s\n" "$c" "$(grep -o "\.$c{" dist/assets/*.css | wc -l)"
+done
+```
+
+**不要去「修」这些 0** —— 它们不是错误，而是 Tailwind 按需生成的表现。若你去改 `@theme` 里的名字来「让它们出现」，反而会破坏后面的所有任务。
+
+- [ ] **Step 3: 确认过渡别名既生成工具类、又能在运行时可解析**
+
+```bash
+cd frontend && echo "--- 别名的工具类必须存在（旧组件还在用）---" && \
+  for c in bg-primary text-text border-border bg-surface-muted bg-success-light text-warning; do
+    printf "%-24s %s\n" "$c" "$(grep -o "\.$c{" dist/assets/*.css | wc -l)"
+  done && \
+  echo "--- 别名变量本身 ---" && \
+  grep -oE -- "--color-(primary|primary-hover|primary-light|bg|surface-muted|border|border-strong|text|text-secondary|text-muted|text-faint|success|success-light|warning|warning-light|error|error-light):[^;}]*" dist/assets/*.css | sort -u
 ```
 
 预期：
 
-```
---color-primary:var(--color-accent)
---color-border:#e2e5e8          （或 --color-border:var(--color-line)，两种写法都对）
---color-accent:#0f766e
-```
+- 第一组六个类名的计数**都 ≥ 1** —— 它们由仍未改造的 11 个旧组件使用，别名层一旦生效就必然生成。
+- 第二组打印出 **17 条**别名变量，形如 `--color-primary:var(--color-accent)`、`--color-border:var(--color-line)`、`--color-success:var(--color-ink-2)`。
 
 只要 `--color-primary` 与 `--color-accent` 都以 CSS 变量形式出现在产物里，别名就能在运行时解析。
+
+**若第一组出现 `0`：** 说明别名块里对应的名字写错了（比如把 `--color-text` 写成 `--color-ink`），旧组件会静默丢掉样式 —— 按钮变透明、边框消失。逐行对照 Step 1 的别名块修。
 
 - [ ] **Step 4: 视觉确认旧界面在新配色下仍然可读**
 
