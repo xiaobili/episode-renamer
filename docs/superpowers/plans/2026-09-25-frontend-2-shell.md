@@ -50,6 +50,16 @@
 
 - **按钮光标由 `style.css` 的基线规则统一提供**（`button:not(:disabled) { cursor: pointer }`，Tailwind v4 的 preflight 删掉了 v3 的等价声明）。因此新写的裸 `<button>` **不需要**再写 `cursor-pointer`，也**不得**给它加与之冲突的 cursor 类。禁用态由 `disabled:cursor-not-allowed` 负责：`:not(:disabled)` 让两者不在同一个元素上竞争。**不要**把它简化成裸 `button { cursor: pointer }` —— 该基线规则是层外样式，按 CSS 级联层规则优先于 Tailwind 的层内工具类，**与特异性无关**，写成裸选择器会覆盖掉禁用态的 `not-allowed`。
 
+## 本任务需携带的前序评审发现
+
+**F2-T1 评审的 Minor（在你的改动之后会变成可达）**：`stores/workspace.js` 的 `browseConfirm()` 把结果写到 `path.value`（即**当前**源的路径），而浏览对话框自己的来源被单独记在 `browse.source` 里。两者的不变式是隐式的：今天的入口只有 ScanPanel 内部，而 ScanPanel 的渲染受 `v-if="source === 'local'"` 约束，所以它们总是一致。
+
+**本任务把源切换搬到顶栏之后，那个窗口就可达了** —— 顶栏的 segmented 可以在数据源切换的 180ms `mode="out-in"` 离场过渡期内被点击，此时「正在离场的 ScanPanel」仍可点、而 `ws.activeSource` 已经翻转，于是一次浏览选择会被写进**另一个源**的路径。
+
+如果你在实现顶栏时发现这个窗口真的可达，顺手收紧 `browseConfirm()`：改成写 `sourceStates[browse.source].path = pick.path`，或在 `browse.source !== activeSource.value` 时直接 return。这不是本任务的验收项，只是把评审记录带过来。
+
+---
+
 ## Review Focus
 
 1. **`min-h-0` 链断了任意一环** —— 链路上共有 5 个容器（`App.vue` 的路由出口 → `HomeView` 根 → 中段 → `WorkArea` → `FileTable` 根）。断任何一环，表格都不再内部滚动，而是把整页撑高、底栏被推到屏外 —— 正是本次重构要消灭的那个 bug。期望：150cm 高的长表格下，底栏仍钉在视口底部。

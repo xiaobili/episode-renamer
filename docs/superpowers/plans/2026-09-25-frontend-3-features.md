@@ -1148,6 +1148,30 @@ git commit -m "refactor(frontend): FileTable 改用 UI 原语与 AppBadge, 清�
 - Consumes: `AppModal`（第一期 Task 5，已支持 `title` / `zIndex` / `closeOnOverlay`）、`AppButton` / `AppBadge`（第一期）
 - Produces: 三个组件的 props / emits **全部保持不变**；卡片样式改为 `rounded-[12px] shadow-overlay`
 
+**本步必须一并修掉一个既有的、用户可见的潜伏 bug（第一期 F2-T1 评审发现）**：`AppModal` 在按 `Esc` 或点遮罩时会 emit `update:modelValue` 且值为 `false`；`ConfirmDialog` 目前把它原样转发给父组件，父组件只把 `ws.confirm.open` 置为 false，**从不调用 `resolveConfirm`** —— 于是 `askConfirm()` 返回的 promise **永远悬空**，`clearAll()` 的 `.then()` 再也不会执行：用户点「清空」后在确认框上按 Esc，清空会**静默地什么都不做**。
+
+修法：在 `AppModal` 的 `@update:model-value` 处理里，把「值为假」当作用户取消，转发时补一次 `cancel`：
+
+```html
+  <AppModal
+    :model-value="modelValue"
+    title="确认执行"
+    z-index="55"
+    @update:model-value="onModalUpdate"
+  >
+```
+
+```js
+// AppModal 在 Esc / 点遮罩时会 emit(false)。那不是「确认」，必须让上层拿到 cancel，
+// 否则 askConfirm() 的 promise 永远不 resolve，调用方的 .then() 静默不执行。
+function onModalUpdate(value) {
+  emit('update:modelValue', value)
+  if (!value) emit('cancel')
+}
+```
+
+`ResultDialog` 与 `BrowseDialog` 不需要这一步 —— 它们没有待 resolve 的 promise，关闭就是关闭。但 `BrowseDialog` 的 `confirm()` 仍要保证只在真正确认时 emit `confirm`。
+
 - [ ] **Step 1: 重写 `frontend/src/components/ConfirmDialog.vue`**
 
 ```vue
