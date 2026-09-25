@@ -1,34 +1,78 @@
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #2563EB;
-  --color-primary-hover: #1D4ED8;
-  --color-primary-light: #EFF6FF;
-  --color-secondary: #7C3AED;
-  --color-success: #16A34A;
-  --color-success-light: #F0FDF4;
-  --color-warning: #CA8A04;
-  --color-warning-light: #FEF9C3;
-  --color-error: #DC2626;
-  --color-error-light: #FEF2F2;
+  /* ---------- 背景三级：用明度差做层级，不用阴影 ---------- */
+  --color-canvas:  #F6F7F8;  /* 页面底，比纯白低一档 */
+  --color-surface: #FFFFFF;  /* 面板 / 表格底 */
+  --color-sunken:  #EDEFF1;  /* 凹陷：表头、代码块、骨架 */
 
-  --color-bg: #FAFAFA;
-  --color-surface: #FFFFFF;
-  --color-surface-muted: #F4F4F5;
-  --color-border: #E4E4E7;
-  --color-border-strong: #D4D4D8;
+  /* ---------- 边界三级：角色不同，不可互换 ----------
+     line / line-strong 只做装饰性分隔，对白底 1.52:1，做 input 边框不合格。
+     border-control 对白底 3.19:1，满足 WCAG 1.4.11 非文本对比度 3:1。 */
+  --color-line:           #E2E5E8;
+  --color-line-strong:    #CDD2D7;
+  --color-border-control: #8A9199;
 
-  --color-text: #18181B;
-  --color-text-secondary: #52525B;
-  --color-text-muted: #71717A;
-  --color-text-faint: #A1A1AA;
+  /* ---------- 文字三级：无第四级；禁用态用 opacity-45 ---------- */
+  --color-ink:   #15181B;
+  --color-ink-2: #4B5257;
+  --color-ink-3: #6B7278;
 
-  /* fontsource 声明的族名是 "Geist Variable" / "Geist Mono Variable"，不是 "Geist"。
+  /* ---------- 强调：全站唯一 ---------- */
+  --color-accent:       #0F766E;
+  --color-accent-hover: #0B5F59;
+  --color-accent-soft:  #E6F4F2;
+
+  /* ---------- 语义：只留告警与危险 ----------
+     强调色占用了绿系，「成功」不再用绿色表达，见 spec §5.2。 */
+  --color-warn:         #8A5F00;
+  --color-warn-soft:    #FDF6E3;
+  --color-danger:       #B3261E;
+  --color-danger-hover: #8E1D17;
+  --color-danger-soft:  #FDECEA;
+
+  /* ---------- 字体 ----------
+     fontsource 声明的族名是 "Geist Variable" / "Geist Mono Variable"，不是 "Geist"。
      照抄 "Geist" 会静默回退到中文字体，且没有任何报错。 */
   --font-sans: "Geist Variable", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
                "Noto Sans SC", system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono Variable", "JetBrains Mono", ui-monospace,
                "SFMono-Regular", Menlo, monospace;
+
+  /* ---------- 阴影：只有真正浮起于内容之上的元素才用 ---------- */
+  --shadow-overlay: 0 8px 28px -6px rgb(21 24 27 / 0.14), 0 2px 6px -2px rgb(21 24 27 / 0.08);
+}
+
+/* ==========================================================================
+   过渡别名层 —— 第四期删除
+   --------------------------------------------------------------------------
+   第二、三期会逐个组件改用上面的新 token 名。在那之前，这一层让仍未改造的
+   11 个旧组件继续正常工作，使「每一期结束应用都可构建可运行」成立。
+
+   映射中两处是有意的降级，不是随手对应：
+     success / success-light → ink-2 / sunken   让出绿系给强调色（spec §5.2）
+     text-faint              → ink-3            文字只有三级，禁用态靠 opacity-45
+
+   删除前提：第四期 Task 8 的 grep 校验必须零命中。
+   ========================================================================== */
+@theme {
+  --color-primary:        var(--color-accent);
+  --color-primary-hover:  var(--color-accent-hover);
+  --color-primary-light:  var(--color-accent-soft);
+  --color-bg:             var(--color-canvas);
+  --color-surface-muted:  var(--color-sunken);
+  --color-border:         var(--color-line);
+  --color-border-strong:  var(--color-line-strong);
+  --color-text:           var(--color-ink);
+  --color-text-secondary: var(--color-ink-2);
+  --color-text-muted:     var(--color-ink-3);
+  --color-text-faint:     var(--color-ink-3);
+  --color-success:        var(--color-ink-2);
+  --color-success-light:  var(--color-sunken);
+  --color-warning:        var(--color-warn);
+  --color-warning-light:  var(--color-warn-soft);
+  --color-error:          var(--color-danger);
+  --color-error-light:    var(--color-danger-soft);
 }
 
 html, body, #app {
@@ -41,8 +85,8 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.6;
-  color: var(--color-text);
-  background: var(--color-bg);
+  color: var(--color-ink);
+  background: var(--color-canvas);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -68,10 +112,10 @@ input, select, textarea {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-strong);
+  background: var(--color-line-strong);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
+  background: var(--color-border-control);
 }
