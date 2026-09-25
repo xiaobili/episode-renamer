@@ -1637,6 +1637,8 @@ git commit -m "refactor(frontend): Toast 适配新 token 与 role 语义"
 - Consumes: `useSettingsStore()` 的 `episodePadDigits` / `seasonPadDigits`（Task 2）；后端 `RenamePreviewRequest` / `RenameExecuteRequest` 的 `episode_pad_digits` / `season_pad_digits` 两个可选整数字段（后端计划 Task 3）
 - Produces: `buildPreview()` 与 `executeAction()` 的请求体各多两个字段
 
+**修法的第二半（F3-T5 的实现者实测发现，容易漏）**：光让 `buildPreview()` 发送 `overrides` 还不够 —— 它重建 `previewRows` 时把每行写成 `override: {}`，所以**用户手动点一次「预览」就会把已编辑的 override 全部抹掉**（实测：编辑后点预览会重新取数并丢弃改动）。因此 `buildPreview()` 重建行时**必须保留同 id 旧行的 `override`**（例如按 `original_path` / id 从旧 `previewRows` 里取回）。两半缺一，症状都是「编辑白做」。
+
 **本任务还要一并修掉一个既存的显示缺陷**（第二期 Task 6 的实现者抓取请求体后发现）：`buildPreview()` 的载荷**不含 `overrides`**，而 `executeAction()` 含。后果是用户在表格里改了某行的「剧名 / 季 / 集」后，`updatePreview()` 写进 `row.override` 的值**只影响执行、不影响预览列** —— 预览显示的文件名与真正写入磁盘的不一致。修法：`buildPreview()` 也按 `previewRows` 组装一份 `overrides` 并随请求发出，与 `executeAction()` 的组装逻辑保持一致（同一份 `if (r.override) overrides[r.id] = r.override`）。本任务本来就在改这两个请求体，顺理成章。
 
 - [ ] **Step 1: 先确认后端已支持这两个字段**
