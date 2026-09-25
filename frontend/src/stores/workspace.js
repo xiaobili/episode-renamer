@@ -13,11 +13,13 @@ import {
 import { useFilesStore } from './files'
 import { useTemplateStore } from './template'
 import { useOpenListStore } from './openlist'
+import { useSettingsStore } from './settings'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const filesStore = useFilesStore()
   const tplStore = useTemplateStore()
   const olStore = useOpenListStore()
+  const settingsStore = useSettingsStore()
 
   const activeSource = ref('local')
 
@@ -83,11 +85,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function initialize() {
+    // 冲突策略：用设置页保存的默认值作初值。用户之后在底栏改的是本次会话的
+    // 临时值，不回写设置（spec §12.2）。
+    conflictStrategy.value = settingsStore.conflictStrategy
+
     const res = await getPresets()
-    if (res.data?.data) {
-      tplStore.presets = res.data.data
-      const def = tplStore.presets.find(p => p.id === tplStore.currentPresetId)
-      if (def) tplStore.setPreset(def)
+    const presets = res.data?.data || []
+    if (presets.length) {
+      tplStore.presets = presets
+      // 优先用设置页指定的默认模板；它失效时（预设被删或改名）退回模板 store
+      // 自带的默认，而不是留下一个空的 currentTemplate。
+      const wanted = settingsStore.defaultTemplateId
+      const preset =
+        presets.find(p => p.id === wanted) ||
+        presets.find(p => p.id === tplStore.currentPresetId)
+      if (preset) tplStore.setPreset(preset)
     }
 
     olForm.server_url = olStore.serverUrl || ''
