@@ -82,7 +82,7 @@
     @error="(m) => ws.showToast(m, 'error')"
   />
 
-  <Toast v-if="ws.toast.show" :show="ws.toast.show" :type="ws.toast.type" :msg="ws.toast.msg" />
+  <Toast :show="ws.toast.show" :type="ws.toast.type" :msg="ws.toast.msg" />
 </template>
 
 <script setup>

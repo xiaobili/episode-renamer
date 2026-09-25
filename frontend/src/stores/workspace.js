@@ -223,9 +223,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return
     }
     // 写回 browse.source 那一份，而不是 path.value。顶栏的源切换让 activeSource
-    // 可以在对话框打开期间改变：source-fade 的 180ms 离场过渡里，旧的 ScanPanel
-    // 仍然可点，用户点它的「浏览」时 activeSource 已经翻到另一源了。path.value
-    // 会写到**当前**源上，于是本地绝对路径会落进 openlist 的状态（反向同理）。
+    // 可以在对话框打开期间改变：当初促成这道防护的是那个 180ms 的源切换离场过渡
+    // —— 旧的 ScanPanel 在离场期间仍然可点，用户点它的「浏览」时 activeSource 已经
+    // 翻到另一源了；path.value 会写到**当前**源上，于是本地绝对路径会落进 openlist
+    // 的状态（反向同理）。离场过渡已随本次重构删除，这条路径不再那么容易被走到，
+    // 但这道防护是**防御性**的、代价极低，故保留：对话框常驻期间源仍可切换。
     sourceStates[browse.source].path = pick.path
     browse.open = false
   }
