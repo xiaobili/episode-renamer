@@ -351,6 +351,8 @@ git commit -m "feat(frontend): 新增设置 schema 纯函数模块与 node 断�
 - Create: `frontend/src/stores/settings.js`
 - Modify: `frontend/src/main.js`
 
+**若将来往 `openlist` 加子键，必须同时改三处**（Task 2 的评审发现）：`settingsSchema.js` 的 `defaultSettings`/`normalizeSettings`、`settings.js` 的 state 初始化、以及 `apply()` 里那三行显式赋值。`toObject()` 是展开的、会自动带上新子键，而 `apply()` 是显式枚举的 —— 只加 schema 不加 `apply()` 的症状正是「某个设置改了不生效」（写进 localStorage 了但读不回来），也正是本期存在要修的那类缺陷。
+
 **关于 `apply(data)` 的语义（Task 2 的实现者提出，此处记明以免误用）**：`apply` 是「**用这份数据替换全部设置**」，内部委派给 `normalizeSettings`，而后者是**对着默认值**逐字段合并的 —— 所以传入残缺对象意味着**其余字段回落默认值，而不是保持不变**。本任务与 Task 3 都传完整对象（`load()` 传 `readSettings()` 的结果、设置页传 `toObject()` 的快照），故无影响；但若将来有人想「只改一个字段」，**不能**用 `apply`，要自己合并后再传完整对象。这是刻意保留的语义（`load()` 正需要「替换」而非「补丁」），不是遗漏。
 
 **Interfaces:**
@@ -556,6 +558,8 @@ git commit -m "feat(frontend): 新增 settings store, 启动前加载持久化�
 **Interfaces:**
 - Consumes: `useSettingsStore()`（Task 2）；`AppPanel` / `AppInput` / `AppSelect` / `AppButton`（第一期）；`getPresets`（既有 api）
 - Produces: 无新接口
+
+**降级提示的措辞不要过度声称**（Task 2 的评审）：`settingsStore.storageAvailable` 表示「**启动时的探测成功了**」，不等于「写入一定持久化」—— 配额满或只读存储能通过探测，而 `writeSettings` 会静默吞掉失败。所以提示文案应说「当前浏览器可能无法保存设置」，不要承诺「设置不会被保存」，也不要写成「已保存」的反面保证。
 
 - [ ] **Step 1: 重写 `frontend/src/views/SettingsView.vue`**
 
