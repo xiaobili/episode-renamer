@@ -109,8 +109,18 @@ body {
   box-sizing: border-box;
 }
 
-button {
-  font-family: inherit;
+/* 这两条必须放进 @layer base。Tailwind v4 把工具类放在 `@layer utilities` 里，
+   而层外样式优先于任何层内样式，与特异性无关 —— 留在层外会让所有表单控件与按钮上的
+   `font-mono` 静默失效：模板输入框、变量芯片都算不出等宽字体栈，且没有任何报错。
+   base 层早于 utilities 层，故工具类能正常覆盖它。 */
+@layer base {
+  button {
+    font-family: inherit;
+  }
+
+  input, select, textarea {
+    font-family: inherit;
+  }
 }
 
 /* Tailwind v4 的 preflight 移除了 v3 的 `button { cursor: pointer }`，
@@ -118,13 +128,13 @@ button {
    在基线上恢复一次，胜过在 15+ 个裸 <button> 与每个原语里各写一遍 ——
    而且新写的按钮不会漏。
    :not(:disabled) 让 Tailwind 的 `disabled:cursor-not-allowed` 继续生效：
-   该工具类的特异性 (0,2,0) 高于本规则 (0,1,1)。 */
+   该工具类的特异性 (0,2,0) 高于本规则 (0,1,1)。
+
+   本条**故意留在层外**，不要顺手并进上面的 @layer base。它的行为靠
+   `:not(:disabled)` 守卫成立，与所在层无关；挪层是对一条当前工作正常的规则做
+   无谓变更，且会反过来让 utilities 层里的 cursor 工具类压过它。 */
 button:not(:disabled) {
   cursor: pointer;
-}
-
-input, select, textarea {
-  font-family: inherit;
 }
 
 ::-webkit-scrollbar {
