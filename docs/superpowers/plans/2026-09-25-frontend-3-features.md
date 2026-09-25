@@ -1165,7 +1165,7 @@ git commit -m "refactor(frontend): FileTable 改用 UI 原语与 AppBadge, 清�
 - Consumes: `AppModal`（第一期 Task 5，已支持 `title` / `zIndex` / `closeOnOverlay`）、`AppButton` / `AppBadge`（第一期）
 - Produces: 三个组件的 props / emits **全部保持不变**；卡片样式改为 `rounded-[12px] shadow-overlay`
 
-**本步必须一并修掉一个既有的、用户可见的潜伏 bug（第一期 F2-T1 评审发现）**：`AppModal` 在按 `Esc` 或点遮罩时会 emit `update:modelValue` 且值为 `false`；`ConfirmDialog` 目前把它原样转发给父组件，父组件只把 `ws.confirm.open` 置为 false，**从不调用 `resolveConfirm`** —— 于是 `askConfirm()` 返回的 promise **永远悬空**，`clearAll()` 的 `.then()` 再也不会执行：用户点「清空」后在确认框上按 Esc，清空会**静默地什么都不做**。
+**本步必须一并修掉一个既有的、用户可见的潜伏 bug（第一期 F2-T1 评审发现）**：`AppModal` 在按 `Esc` 或点遮罩时会 emit `update:modelValue` 且值为 `false`；`ConfirmDialog` 目前把它原样转发给父组件，父组件只把 `ws.confirm.open` 置为 false，**从不调用 `resolveConfirm`** —— 于是 `askConfirm()` 返回的 promise **永远悬空**，`clearAll()` 的 `.then()` 再也不会执行：**真实危害是 promise 永不 settle**：`confirmResolver` 一直挂着，`askConfirm()` 的调用方永远悬停（`doExecute()` 同理永远走不到执行），且下一次 `askConfirm` 会把它静默抛弃。注意 Esc 的可见结果（什么都没清）与「正常取消」相同，所以这个 bug 只是**看起来**像取消 —— 修好之后 Esc 仍是「关闭且不清空」，变的是 promise 会以 `false` settle、不再泄漏。**不要**把 Esc 改成「确认」。
 
 修法：在 `AppModal` 的 `@update:model-value` 处理里，把「值为假」当作用户取消，转发时补一次 `cancel`：
 
