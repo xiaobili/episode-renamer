@@ -48,6 +48,8 @@
 
 2. **§14「`index.html` → Geist 预加载」不实现**：Vite 会给 woff2 资源加内容哈希，`<link rel="preload">` 无法在 `index.html` 里写死路径。fontsource 的 CSS 已带 `font-display: swap`，且 `unicode-range` 保证浏览器只下载实际用到的子集（中文界面只需 latin + latin-ext，约 46 KB）。**不做**预加载，理由是收益为零、代价是一套构建期注入逻辑。
 
+- **源码文件的注释里不要写字面类名**（`.vue` / `.js`；`style.css` 的注释不受影响）。实测 Tailwind 4.3.3：CSS 入口文件注释里的 `border-line-strong` 不生成规则，而 **`.vue` 注释里的 `rounded-[12px]` 与 `grid-rows-[56px_1fr]` 各生成一条真实规则**。两个后果：①产出无人使用的死 CSS；②**类名闸门会因为「注释提过」而通过** —— 一个没有任何元素使用的类名，只要在源码注释里出现过就会命中，闸门于是为它开绿灯。需要提到某个类名时，**描述它而不要写字面量**（「两行 grid / 上方滚动区 / 下方 56px 底栏」而不是把类名抄一遍）。
+
 ## Review Focus
 
 以下是 spec 隐含、但没有任何现有检查会覆盖、且最可能咬到真实用户的输入与状态。每条的验证已挂到拥有该代码的任务里。
