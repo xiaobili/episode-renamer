@@ -375,9 +375,25 @@ cd frontend && rm -rf dist && npm run build && \
 
 ```bash
 # 全为 0 是正确的 —— 新 token 要到 Task 3 起的组件改造才会被用到
-for c in bg-canvas text-ink-2 border-border-control bg-sunken bg-accent; do
-  printf "%-24s %s\n" "$c" "$(grep -o "\\.$c{" dist/assets/*.css | wc -l)"
-done
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+  for c in "bg-canvas" "text-ink-2" "border-border-control" "bg-sunken" "bg-accent"; do
+  printf "%-34s %s\n" "$c" "$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)"
+  done
 ```
 
 **不要去「修」这些 0** —— 它们不是错误。若你去改 `@theme` 里的 token 名来「让它们出现」，会破坏后面所有任务。
@@ -390,279 +406,27 @@ done
 
 ```bash
 cd frontend && echo "--- 别名的工具类必须存在（旧组件还在用）---" && \
-  for c in bg-primary text-text border-border bg-surface-muted bg-success-light text-warning; do
-    printf "%-24s %s\n" "$c" "$(grep -o "\.$c{" dist/assets/*.css | wc -l)"
-  done && \
-  echo "--- 别名变量本身 ---" && \
-  grep -oE -- "--color-(primary|primary-hover|primary-light|bg|surface-muted|border|border-strong|text|text-secondary|text-muted|text-faint|success|success-light|warning|warning-light|error|error-light):[^;}]*" dist/assets/*.css | sort -u
-```
-
-预期：
-
-- 第一组六个类名的计数**都 ≥ 1** —— 它们由仍未改造的 11 个旧组件使用，别名层一旦生效就必然生成。
-- 第二组打印出 **17 条**别名变量，形如 `--color-primary:var(--color-accent)`、`--color-border:var(--color-line)`、`--color-success:var(--color-ink-2)`。
-
-只要 `--color-primary` 与 `--color-accent` 都以 CSS 变量形式出现在产物里，别名就能在运行时解析。
-
-**若第一组出现 `0`：** 说明别名块里对应的名字写错了（比如把 `--color-text` 写成 `--color-ink`），旧组件会静默丢掉样式 —— 按钮变透明、边框消失。逐行对照 Step 1 的别名块修。
-
-- [ ] **Step 4: 视觉确认旧界面在新配色下仍然可读**
-
-```bash
-cd frontend && npm run dev
-```
-
-打开 `http://localhost:5173/`，与 `screenshot/home.png` 逐项对照。
-
-预期（**布局必须逐像素一致，只有配色变化**）：
-- 页面底色由近白 `#FAFAFA` 变成 `#F6F7F8`（更冷一档）
-- 主按钮由蓝 `#2563EB` 变成深青绿 `#0F766E`
-- 表格「已解析」徽章由绿底绿字变成**灰底深灰字**（这是 spec §5.2 的有意降级，不是 bug）
-- 侧栏选中项由蓝底蓝字变成浅青绿底 `#E6F4F2` + 深青绿字
-- 所有输入框、复选框照常可交互、聚焦可见
-- **无任何元素丢失边框、变成透明、或错位**
-
-再打开 `http://localhost:5173/#/settings`，与 `screenshot/settings.png` 对照，判据相同。
-
-如果出现按钮变透明 / 边框消失，说明别名层的某个映射名写错了（对照 Step 1 的别名块逐行核对）。
-
-- [ ] **Step 5: 提交**
-
-```bash
-git add frontend/src/style.css
-git commit -m "feat(frontend): 重写设计 token, 加旧 token 过渡别名层"
-```
-
----
-
-### Task 3: 品牌标记 SVG + favicon
-
-替换 🎬 emoji（spec §3.5 第 12 条）。手绘一个极简几何标记：**圆角方框 + 内部向右箭头**，单色、两三个图元。
-
-**Files:**
-- Create: `frontend/src/components/BrandMark.vue`
-- Create: `frontend/public/favicon.svg`
-- Modify: `frontend/index.html:7`（favicon 行）
-- Modify: `frontend/src/App.vue:5`（emoji 方块换成 BrandMark）
-
-**Interfaces:**
-- Consumes: 无
-- Produces: `<BrandMark :size="Number" />` —— 无状态的纯展示 SVG 组件，颜色由 `currentColor` 决定（外层用 `class="text-accent"` 上色）；第二期 `AppTopBar` 与第四期 favicon 校验都依赖它
-
-- [ ] **Step 1: 创建 `frontend/src/components/BrandMark.vue`**
-
-```vue
-<template>
-  <svg
-    :width="size"
-    :height="size"
-    viewBox="0 0 24 24"
-    fill="none"
-    aria-hidden="true"
-    class="shrink-0"
-  >
-    <rect width="24" height="24" rx="6" fill="currentColor" />
-    <g
-      class="text-white"
-      stroke="currentColor"
-      stroke-width="1.75"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      <path d="M7.5 12h7.5" />
-      <path d="M12.5 9.25 15.25 12l-2.75 2.75" />
-    </g>
-  </svg>
-</template>
-
-<script setup>
-// 品牌标记：圆角方框 + 内部向右箭头（重命名 = 从「原名」指向「新名」）。
-// 单色几何，靠 currentColor 上色；<g class="text-white"> 只改变箭头自身的
-// currentColor，方框仍取外层颜色。
-defineProps({
-  size: { type: Number, default: 28 },
-})
-</script>
-```
-
-`aria-hidden="true"` 是必须的：标记旁边永远有可见的文字品牌名，标记本身对屏幕阅读器是噪音。
-
-- [ ] **Step 2: 创建 `frontend/public/favicon.svg`**
-
-`frontend/public/` 目录当前不存在，需要一并创建。几何与 BrandMark **完全一致**，这样地址栏图标和界面里的标记长得一样。
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
-  <rect width="24" height="24" rx="6" fill="#0F766E"/>
-  <g stroke="#FFFFFF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <path d="M7.5 12h7.5"/>
-    <path d="M12.5 9.25 15.25 12l-2.75 2.75"/>
-  </g>
-</svg>
-```
-
-favicon 是独立文件、无 CSS 上下文，所以颜色写死 `#0F766E`（即 `--color-accent`）。
-
-- [ ] **Step 3: 换掉 `index.html` 的 emoji favicon**
-
-把 `frontend/index.html` 第 7 行那一整行 `<link rel="icon" ...>` 替换为：
-
-```html
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-```
-
-**不加任何预加载 `<link>`** —— 理由见文档开头「对 spec 的两处修正」第 2 条。
-
-- [ ] **Step 4: 把侧栏的 emoji 方块换成 BrandMark**
-
-编辑 `frontend/src/App.vue`。把第 5 行：
-
-```html
-        <div class="w-10 h-10 bg-primary text-white rounded-lg flex items-center justify-center text-xl shrink-0">🎬</div>
-```
-
-替换为：
-
-```html
-        <BrandMark :size="40" class="text-primary" />
-```
-
-并在 `<script setup>` 里补上 import（放在 lucide 那行下面）：
-
-```js
-import { useRoute } from 'vue-router'
-import { FolderOpen, Settings } from 'lucide-vue-next'
-import BrandMark from './components/BrandMark.vue'
-```
-
-这里用 `text-accent`（**新** token）而不是 `text-primary`（过渡别名）：本期不动的是那 11 个**尚未改造的旧组件**，而这一行是新写的代码 —— 新代码一律用新 token，没有理由再去挂一个第四期要删的别名。`App.vue` 会在第二期整体重写，届时这一行原样保留即可。
-
-`App.vue` 在第二期会被整体重写为三段式 App Shell，本次改动只是让 emoji 债务提前结清一部分。
-
-- [ ] **Step 5: 构建并确认 emoji 已从 App.vue 消失**
-
-```bash
-cd frontend && npm run build && \
-  grep -c "🎬" src/App.vue; \
-  ls dist/favicon.svg
-```
-
-预期：
-- `grep -c "🎬" src/App.vue` 输出 `0`（且因为 `-c` 在零命中时退出码为 1，用 `;` 连接后续命令，别用 `&&`）
-- `ls dist/favicon.svg` 正常列出文件 —— 证明 `public/` 被 Vite 正确拷贝
-
-- [ ] **Step 6: 视觉确认**
-
-```bash
-cd frontend && npm run dev
-```
-
-打开 `http://localhost:5173/`。
-
-预期：
-- 侧栏左上角是**深青绿圆角方块 + 白色向右箭头**，不再是 🎬
-- 浏览器标签页图标是同一个标记（若没刷新，强制刷新 `Ctrl+Shift+R` 绕开 favicon 缓存）
-- 标题栏右侧的「Episode Renamer」文字与副标题位置未变，即 40px 见方的占位没有改变布局
-
-- [ ] **Step 7: 提交**
-
-```bash
-git add frontend/src/components/BrandMark.vue frontend/public/favicon.svg frontend/index.html frontend/src/App.vue
-git commit -m "feat(frontend): 用 SVG 品牌标记替换 emoji, 换 favicon"
-```
-
----
-
-### Task 4: AppButton 按钮原语
-
-按钮是使用最广、变体最多（当前 3 套手写变体散落 6 个文件）的原语，单独一个任务、单独一道评审门。
-
-**Files:**
-- Create: `frontend/src/components/ui/AppButton.vue`
-
-**Interfaces:**
-- Consumes: 新 token `accent` / `accent-hover` / `danger` / `danger-hover` / `line-strong` / `surface` / `sunken` / `ink` / `ink-2` / `canvas`（Task 2）
-- Produces:
-  ```js
-  props: {
-    variant: 'primary' | 'secondary' | 'danger' | 'ghost'   // default 'secondary'
-    size:    'sm' | 'md'                                    // default 'md'
-    loading: Boolean   // default false
-    disabled: Boolean  // default false
-    type:    'button' | 'submit' | 'reset'                   // default 'button'
-    block:   Boolean   // default false
-  }
-  ```
-  默认插槽放按钮文字；`loading` 时自动在文字前插入旋转图标。**无 emits** —— 点击事件靠 Vue 的 fallthrough 直接透传到根 `<button>`，调用方写 `@click` 即可
-- 第二期 `AppBottomBar`、第三期所有按钮改造、第四期 loading 态收尾都依赖它
-
-- [ ] **Step 1: 创建 `frontend/src/components/ui/AppButton.vue`**
-
-```vue
-<template>
-  <button
-    :type="type"
-    :disabled="disabled || loading"
-    :aria-busy="loading ? 'true' : undefined"
-    class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[8px] font-medium transition-colors duration-150 select-none active:scale-[.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:opacity-45 disabled:cursor-not-allowed"
-    :class="[VARIANT_CLASSES[variant], SIZE_CLASSES[size], block ? 'w-full' : '']"
-  >
-    <Loader2 v-if="loading" class="h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
-    <slot />
-  </button>
-</template>
-
-<script setup>
-import { Loader2 } from 'lucide-vue-next'
-
-const VARIANT_CLASSES = {
-  primary: 'bg-accent text-white hover:bg-accent-hover',
-  secondary: 'border border-line-strong bg-surface text-ink-2 hover:bg-sunken hover:text-ink',
-  danger: 'bg-danger text-white hover:bg-danger-hover',
-  ghost: 'text-ink-2 hover:bg-sunken hover:text-ink',
-}
-
-const SIZE_CLASSES = {
-  sm: 'h-8 px-3 text-[12px]',
-  md: 'h-9 px-4 text-[13px]',
-}
-
-defineProps({
-  variant: {
-    type: String,
-    default: 'secondary',
-    validator: (v) => ['primary', 'secondary', 'danger', 'ghost'].includes(v),
-  },
-  size: {
-    type: String,
-    default: 'md',
-    validator: (v) => ['sm', 'md'].includes(v),
-  },
-  loading: { type: Boolean, default: false },
-  disabled: { type: Boolean, default: false },
-  type: { type: String, default: 'button' },
-  block: { type: Boolean, default: false },
-})
-</script>
-```
-
-几处不是随手写的：
-
-- `whitespace-nowrap` —— spec §4.3 要求「按钮不换行」。中文按钮文字在窄容器里会折成两行，高度立刻失控。
-- `:type="type"` 默认 `'button'` —— 原生 `<button>` 在 `<form>` 里默认是 `submit`。项目当前没有 `<form>`，但默认值按 spec 走，避免日后踩坑。
-- `disabled || loading` 一起禁用 —— loading 期间按钮必须不可点，否则会重复提交执行请求。
-- `aria-busy` 用 `undefined` 而不是 `false` —— Vue 会把 `undefined` 从 DOM 里移除属性，不会给每个按钮挂上 `aria-busy="false"` 的噪音。
-- `transition-colors` 而非 `transition-all` —— spec §11 只要求色彩/边框过渡 150ms；`active:scale-[.98]` 按 spec 是「即时」，不该被过渡拖慢。
-
-- [ ] **Step 2: 构建并校验变体类名全部生成**
-
-```bash
-cd frontend && npm run build && \
-  for c in "bg-accent" "hover\\\\:bg-accent-hover" "bg-danger" "hover\\\\:bg-danger-hover" \
-           "border-line-strong" "bg-sunken" "rounded-\\\\[8px\\\\]" "whitespace-nowrap" \
-           "active\\\\:scale-\\\\[\\\\.98\\\\]" "disabled\\\\:opacity-45" "ring-offset-canvas"; do
-    n=$(grep -o "\.$c{" dist/assets/*.css | wc -l)
-    printf "%-40s %s\n" "$c" "$n"
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+  for c in "bg-accent" "hover:bg-accent-hover" "bg-danger" "hover:bg-danger-hover" \
+           "border-line-strong" "bg-sunken" "rounded-[8px]" "whitespace-nowrap" \
+           "active:scale-[.98]" "disabled:opacity-45" "ring-offset-canvas"; do
+    n=$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)
+    printf "%-34s %s\n" "$c" "$n"
   done
 ```
 
@@ -1125,11 +889,27 @@ const selectId = computed(() => props.id || `select-${generatedId}`)
 
 ```bash
 cd frontend && npm run build && \
-  for c in "border-border-control" "placeholder\\\\:text-ink-3" "ring-accent\\\\/35" \
-           "focus-visible\\\\:border-accent" "appearance-none" "pr-8" "-translate-y-1\\\\/2" \
-           "text-ink-2" "text-ink-3" "text-danger"; do
-    n=$(grep -o "\.$c{" dist/assets/*.css | wc -l)
-    printf "%-36s %s\n" "$c" "$n"
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+  for c in "border-border-control" "placeholder:text-ink-3" "ring-accent/35" "focus-visible:border-accent" \
+           "appearance-none" "pr-8" "-translate-y-1/2" "text-ink-2" \
+           "text-ink-3" "text-danger"; do
+    n=$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)
+    printf "%-34s %s\n" "$c" "$n"
   done
 ```
 
@@ -1295,12 +1075,28 @@ defineProps({
 
 ```bash
 cd frontend && npm run build && \
-  for c in "appearance-none" "peer" "peer-checked\\\\:opacity-100" "checked\\\\:bg-accent" \
-           "checked\\\\:border-accent" "rounded-\\\\[4px\\\\]" "bg-accent-soft" "bg-warn-soft" \
-           "bg-danger-soft" "text-warn" "text-danger" "border-line" "rounded-\\\\[12px\\\\]" \
-           "py-0\\.5" "whitespace-nowrap"; do
-    n=$(grep -o "\.$c{" dist/assets/*.css | wc -l)
-    printf "%-36s %s\n" "$c" "$n"
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+# 为什么用 `sed 's/\\//g' | grep -oF`，而不是直接 `grep -o "\.$c{"`：
+# Tailwind 产出的选择器把 `:` `[` `]` `.` 都做了反斜杠转义
+# （`.hover\:bg-accent-hover:hover`、`.rounded-\[8px\]`），于是两件事同时失效 ——
+# ① 带前缀的变体（hover: / focus-visible: / active: / disabled:）与任意值
+#    （[8px] / [.98]）永远匹配不到，闸门给出**假的 0**；
+# ② 类名后面紧跟 `{` 的要求也匹配不到带伪类后缀的选择器。
+# 先去掉反斜杠再做固定串匹配，既不漏也不误报（实测：原先假 0 的类全部转为 ≥1，
+# 而搜一个不存在的类名仍为 0）。
+  for c in "appearance-none" "peer" "peer-checked:opacity-100" "checked:bg-accent" \
+           "checked:border-accent" "rounded-[4px]" "bg-accent-soft" "bg-warn-soft" \
+           "bg-danger-soft" "text-warn" "text-danger" "border-line" \
+           "rounded-[12px]" "py-0.5" "whitespace-nowrap"; do
+    n=$(sed 's/\\//g' dist/assets/*.css | grep -oF -- "$c" | wc -l)
+    printf "%-34s %s\n" "$c" "$n"
   done
 ```
 
