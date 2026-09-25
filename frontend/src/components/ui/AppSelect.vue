@@ -6,6 +6,7 @@
         :id="selectId"
         :value="modelValue"
         :disabled="disabled"
+        :aria-label="ariaLabel || undefined"
         class="h-9 w-full appearance-none rounded-[8px] border border-border-control bg-surface pl-3 pr-8 text-[13px] text-ink transition-colors duration-150 outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-45 disabled:cursor-not-allowed"
         @change="$emit('update:modelValue', $event.target.value)"
       >
@@ -26,6 +27,7 @@ import { ChevronDown } from 'lucide-vue-next'
 const props = defineProps({
   modelValue: { type: [String, Number], default: '' },
   label: { type: String, default: '' },
+  ariaLabel: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
   id: { type: String, default: '' },
 })

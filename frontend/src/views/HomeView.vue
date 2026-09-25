@@ -1,14 +1,9 @@
 <template>
-  <!-- 一次性容器: App.vue 的路由出口是 `min-h-0 overflow-hidden`，本文件若不自己
-       管滚动，旧卡片栈超出「视口 − 56px」的部分就会被裁掉且不可达（FileTable 下半
-       部、ActionBar 的执行按钮）。Task 3 Step 3 会把这一行换成两行的 grid（上方滚
-       动区 / 下方 56px 底栏，根带 min-h-0），并把滚动下移到内层 —— 所以这里的
-       h-full + overflow-y-auto 是**临时代管，不是承重结构**。
-       刻意不在这里写出那串替换类名：Tailwind 扫描源码文本，注释里的类名字面量会被
-       真的编译进 CSS，生成一条没有任何元素使用的规则。 -->
-  <div class="flex h-full flex-col gap-4 overflow-y-auto">
-    <Transition name="source-fade" mode="out-in">
-    <div :key="ws.activeSource" class="flex flex-col gap-4">
+  <!-- 两行骨架：第一行是内容区（滚动归它），第二行是常驻底栏。根自身也是滚动链上
+       的一环 —— 它必须限制自身高度，否则中段的内容会把行撑破，底栏被推出视口。
+       对话框与提示条全部挪到网格之外，网格里只留两个子项，不会产生隐式空行。 -->
+  <div class="grid h-full min-h-0 grid-rows-[1fr_56px] overflow-hidden">
+    <div class="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">
 
       <ScanPanel
         :source="ws.activeSource"
@@ -54,40 +49,40 @@
       />
 
     </div>
-    </Transition>
 
-    <ActionBar
+    <AppBottomBar
       :conflict-strategy="ws.conflictStrategy"
       :selected-count="ws.selectedCount"
+      :total-count="ws.totalCount"
       :executing="ws.executing"
       @update:conflict-strategy="ws.conflictStrategy = $event"
       @dry-run="ws.doDryRun"
       @execute="ws.doExecute"
     />
-
-    <ConfirmDialog
-      v-model="ws.confirm.open"
-      :message="ws.confirm.message"
-      @ok="ws.resolveConfirm(true)"
-      @cancel="ws.resolveConfirm(false)"
-    />
-
-    <ExecutingOverlay v-if="!ws.executeDryRun" v-model="ws.executing" :dry-run="ws.executeDryRun" />
-
-    <ResultDialog v-model="ws.resultDialog" :result="ws.lastResult" />
-
-    <BrowseDialog
-      v-model="ws.browse.open"
-      :source="ws.browse.source"
-      :initial-path="ws.browse.initialPath"
-      :root-path="ws.browse.rootPath"
-      :disallow-root="ws.browse.disallowRoot"
-      @confirm="ws.browseConfirm"
-      @error="(m) => ws.showToast(m, 'error')"
-    />
-
-    <Toast :show="ws.toast.show" :type="ws.toast.type" :msg="ws.toast.msg" />
   </div>
+
+  <ConfirmDialog
+    v-model="ws.confirm.open"
+    :message="ws.confirm.message"
+    @ok="ws.resolveConfirm(true)"
+    @cancel="ws.resolveConfirm(false)"
+  />
+
+  <ExecutingOverlay v-if="!ws.executeDryRun" v-model="ws.executing" :dry-run="ws.executeDryRun" />
+
+  <ResultDialog v-model="ws.resultDialog" :result="ws.lastResult" />
+
+  <BrowseDialog
+    v-model="ws.browse.open"
+    :source="ws.browse.source"
+    :initial-path="ws.browse.initialPath"
+    :root-path="ws.browse.rootPath"
+    :disallow-root="ws.browse.disallowRoot"
+    @confirm="ws.browseConfirm"
+    @error="(m) => ws.showToast(m, 'error')"
+  />
+
+  <Toast v-if="ws.toast.show" :show="ws.toast.show" :type="ws.toast.type" :msg="ws.toast.msg" />
 </template>
 
 <script setup>
@@ -101,7 +96,7 @@ import { useWorkspaceStore } from '../stores/workspace'
 import ScanPanel from '../components/ScanPanel.vue'
 import TemplateConfig from '../components/TemplateConfig.vue'
 import FileTable from '../components/FileTable.vue'
-import ActionBar from '../components/ActionBar.vue'
+import AppBottomBar from '../components/layout/AppBottomBar.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ExecutingOverlay from '../components/ExecutingOverlay.vue'
 import ResultDialog from '../components/ResultDialog.vue'
@@ -119,22 +114,4 @@ const tplStore = useTemplateStore()
 const olStore = useOpenListStore()
 
 onMounted(() => { ws.initialize() })
-
 </script>
-
-<style scoped>
-.source-fade-enter-active {
-  transition: opacity 0.22s ease-out, transform 0.22s ease-out;
-}
-.source-fade-leave-active {
-  transition: opacity 0.18s ease-in, transform 0.18s ease-in;
-}
-.source-fade-enter-from {
-  opacity: 0;
-  transform: translateY(6px);
-}
-.source-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-</style>
