@@ -1,82 +1,97 @@
 <template>
-  <AppModal :model-value="modelValue" @update:model-value="$emit('update:modelValue')" z-index="50">
-    <div class="bg-surface rounded-xl shadow-2xl w-full max-w-[520px] overflow-hidden">
-      <div class="px-6 py-4 border-b border-border flex items-center justify-between">
-        <div class="font-semibold text-[15px] text-text">选择目录</div>
-        <button class="text-text-faint hover:text-text transition" @click="$emit('update:modelValue', false)">
-          <X class="w-5 h-5" />
+  <AppModal
+    :model-value="modelValue"
+    title="选择目录"
+    z-index="50"
+    @update:model-value="$emit('update:modelValue', $event)"
+  >
+    <div class="w-full max-w-[520px] overflow-hidden rounded-[12px] bg-surface shadow-overlay">
+      <div class="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+        <h2 class="text-[14px] font-semibold text-ink">选择目录</h2>
+        <button
+          type="button"
+          aria-label="关闭"
+          class="flex h-8 w-8 items-center justify-center rounded-[8px] text-ink-2 transition-colors duration-150 hover:bg-sunken hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface focus-visible:outline-none"
+          @click="$emit('update:modelValue', false)"
+        >
+          <X class="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
-      <div class="p-6">
-        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-border">
-          <button
-            class="h-8 px-3 rounded-md bg-surface-muted hover:bg-border text-[12px] text-text-secondary hover:text-text transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+
+      <div class="p-5">
+        <div class="mb-4 flex items-center gap-2 border-b border-line pb-3">
+          <AppButton
+            size="sm"
+            variant="secondary"
             :disabled="!currentPath || currentPath === rootPath"
             @click="goParent"
           >
-            <ChevronLeft class="w-4 h-4" />上级
-          </button>
-          <div class="flex-1 flex items-center gap-1 text-[12px] text-text-muted overflow-hidden">
+            上级
+          </AppButton>
+          <div class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px] text-ink-3">
             <template v-for="(seg, idx) in breadcrumbs" :key="idx">
-              <span
-                class="cursor-pointer hover:text-primary transition truncate"
+              <button
+                type="button"
+                class="truncate rounded-[4px] transition-colors duration-150 hover:text-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
                 @click="navigate(seg.path)"
-              >{{ seg.name }}</span>
-              <ChevronRight v-if="idx < breadcrumbs.length - 1" class="w-3 h-3 shrink-0 text-text-faint" />
+              >{{ seg.name }}</button>
+              <ChevronRight v-if="idx < breadcrumbs.length - 1" class="h-3 w-3 shrink-0 text-ink-3" aria-hidden="true" />
             </template>
           </div>
         </div>
 
-        <div class="flex items-center gap-2 mb-3 px-1 text-[12px]">
-          <span class="text-text-muted">当前目录:</span>
-          <span class="font-mono text-text truncate">{{ currentPath }}</span>
-          <span
-            v-if="!selected"
-            class="px-1.5 py-0.5 rounded bg-primary-light text-primary text-[10px] font-medium"
-          >点击确定将选择此目录</span>
-          <span
-            v-else
-            class="px-1.5 py-0.5 rounded bg-primary text-white text-[10px] font-medium"
-          >已选中子目录: {{ selected.name }}</span>
+        <div class="mb-3 flex min-w-0 items-center gap-2 px-1 text-[12px]">
+          <span class="shrink-0 text-ink-3">当前目录:</span>
+          <span class="truncate text-ink">{{ currentPath }}</span>
+          <AppBadge v-if="!selected" tone="accent">确定将选择此目录</AppBadge>
+          <AppBadge v-else tone="neutral">已选中: {{ selected.name }}</AppBadge>
         </div>
 
-        <div v-if="loading" class="py-12 text-center text-text-muted text-[13px]">加载中...</div>
-        <div v-else-if="!dirs.length" class="py-12 text-center text-text-muted text-[13px]">此目录无子目录</div>
-        <div v-else class="max-h-[280px] overflow-auto">
-          <div
+        <div v-if="loading" class="py-12 text-center text-[13px] text-ink-3">加载中…</div>
+        <div v-else-if="!dirs.length" class="py-12 text-center text-[13px] text-ink-3">此目录无子目录</div>
+        <div
+          v-else
+          ref="listRef"
+          class="max-h-[280px] overflow-auto"
+          @keydown="onListKeydown"
+        >
+          <button
             v-for="d in dirs"
             :key="d.path"
-            class="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg cursor-pointer transition-all"
+            type="button"
+            class="flex w-full items-center gap-2.5 rounded-[8px] px-3.5 py-2.5 text-left transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
             :class="selected?.path === d.path
-              ? 'bg-primary-light text-primary'
-              : 'hover:bg-surface-muted text-text'"
+              ? 'bg-accent-soft text-accent'
+              : 'text-ink hover:bg-sunken'"
+            :aria-pressed="selected?.path === d.path"
             @click="selected = d"
             @dblclick="navigate(d.path)"
           >
-            <Folder class="w-[18px] h-[18px] shrink-0" :class="selected?.path === d.path ? 'text-primary' : 'text-text-faint'" />
-            <span class="text-[14px] font-medium truncate">{{ d.name }}</span>
-          </div>
+            <Folder
+              class="h-[18px] w-[18px] shrink-0"
+              :class="selected?.path === d.path ? 'text-accent' : 'text-ink-3'"
+              aria-hidden="true"
+            />
+            <span class="truncate text-[14px] font-medium">{{ d.name }}</span>
+          </button>
         </div>
       </div>
-      <div class="px-6 py-3 border-t border-border flex justify-end gap-2">
-        <button
-          class="h-9 px-4 bg-surface-muted hover:bg-border rounded-lg text-[13px] font-medium transition"
-          @click="$emit('update:modelValue', false)"
-        >取消</button>
-        <button
-          class="h-9 px-4 bg-primary hover:bg-primary-hover text-white rounded-lg text-[13px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="confirmDisabled"
-          @click="confirm"
-        >确定选择</button>
+
+      <div class="flex justify-end gap-2 border-t border-line px-5 py-3">
+        <AppButton variant="secondary" @click="$emit('update:modelValue', false)">取消</AppButton>
+        <AppButton variant="primary" :disabled="confirmDisabled" @click="confirm">确定选择</AppButton>
       </div>
     </div>
   </AppModal>
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
-import { X, ChevronLeft, ChevronRight, Folder } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { ChevronRight, Folder, X } from 'lucide-vue-next'
+
 import AppModal from './ui/AppModal.vue'
+import AppButton from './ui/AppButton.vue'
+import AppBadge from './ui/AppBadge.vue'
 import { browseLocalDirectory } from '../api/scanner'
 import { openlistBrowse } from '../api/openlist'
 
@@ -94,6 +109,8 @@ const dirs = ref([])
 const currentPath = ref('')
 const parentPath = ref('')
 const selected = ref(null)
+
+const listRef = ref(null)
 
 const rootPath = computed(() => props.rootPath || '')
 
@@ -132,6 +149,26 @@ const breadcrumbs = computed(() => {
   }
   return rootIdx >= 0 ? segs.slice(rootIdx) : segs
 })
+
+// 目录项是 <button>，天然可 Tab 聚焦并可用 Enter / Space 激活。
+// 这里再补上方向键与 Home / End，让长目录不必按很多次 Tab
+// （spec §8.3：BrowseDialog「补 aria 与键盘导航」）。
+function onListKeydown(event) {
+  const KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+  if (!KEYS.includes(event.key)) return
+  const items = Array.from(listRef.value?.querySelectorAll('button') || [])
+  if (!items.length) return
+  event.preventDefault()
+  const current = items.indexOf(document.activeElement)
+  let next
+  if (event.key === 'Home') next = 0
+  else if (event.key === 'End') next = items.length - 1
+  else if (current === -1) next = 0
+  else next = event.key === 'ArrowDown'
+    ? Math.min(items.length - 1, current + 1)
+    : Math.max(0, current - 1)
+  items[next].focus()
+}
 
 async function load(path) {
   loading.value = true
