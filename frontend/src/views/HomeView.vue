@@ -1,11 +1,5 @@
 <template>
   <div class="flex flex-col gap-4">
-    <SourceTabs
-      :model-value="ws.activeSource"
-      :sources="sources"
-      @update:model-value="ws.switchSource($event)"
-    />
-
     <Transition name="source-fade" mode="out-in">
     <div :key="ws.activeSource" class="flex flex-col gap-4">
 
@@ -97,7 +91,6 @@ import { useTemplateStore } from '../stores/template'
 import { useOpenListStore } from '../stores/openlist'
 import { useWorkspaceStore } from '../stores/workspace'
 
-import SourceTabs from '../components/SourceTabs.vue'
 import ScanPanel from '../components/ScanPanel.vue'
 import TemplateConfig from '../components/TemplateConfig.vue'
 import FileTable from '../components/FileTable.vue'
@@ -118,9 +111,10 @@ const filesStore = useFilesStore()
 const tplStore = useTemplateStore()
 const olStore = useOpenListStore()
 
-// 旧 SourceTabs 的数据源列表（含 emoji）。Task 2 会用顶栏的 segmented
-// control 取代 SourceTabs 并删掉这个数组；本任务先原样保留，否则中间态里
-// SourceTabs 收不到 sources，会渲染成一个空的 tab bar 而报不出错。
+// 旧的源切换卡片留下的数据源列表（含 emoji）。那张卡片已在 Task 2 被顶栏的
+// segmented control 取代并删除，这个数组因此失去了唯一的消费者；它的清理留给
+// Task 3 ——那时旧卡片栈整体重构，本文件的其他旧结构也一并消失。本任务不制造
+// 这份死代码，所以不动它。
 const sources = [
   { name: 'local', label: '本地磁盘', icon: '📁' },
   { name: 'openlist', label: 'OpenList 云盘', icon: '☁️' },
