@@ -675,7 +675,7 @@ button:not(:disabled) {
 
 因此 `AppButton` 的基类串**不需要**再加 `cursor-pointer`（加了是冗余）。第二、三期新写的裸 `<button>` 同样不需要 —— 但**不得**给它们加与基线冲突的 cursor 类。
 
-- [ ] **Step 2: 构建并校验变体类名全部生成**
+- [ ] **Step 3: 构建并校验变体类名全部生成**
 
 ```bash
 cd frontend && npm run build && \
@@ -714,7 +714,7 @@ cd frontend && npm run build && \
 
 **这是本期唯一能自动发现的失败模式**：类名拼错时 Tailwind 不会报错，只是不生成这条规则，按钮会静默少一个变体样式。任何一个为 `0` 就必须修正拼写。
 
-- [ ] **Step 3: 提交**
+- [ ] **Step 4: 提交**
 
 ```bash
 git add frontend/src/components/ui/AppButton.vue
