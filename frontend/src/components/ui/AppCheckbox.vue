@@ -8,6 +8,7 @@
         type="checkbox"
         :checked="modelValue"
         :disabled="disabled"
+        :aria-label="ariaLabel || undefined"
         class="peer h-4 w-4 appearance-none rounded-[4px] border border-border-control bg-surface transition-colors duration-150 outline-none checked:border-accent checked:bg-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:opacity-45 disabled:cursor-not-allowed"
         @change="$emit('update:modelValue', $event.target.checked)"
       />
@@ -28,6 +29,8 @@ import { Check } from 'lucide-vue-next'
 defineProps({
   modelValue: { type: Boolean, default: false },
   label: { type: String, default: '' },
+  // 无可见 label 时的无障碍名（表格单元格等没空间放可见文字的场景）。
+  ariaLabel: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
 })
 defineEmits(['update:modelValue'])
