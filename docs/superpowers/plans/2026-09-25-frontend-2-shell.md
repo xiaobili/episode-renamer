@@ -977,6 +977,8 @@ defineEmits(['update:conflictStrategy', 'dry-run', 'execute'])
 </script>
 ```
 
+**不要让 `AppSelect` 的 label 手写**：它自带 `label` prop，内部渲染的正是 `<label :for="selectId" class="text-[13px] font-medium text-ink-2">`，而根容器是 `flex flex-col gap-2`。手写一份会**双重受损**：一是把本任务要消灭的「重复控件样式」又请回来，二是极容易抄错间距（本计划初稿抄成了 `gap-1.5`，于是「挂载点」距它的下拉 6px，而所有 `AppInput` 的 label 距输入框 8px —— 一个肉眼几乎看不出、但确实不一致的偏差）。同理，任何原语已提供的结构（label、hint、error、chevron、loading spinner）都不要再手写一份。
+
 几处不是随手写的：
 
 - **计数用 `tabular-nums` 而不是 `font-mono`**：spec §6.4 明确要求「表格内所有数字列加 `tabular-nums`」，而 §6.2 的等宽白名单（季数、集数、模板变量名、并发数、补零位数）指的是**用户输入或作为标识读取的技术值**，不是派生计数器。`tabular-nums` 已经能消掉 `1` 与 `8` 的宽度差，就不必再切字体。若评审认为计数也该走等宽，改一个 class 即可。
@@ -1225,16 +1227,13 @@ git commit -m "feat(frontend): 主操作移入常驻底栏, 删除 ActionBar 与
           <span class="truncate">已连接: {{ olStore.serverUrl }}</span>
         </div>
 
-        <div class="flex flex-col gap-1.5">
-          <label class="text-[13px] font-medium text-ink-2" for="ol-mount">挂载点</label>
-          <AppSelect
-            id="ol-mount"
-            :model-value="olStore.selectedMount"
-            @update:model-value="$emit('mount-change', $event)"
-          >
-            <option v-for="m in olStore.mountPoints" :key="m" :value="m">{{ m }}</option>
-          </AppSelect>
-        </div>
+        <AppSelect
+          label="挂载点"
+          :model-value="olStore.selectedMount"
+          @update:model-value="$emit('mount-change', $event)"
+        >
+          <option v-for="m in olStore.mountPoints" :key="m" :value="m">{{ m }}</option>
+        </AppSelect>
 
         <div class="flex items-end gap-2">
           <AppInput
