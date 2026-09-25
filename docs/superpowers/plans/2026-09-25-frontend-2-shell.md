@@ -46,6 +46,8 @@
 
 本期消化 8 处，第三期消化 10 处，合计 18 处清零。
 
+- **组件 `<style>` 块里不得出现 `var(--color-*)` 对「旧别名」的引用**（`--color-primary` / `--color-text` / `--color-border*` / `--color-surface-muted` / `--color-success*` / `--color-warning*` / `--color-error*`）。别名块是本期的过渡脚手架且**刻意非 `static`** —— 没有任何工具类引用它的别名会被 Tailwind tree-shake 掉，`var()` 于是静默解析为空；何况第四期会整块删除。需要颜色时一律用工具类（`bg-accent` / `text-ink-2` …）。本期新建或重写的组件如需自定义过渡，只用**新** token（`--color-ink` 等，它们在 `@theme static` 块里，一定存在）。
+
 ## Review Focus
 
 1. **`min-h-0` 链断了任意一环** —— 链路上共有 5 个容器（`App.vue` 的路由出口 → `HomeView` 根 → 中段 → `WorkArea` → `FileTable` 根）。断任何一环，表格都不再内部滚动，而是把整页撑高、底栏被推到屏外 —— 正是本次重构要消灭的那个 bug。期望：150cm 高的长表格下，底栏仍钉在视口底部。

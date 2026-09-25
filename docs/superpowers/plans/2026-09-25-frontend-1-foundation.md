@@ -234,7 +234,7 @@ git commit -m "feat(frontend): 自托管 Geist 字体并切换字体栈"
    这两个 token 迟早会被用到（前者是 danger 按钮的 hover，后者是模态/浮层的
    阴影），而设计 token 作为「系统的公开接口」不该取决于谁碰巧用了它 ——
    组件 <style> 块里的 var(--shadow-overlay) 引用一旦遇上 tree-shaking 就是
-   静默失效。代价实测为 2 个变量、72 字节。 */
+   静默失效。代价实测为 2 个变量、百字节级（本仓库 +98 字节）。 */
 @theme static {
   /* ---------- 背景三级：用明度差做层级，不用阴影 ---------- */
   --color-canvas:  #F6F7F8;  /* 页面底，比纯白低一档 */

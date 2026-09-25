@@ -33,6 +33,8 @@
 - 每个任务结束时 `cd frontend && npm run build` 必须通过
 - 路由路径、API 路径与响应结构不变
 
+- **组件 `<style>` 块里不得出现 `var(--color-*)` 对「旧别名」的引用**（`--color-primary` / `--color-text` / `--color-border*` / `--color-surface-muted` / `--color-success*` / `--color-warning*` / `--color-error*`）。别名块是本期的过渡脚手架且**刻意非 `static`** —— 没有任何工具类引用它的别名会被 Tailwind tree-shake 掉，`var()` 于是静默解析为空；何况第四期会整块删除。需要颜色时一律用工具类（`bg-accent` / `text-ink-2` …）。本期新建或重写的组件如需自定义过渡，只用**新** token（`--color-ink` 等，它们在 `@theme static` 块里，一定存在）。
+
 ## Review Focus
 
 1. **前端改完补零位数却毫无变化，且零报错**（本期最高风险）—— 若后端未合入 `episode_pad_digits` 字段，Pydantic 会**静默丢弃**未知字段，请求返回 200，界面一切正常，只有「新文件名」列固执地显示 `S01E02`。期望：设置页把集数补零位数改成 3 → 表格新文件名列出现 `S01E001`。→ Task 8 Step 2 专门给出区分「后端未合入」与「前端没接上」的检查
