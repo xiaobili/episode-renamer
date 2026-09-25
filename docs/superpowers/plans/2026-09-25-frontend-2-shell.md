@@ -803,8 +803,10 @@ const onSettings = computed(() => route.name === 'Settings')
       @update:source="ws.switchSource($event)"
     />
 
-    <!-- min-h-0 是整条链的第一环：少了它，路由内容会把 grid 行撑破，
-         整页开始滚动，底栏被推出视口。 -->
+    <!-- min-h-0 是整条链的第一环。少了它的症状**不是**「整页滚动」——
+         外壳是 h-dvh + overflow-hidden，根本没有页面滚动条；真正的症状是
+         路由内容把第二行（1fr）撑破，其底部被裁掉且**无从滚动到**，等于静默丢失。
+         这比能滚更糟：能滚至少内容还在。 -->
     <div class="min-h-0 overflow-hidden">
       <router-view />
     </div>
@@ -1042,7 +1044,9 @@ defineEmits(['update:conflictStrategy', 'dry-run', 'execute'])
 
 具体三处机械改动：
 
-1. 根 `<div class="flex flex-col gap-4">` → `<div class="grid h-full min-h-0 grid-rows-[1fr_56px] overflow-hidden">`
+1. 根元素换成 `<div class="grid h-full min-h-0 grid-rows-[1fr_56px] overflow-hidden">`。
+   **注意根当前的类不是 Task 2 之前的 `flex flex-col gap-4`** —— Task 2 的修复轮给它加了 `h-full` 与 `overflow-y-auto`（为了让被裁剪的旧卡片栈重新可达），并在上方留了注释说明这是**临时代管**。那两处 `h-full`/`overflow-y-auto` 以及那段注释随本次替换一并删除：滚动改由内层容器承担，且**新的根必须带 `min-h-0`**。
+   **替换前先读一遍当前文件的根元素**，不要按记忆机械替换。
 2. 原来的 `<Transition name="source-fade" mode="out-in"><div :key="ws.activeSource" class="flex flex-col gap-4">` 与其闭合标签**整段删除**，里面的三个组件提到新加的 `<div class="flex min-h-0 flex-col gap-4 overflow-y-auto p-4">` 里。理由：spec §11 的动效表里没有「切换数据源淡入淡出」这一条，而过渡包裹层在 grid 布局下会成为多余的一层容器，破坏 `min-h-0` 链
 3. `<ActionBar ... />` 整块替换为 `<AppBottomBar ... />`，并把 `import ActionBar from '../components/ActionBar.vue'` 换成 `import AppBottomBar from '../components/layout/AppBottomBar.vue'`
 4. 删除文件末尾整个 `<style scoped>` 块（`source-fade` 已无用）
