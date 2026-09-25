@@ -42,18 +42,11 @@
         </template>
       </AppLeftRail>
 
-      <!-- 临时（Task 6 删）：工作区整体可滚，作为「表格改成内部滚动」之前的兜底。
-           FileTable 目前的卡片是 flex 子项且没有增长，视口矮时会被 flex 收缩，而它的
-           内部滚动盒又被硬编码的 max-height 顶住、缩不下去 —— 少掉的那截被卡片的
-           overflow-hidden 剪掉，且整条链上没有任何可滚动的祖先（实测 1024×620 剪掉
-           39px，末行只有 57.2/94.9px 可见，且滚到底也看不到）。
-           所以光把本行改成 overflow-y-auto 不够，还必须让卡片别被收缩 —— 即下面的
-           shrink-0，它经 Vue 的 class 透传落到卡片根上。
-           Task 6 会给 FileTable 自己撑满高度、去掉卡片壳与那条硬编码的 max-height，
-           届时本节连同 shrink-0 一起删除，本行恢复 overflow-hidden。 -->
-      <main class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <!-- 工作区自身不滚动：底色是 surface，与 canvas 的左栏形成明度差（spec §5.4），
+           露出的边界就是工作区的边缘。Table 撑满这里剩下的高度、并在自己内部滚动，
+           所以本层只负责给出高度与底色，不再需要「整块工作区可滚」那种兜底。 -->
+      <main class="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">
         <FileTable
-          class="shrink-0"
           :files-store="filesStore"
           :preview-rows="ws.previewRows"
           :scanned-info="ws.scannedInfo"
