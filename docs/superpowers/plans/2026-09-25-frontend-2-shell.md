@@ -1289,7 +1289,7 @@ defineEmits([
 几处不是随手写的：
 
 - **OpenList 的路径字段复用 `update:localPath` 事件** —— store 里的 `path` 是所有源共用的单个可写 computed（Task 1），本地与云盘共用一条通路。旧 `ScanPanel` 用 `openlistBrowsePath` 只做显示，写入走 `browseConfirm`；现在允许用户直接在字段里键入或粘贴路径。
-- **`AppInput` 的 label 让控件高度变成 58px**，所以「浏览」按钮的容器用 `items-end` 对齐到输入框底边，而不是 `items-center`（后者会让按钮浮在半空）。
+- **`AppInput` 的 label 让控件高度变成约 65px**（实测 64.8 = label 20.8 + gap 8 + 输入框 36；本计划初稿估的 58px 是纸上算的，偏小），所以「浏览」按钮的容器用 `items-end` 对齐到输入框底边，而不是 `items-center`（后者会让按钮浮在半空）。
 - **`class="min-w-0 flex-1"` 必须同时给**：`min-w-0` 允许输入框在窄容器里收缩（Flex 子项默认 `min-width: auto` 会被 input 的固有宽度撑破），`flex-1` 吃掉剩余宽度。
 - **删掉了旧代码里那个无效的 `show-password` 属性**（`ScanPanel.vue:64`）——它不是浏览器认识的属性，密码框一直是明文 toggle 缺失的状态。现在统一 `type="password"`。
 - **扫描按钮用 `block` + `loading`** —— spec §10 要求「扫描中按钮进入 loading 态（禁用 + 文字变「扫描中…」）」，`AppButton` 的 `loading` 会在文字前加 spinner 并自动禁用。
