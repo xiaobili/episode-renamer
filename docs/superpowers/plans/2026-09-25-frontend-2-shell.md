@@ -1320,7 +1320,9 @@ cd frontend && npm run build && \
   grep -rln "focus:border-primary focus:ring-2 focus:ring-primary/20" src/
 ```
 
-预期：数字为 **10**，文件列表只剩 `views/SettingsView.vue`（7）与 `components/FileTable.vue`（3）。若数字大于 10，说明还有本期该清掉的没清。
+预期：数字为 **13**，分布为 `views/SettingsView.vue`（7）+ `components/TemplateConfig.vue`（3）+ `components/FileTable.vue`（3）。
+
+**这个数是算出来的，不是估的**：改造前全项目 18 处，其中 `ActionBar` 的 1 处已随该文件在 Task 3 删除，故 Task 4 开始时是 **17**；本任务消掉 `ScanPanel` 的 **4** 处 → **13**。剩下的 3 处 `TemplateConfig` 在 Task 5 清、7+3 在第三期清（合计 10）。**不要**照某个「本期应剩 10」的记忆去判断 —— 那 8 处是分散在 Task 2/4/5 三个任务里做完的。
 
 - [ ] **Step 5: 视觉与功能走查**
 
