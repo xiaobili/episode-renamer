@@ -239,8 +239,11 @@ export const SETTINGS_KEY = 'episode-renamer:settings'
 
 const CONFLICT_STRATEGIES = ['skip', 'abort', 'overwrite', 'rename_dup']
 
-// 与后端 app/core/template.py 的 PAD_MIN / PAD_MAX 一致。
-// 两侧区间不同会让「界面显示 0 而实际补零 1 位」这种不一致出现。
+// 区间 [1, 6] 来自 spec §13.2 / §17，**不是**从后端读来的 —— 后端目前
+// 根本没有这个区间（没有 PadConfig、没有 PAD_MIN/PAD_MAX；pad_number 就是裸的
+// zfill，不做任何钳制）。所以这个钳制在当前仓库里是**唯一的防线**：
+// 若前端放行 99，后端会 zfill(99)，生成 99 位补零的文件名。
+// 等后端计划 `2026-09-25-backend-pad-digits.md` 实施后，两侧区间才真正一致。
 const PAD_MIN = 1
 const PAD_MAX = 6
 
@@ -260,8 +263,8 @@ export function defaultSettings() {
 
 function clampNumber(value, min, max, fallback, integer = false) {
   // null / undefined / '' 视为「未设置」，回落默认值。
-  // AppInput 在 type="number" 下清空输入框会 emit null —— 若把它当 0，
-  // 后端会钳到 1，界面却显示 0，两侧不一致。
+  // AppInput 在 type="number" 下清空输入框会 emit null。null 必须当作「未设置」
+  // 回落默认值，而 0/负数是要钳进 [1, 6] 的真实值 —— 两者语义不同，不能合并。
   if (value === null || value === undefined || value === '') return fallback
   const n = Number(value)
   if (!Number.isFinite(n)) return fallback
