@@ -1,5 +1,11 @@
 <template>
-  <div class="grid h-dvh grid-rows-[56px_1fr] overflow-hidden bg-canvas">
+  <!-- 顶栏 / 路由内容两行骨架。grid-cols-1 与 HomeView 根上那一处同因同理：
+       裸的 grid 只有一条隐式列，隐式列取 auto，auto 的下限是内容的 min-content ——
+       极窄屏下顶栏（品牌名 nowrap + 分段控件）的 min-content 会超过视口，轨道随之
+       撑宽、右侧被本层的 overflow-hidden 静默切掉。显式声明 minmax(0, 1fr) 把下限
+       归零，轨道才能缩到视口以内；顶栏品牌名本就有 min-w-0 + truncate，收缩路径是
+       现成的，所以允许收缩不会把裁切从轨道转移到内容上。 -->
+  <div class="grid h-dvh grid-cols-1 grid-rows-[56px_1fr] overflow-hidden bg-canvas">
     <AppTopBar
       :source="ws.activeSource"
       :show-source-switch="route.name === 'Home'"
