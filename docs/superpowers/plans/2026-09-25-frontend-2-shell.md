@@ -767,7 +767,8 @@ import { ArrowLeft, Settings as SettingsIcon } from 'lucide-vue-next'
 
 import BrandMark from '../BrandMark.vue'
 
-// 本地磁盘 / OpenList 两段。这里不再有 emoji —— 旧 SourceTabs 的 📁☁️ 一并清掉
+// 本地磁盘 / OpenList 两段。这里不再有表示数据源的图标符号 —— 被取代的那个
+// 页签组件用的是文件夹与云朵 emoji，随它一起清掉
 // （spec §3.5 第 12 条）。
 const SOURCES = [
   { name: 'local', label: '本地磁盘' },
@@ -847,6 +848,8 @@ const ws = useWorkspaceStore()
 即：在原有的 `<div class="flex flex-col gap-4 max-w-[680px]">` 外面再套一层 `h-full overflow-y-auto`，并给内层加 `mx-auto` 与 `p-6`（原来这份 padding 由 `App.vue` 的 `p-8` 提供，现在没有了）。
 
 `SettingsView` 的其余部分（表单、按钮、保存逻辑）本期不动，第三期整体改用原语。
+
+**注意上文代码块里的注释措辞**：它刻意**不写** `SourceTabs` 这个标识符、也不写那两个 emoji 字形本身。因为本步的校验是 `grep -rn "SourceTabs" src/` 要**无输出**，而第三期还有一道 `grep -rn "🎬\|📁\|☁️\|⚠️\|✅" src/ | wc -l` 要**为 0** —— 源码注释里只要出现这两个字面量，两道检查都会假失败，而它们检查的是「代码里还有没有引用」，不是「注释里有没有提过」。要提就描述它，不要写字面量。
 
 - [ ] **Step 5: 删除 `SourceTabs.vue`**
 
