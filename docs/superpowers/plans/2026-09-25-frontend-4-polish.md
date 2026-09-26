@@ -27,7 +27,8 @@
 
 - **按钮光标由 `style.css` 的基线规则统一提供**（`button:not(:disabled) { cursor: pointer }`，Tailwind v4 的 preflight 删掉了 v3 的等价声明）。因此新写的裸 `<button>` **不需要**再写 `cursor-pointer`，也**不得**给它加与之冲突的 cursor 类。禁用态由 `disabled:cursor-not-allowed` 负责：`:not(:disabled)` 让两者不在同一个元素上竞争。**不要**把它简化成裸 `button { cursor: pointer }` —— 该基线规则是层外样式，按 CSS 级联层规则优先于 Tailwind 的层内工具类，**与特异性无关**，写成裸选择器会覆盖掉禁用态的 `not-allowed`。
 
-- **源码文件的注释里不要写字面类名**（`.vue` / `.js`；`style.css` 的注释不受影响）。实测 Tailwind 4.3.3：CSS 入口文件注释里的 `border-line-strong` 不生成规则，而 **`.vue` 注释里的 `rounded-[12px]` 与 `grid-rows-[56px_1fr]` 各生成一条真实规则**。两个后果：①产出无人使用的死 CSS；②**类名闸门会因为「注释提过」而通过** —— 一个没有任何元素使用的类名，只要在源码注释里出现过就会命中，闸门于是为它开绿灯。（受害的是**只存在于注释里**的类名；一个确在真实标记里用过的类名，注释里再提一次无害。判断标准是这一条，不是「注释里能不能出现类名」。）需要提到某个类名时，**描述它而不要写字面量**（「两行 grid / 上方滚动区 / 下方 56px 底栏」而不是把类名抄一遍）。
+- **源码文件的注释里不要写字面类名**（`.vue` / `.js`；`style.css` 的注释不受影响）。理由只有一条，是**闸门卫生**：**类名闸门会因为「注释提过」而通过** —— 一个没有任何元素使用的类名，只要在源码注释里出现过就会命中，闸门于是为它开绿灯。（受害的是**只存在于注释里**的类名；一个确在真实标记里用过的类名，注释里再提一次无害。判断标准是这一条，不是「注释里能不能出现类名」。）需要提到某个类名时，**描述它而不要写字面量**（「两行 grid / 上方滚动区 / 下方 56px 底栏」而不是把类名抄一遍）。
+  > **修正（2026-09-26，最终整支评审的实测否证）**：本条初稿曾声称「实测 Tailwind 4.3.3：`.vue` 注释里的类名各生成一条真实规则」，并据此列出后果「①产出无人使用的死 CSS」。**该测量不可复现**：HEAD 上全树"只存在于注释"的类名 token 恰好两个（`AppPanel.vue:13` 的 `shadow-sm`、`FileTable.vue:74` 的 `animate-pulse`），**两者零发射**；而确实发射的 `shadow-lg` 来自 `api/request.js:13` 的**真实字符串字面量**而非注释，证明生成器工作、故此负结果有意义。当年引用的两个样本（`rounded-[12px]`、`grid-rows-[56px_1fr]`）**都出现在真实标记里**，很可能把标记自己生成的规则归因给了注释。**闸门理由不变**（上面那条仍是本条的全部依据），但**不得再复述"死 CSS"这一未经证实的后果**；据此后果提出的 `AppPanel.vue:13` 一处已由评审核查为**不需修**。
 
 - **`style.css` 里作用于元素的基线与 Tailwind 工具类冲突时，基线必须放进 `@layer base`。** Tailwind v4 把工具类放在 `@layer utilities` 里，而**层外样式优先于任何层内样式，与特异性无关** —— 写在层外的基线（如 `input { font-family: inherit }`）会静默压掉同属性的工具类。实测：在本期之前，`font-mono` 在所有 `input` / `select` / `textarea` / `button` 上都是失效的（模板输入框与变量芯片都算不出等宽栈），而这正是 spec §6.2 的等宽纪律所依赖的。判断方法：产物里按花括号配对找出目标规则所属的 `@layer`，层外的一方永远赢。
 
@@ -302,7 +303,7 @@ const SKELETON_ROWS = 8
             <tr
               v-for="n in SKELETON_ROWS"
               :key="`skeleton-${n}`"
-              class="h-[58px] animate-pulse border-t border-line"
+              class="h-[58px] border-t border-line"
               aria-hidden="true"
             >
               <!-- 上面那 8 个 <td> 原样放在这里 -->
@@ -323,7 +324,8 @@ const SKELETON_ROWS = 8
 
 - **骨架一律 `aria-hidden="true"`**：占位方块对读屏是纯噪音。加载状态由 Task 5 挂到表格容器上的 `aria-busy` 表达。
 - **骨架块用 `bg-sunken`**：`sunken` 就是 spec §5.1 给「凹陷：表头、代码块、**骨架**」这一角色定义的那一档。
-- **骨架行加 `animate-pulse`（呼吸）**：这是骨架屏的通行做法（shadcn/ui、Vercel Geist、Material 的 skeleton 都带脉动），它承担 spec §11 允许的第二类动效 —— 「状态转换：内容正在加载」。静态灰块会被误读成「页面坏了」，这不是克制而是省略。
+- **骨架行不加 `animate-pulse`（本节初稿加过，已由 Ruling 50 推翻 —— 三处文本对一处，取前者）**：spec §11 的动效表是**穷举**（5 类），Global Constraints 亦写「任何其他动画都属无意图动效」，而 spec §11 删除 `animate-bounce` 的理由正是**它是无限循环** —— `animate-pulse` 与之同形。骨架屏的「正在加载」由**形状**承担（8 行对齐列宽的灰块）+ Task 5 挂到表格容器的 `aria-busy`；静态灰块不会被误读成「页面坏了」，因为它是表格式、对齐列宽的占位，而不是空白。
+  - **连带**：本步下方 Step 3 走查表的第 7 项（「灰块有轻微的呼吸…看不到脉动时把脉动挪到 `<td>` 上」）**不适用**；T4 的 reduced-motion 走查第 7 项亦应读作「骨架本就是静态的（设计如此）」，而不是"兜底把它关掉了"。
   - **放在 `<tr>` 而不是 9 个 `<div>` 上**：`opacity` 是群组属性，父元素脉动会带着整个子树的方块一起呼吸，一个类顶九个，且天然同步。
   - **`opacity` 作用在 `<tr>` 上**是这条唯一的实现风险（个别浏览器对表格行上的 `opacity` 有历史怪癖）。Step 3 走查表第 7 项专门验证脉动是否真的可见；**若看不到脉动**，把 `animate-pulse` 从 `<tr>` 挪到那 8 个 `<td>` 上即可，其余不变。
   - **无障碍面已闭合**：Task 4 的全局 `reduced-motion` 兜底会把 `animation-iteration-count` 压到 1、`animation-duration` 压到 `.01ms`，于是开启「减弱动态效果」时骨架自动退化为**静态灰块** —— 正是原本的克制设计，不需要额外分支。
@@ -966,7 +968,7 @@ git commit -m "docs: 前端重构改后截图留档"
 | 8 | `shadow-sm` 全场同款 | ✅ 默认无阴影，仅 `shadow-overlay`（第一至三期） |
 | 9 | `--color-secondary` 死 token | ✅ 第一期重写时不再保留 |
 | 10 | 设置断线 | ✅ `settings` store 接通（第三期） |
-| 11 | 补零位数是假设置 | ✅ 后端 + 前端端到端打通（第三期，依赖后端计划） |
+| 11 | 补零位数是假设置 | ⚠️ **未闭环**（本节初稿写 ✅，已被 2026-09-26 的 §15.3 实测否证）—— 后端计划 `2026-09-25-backend-pad-digits.md` **未实施**：前端**不发**该字段（`workspace.js` 的 preview 载荷键恰为 `file_ids, source, path, template, folder_template, create_season_folder`），后端**无** `/api/settings` 路由，`episode_pad_digits` 仅存在于 `config.py:29` 并由 `template.py:28` 从 config 读取 → 设置页改了**静默无效**且零报错。前端侧的 `[1,6]` 钳制是当前**唯一**防线。后续路径：另起一轮执行后端计划。 |
 | 12 | Emoji 当图标 4 处 | ✅ 清零（第一期 1 处 + 第二期 2 处 + 第三期 1 处） |
 | 13 | 空态仅一行字 | ✅ 图标 + 标题 + 说明 + 主操作（本期 Task 3） |
 | 14 | 扫描中用蒙层而非骨架屏 | ✅ 骨架行（本期 Task 2）；顺带发现原蒙层是**死代码**，从未渲染过 |
