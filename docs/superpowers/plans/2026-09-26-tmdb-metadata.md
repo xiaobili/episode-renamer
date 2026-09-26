@@ -1473,7 +1473,7 @@ def test_title_renders_empty_when_absent():
     # Review Focus 5：TMDB 没查到时 title 为 None。
     # 期望是文件名照常生成、标题位留空 —— 而不是整个重命名失败。
     result = apply_template(TEMPLATE, make_info(None))
-    assert result == "绝命毒师 - S02E05 -.mkv"
+    assert result == "绝命毒师 - S02E05 - .mkv"
 
 
 def test_template_without_title_variable_is_unaffected():
@@ -1487,7 +1487,11 @@ def test_template_without_title_variable_is_unaffected():
 cd backend && python -m pytest tests/test_template_title.py -v
 ```
 
-预期：`test_title_renders_when_present` FAIL（当前得到 `绝命毒师 - S02E05 - .mkv`，`{title}` 永远渲染空串）。另两个用例可能已 PASS —— 它们记录的是既有行为，必须继续 PASS。
+预期：**三个用例全部 PASS**。
+
+注意这里**不是** RED：`{title}` 自 `d6f01a7` 起就已在 `template.py` 的 `_resolve_variable` 里实现（`return info.title or ""`），本文件是**刻画测试**，钉住既有渲染行为。真正的缺口不在模板层，而在**解析器从不给 `ParsedInfo.title` 赋值**（`parse_filename` 全文不写 `title`）—— 那个缺口由本任务的路由层（Step 8 的两遍解析）补上，并在 `test_rename_routes.py` 的新用例里验证。
+
+不要因为「RED 阶段没红」而以为实现错了。
 
 - [ ] **Step 5: 抽取 `apply_override`**
 
@@ -1597,14 +1601,12 @@ def _tmdb_client_from_request(req) -> Optional[TmdbClient]:
 
 def _tmdb_summary(status: str, match: Optional[EpisodeMatch] = None) -> dict:
     show = match.show if match else None
-    episode = match.episode if match else None
     return {
         "status": status,
         "tv_id": show.tv_id if show else None,
         "name": show.name if show else None,
         "original_name": show.original_name if show else None,
         "year": show.year if show else None,
-        "episode_title": episode.name if episode else None,
     }
 
 
@@ -1648,8 +1650,9 @@ async def _with_tmdb_titles(
             for f in files
         ])
     except TmdbAuthError as exc:
-        # 401 是配置错误, 必须让用户看见 —— 不可静默降级成 disabled
-        raise HTTPException(status_code=400, detail=f"TMDB API Key 无效: {exc}")
+        # 401 是配置错误, 必须让用户看见 —— 不可静默降级成 disabled。
+        # 直接用异常自带的消息: 它已经是「TMDB API Key 无效」, 再拼前缀会重复一遍。
+        raise HTTPException(status_code=400, detail=str(exc))
 
     for f, match in zip(files, matches):
         summaries[f.id] = _tmdb_summary(match.status, match)
@@ -1776,16 +1779,29 @@ def test_manual_title_override_wins_over_tmdb(client):
     assert row["new_filename"] == "Test Show - S01E02 - 手工标题.mkv"
 
 
-def test_invalid_tmdb_key_returns_400_not_silent_disabled(client):
-    # Review Focus 2：Key 无效必须报错, 不得静默降级 ——
+def test_tmdb_auth_error_becomes_400(client, monkeypatch):
+    # Review Focus 2：Key 无效必须报错, 不得静默降级成 disabled ——
     # 静默会让用户以为「功能没做」而不是「我填错了」。
+    #
+    # 这里 monkeypatch 客户端, 而不发一次真实请求: 需要出网的用例在单元套件里是
+    # **构造性地不稳定**（换机器 / CI / 断网时红或超时）。完整链路已由两端覆盖 ——
+    # Task 1 的 `test_401_raises_auth_error` 用 MockTransport 证明了「真实 401 →
+    # TmdbAuthError」, 本用例只需证明「TmdbAuthError → 400」这条路由契约。
+    # 真实 Key 的端到端验证留在本计划「完成后」一节的 deferred-to-human 清单里。
+    from app.core.tmdb_client import TmdbAuthError, TmdbClient
+
+    async def always_401(self, query, year=None):
+        raise TmdbAuthError("TMDB API Key 无效")
+
+    monkeypatch.setattr(TmdbClient, "search_tv", always_401)
+
     res = client.post("/api/rename/preview", json={
         "file_ids": ["f1"],
         "template": TITLE_TEMPLATE,
         "source": "local",
         "path": "/media/Test Show",
         "overrides": OVERRIDES,
-        "tmdb_api_key": "definitely-invalid",
+        "tmdb_api_key": "whatever",
     })
     assert res.status_code == 400, res.text
     assert "TMDB" in res.json()["detail"]
@@ -1810,7 +1826,9 @@ def test_tmdb_overrides_are_accepted_by_the_request_model(client):
 cd backend && python -m pytest tests/ -v
 ```
 
-预期：全部 PASS。其中 `test_invalid_tmdb_key_returns_400_not_silent_disabled` 会真的向 TMDB 发一次请求（`definitely-invalid` 必然 401）。**若处于无网络环境**，该用例会得到 502/超时而非 400 —— 此时把一个必然 401 的断言改为接受 400 或 502 并注明原因，或标 `@pytest.mark.network` 并在离线时用 `-m "not network"` 排除。
+预期：全部 PASS，且**整套不发起任何外部网络请求** —— 本任务的所有新用例都用 monkeypatch 或 fixture 隔离了 TMDB。
+
+若某个用例在离线环境下失败，那是缺陷而不是环境问题：把它改成密闭的，**不要**放宽断言、**不要**加 `@pytest.mark.network`、**不要**为测试给生产代码加注入口。
 
 - [ ] **Step 12: 确认服务仍可导入**
 
@@ -1828,6 +1846,136 @@ git add backend/app/config.py backend/app/models/api.py backend/app/core/parser.
         backend/app/api/renamer.py backend/tests/test_template_title.py \
         backend/tests/test_rename_routes.py
 git commit -m "feat(backend): 预览与执行接入 TMDB 单集标题（两遍解析 + 手动覆盖优先）"
+```
+
+---
+
+### Task 3 补充：三条有鉴别力的用例（审查轮追加）
+
+**这一节是审查的产物。** 上面 Step 10 那四条用例有一个盲区：它们在两种**坏实现**下**全部通过** ——
+
+- **退回单遍解析**（先渲染文件名、再查 TMDB）：四条全绿，因为断言只看 `tmdb_status` 与 `title` 字段，不看**渲染出的文件名**。
+- **无条件覆盖**（忽略手动标题、TMDB 有结果就写）：`test_manual_title_override_wins_over_tmdb` 依然绿，因为那个用例**没有配置 TMDB**（`tmdb_status` 是 `disabled`，压根没东西可覆盖）。
+
+也就是说，「`{title}` 真的来自 TMDB」与「手动标题真的优先」这两条**本任务的核心承诺**，当时没有任何东西守着。下面三条补上。
+
+同时补上状态常量的**字面值**断言：别处的测试全部引用常量本身，互换任意两个常量的值一个测试都不会红，而这六个字符串是预览响应字段与前端分支共享的线上契约。
+
+**Files:**
+- Modify: `backend/tests/test_rename_routes.py`
+
+**Interfaces:**
+- Consumes: `app.api.renamer._tmdb_client_from_request`（Step 8 定义）、`app.core.tmdb_resolver` 的六个状态常量、`app.models.tmdb` 的四个模型
+
+- [ ] **Step A: 补 import**
+
+测试文件需要新增：
+
+```python
+from app.core.tmdb_resolver import (
+    STATUS_DISABLED,
+    STATUS_EPISODE_NOT_FOUND,
+    STATUS_MATCHED,
+    STATUS_SEASON_NOT_FOUND,
+    STATUS_SHOW_NOT_FOUND,
+    STATUS_UNAVAILABLE,
+)
+from app.models.tmdb import TmdbEpisode, TmdbSeason, TmdbSearchItem, TmdbShow
+```
+
+（`STATUS_EPISODE_NOT_FOUND` 等未在本文件直接使用的常量也要导入 —— 字面值断言要的就是「六个都钉住」，缺一个就等于没钉。）
+
+- [ ] **Step B: 加离线替身与 fixture**
+
+```python
+class _FakeTmdbClient:
+    """离线替身: 固定返回「Test Show」第 1 季第 2 集「Breakage」, 不碰网络。"""
+
+    language = "zh-CN"
+
+    def cache_fingerprint(self):
+        return "fake-client"
+
+    async def search_tv(self, query, year=None):
+        return [TmdbSearchItem(tv_id=1396, name=query, original_name=query, year=2008)]
+
+    async def get_tv_detail(self, tv_id):
+        return TmdbShow(tv_id=tv_id, name="Test Show", original_name="Test Show", year=2008)
+
+    async def get_season(self, tv_id, season_number):
+        return TmdbSeason(season_number=season_number, episodes={
+            2: TmdbEpisode(episode_number=2, name="Breakage"),
+        })
+
+
+@pytest.fixture
+def fake_tmdb(monkeypatch):
+    from app.api import renamer as renamer_api
+
+    monkeypatch.setattr(
+        renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
+    )
+```
+
+替身同时提供 `language` 与 `cache_fingerprint()` —— 那是 `TmdbResolver._scope()` 组装缓存键时要的两个成员，缺了会在构造缓存键时 `AttributeError`。
+
+- [ ] **Step C: 加三条用例**
+
+```python
+def test_tmdb_title_reaches_the_rendered_filename(client, fake_tmdb):
+    # 这是本任务的核心断言: {title} 是模板输入, 所以标题必须在渲染之前拿到。
+    # 单遍解析（先渲染再查 TMDB）会让这一条红 —— 上面那些用例全都不会。
+    row = preview(client, template=TITLE_TEMPLATE)
+    assert row["tmdb_status"] == "matched"
+    assert row["title"] == "Breakage"
+    assert row["new_filename"] == "Test Show - S01E02 - Breakage.mkv"
+    assert row["tmdb_match"]["tv_id"] == 1396
+    assert row["tmdb_match"]["year"] == 2008
+
+
+def test_tmdb_title_does_not_override_a_manual_title(client, fake_tmdb):
+    # 与上一个用例的区别: TMDB 确实查到了 (matched), 手动标题仍然赢。
+    row = preview(client, template=TITLE_TEMPLATE,
+                  overrides={"f1": {"show_name": "Test Show", "season": 1,
+                                    "episode": 2, "title": "手工标题"}})
+    assert row["tmdb_status"] == "matched"
+    assert row["new_filename"] == "Test Show - S01E02 - 手工标题.mkv"
+
+
+def test_tmdb_status_literals_are_the_wire_contract():
+    # 这六个字符串是前后端共享的线上契约: 预览响应的 tmdb_status 字段与前端分支
+    # 都按字面值判等, 而别处的测试全部引用常量本身 —— 互换任意两个常量的值
+    # 一个测试都不会红。所以在这里逐字钉死。
+    # "disabled" 尤其重要: 它不由解析器产出, 只由路由在未配置 Key 时产出,
+    # 是最容易被顺手改名的一个。
+    assert STATUS_MATCHED == "matched"
+    assert STATUS_DISABLED == "disabled"
+    assert STATUS_SHOW_NOT_FOUND == "show_not_found"
+    assert STATUS_SEASON_NOT_FOUND == "season_not_found"
+    assert STATUS_EPISODE_NOT_FOUND == "episode_not_found"
+    assert STATUS_UNAVAILABLE == "unavailable"
+```
+
+- [ ] **Step D: 变异验证**
+
+这三条的价值同样无法从「测试通过」看出来。做两组变异并记录 sha1 往返：
+
+| 变异 | 期望 |
+|---|---|
+| A 去掉标题合并（`_with_tmdb_titles` 里不把 `match.episode.name` 写进 `merged`） | `test_tmdb_title_reaches_the_rendered_filename` FAILED（`None == 'Breakage'`） |
+| B 改成无条件覆盖（`merged[f.id]["title"] = ...`，去掉「已有则不填」的判断） | `test_tmdb_title_does_not_override_a_manual_title` FAILED（保留 Breakage 而非「手工标题」） |
+
+- [ ] **Step E: 跑测试并提交**
+
+```bash
+cd backend && python -m pytest tests/ -v
+```
+
+预期：全部 PASS，且整套**不发起任何外部网络请求**。
+
+```bash
+git add backend/tests/test_rename_routes.py
+git commit -m "test(backend): 补三条有鉴别力的用例（{title} 真来自 TMDB / 手动标题优先 / 状态字面值契约）"
 ```
 
 ---
@@ -2016,7 +2164,9 @@ async def search_tv(
     try:
         hits = await client.search_tv(q.strip(), year=year)
     except TmdbAuthError as exc:
-        raise HTTPException(status_code=400, detail=f"TMDB API Key 无效: {exc}")
+        # 不要在这里再拼一次前缀 —— TmdbAuthError 的消息本身就是
+        # 「TMDB API Key 无效」, 拼出来会是「TMDB API Key 无效: TMDB API Key 无效」。
+        raise HTTPException(status_code=400, detail=str(exc))
     except TmdbUnavailableError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
