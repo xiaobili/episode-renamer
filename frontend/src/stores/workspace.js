@@ -207,7 +207,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  function onMountChange() {
+  function onMountChange(mount) {
+    // 必须先落进 store：selectedMount 是「浏览」对话框的根路径，也是要持久化的值。
+    // 只清 path 会让下拉框显示新挂载点、store 里还是旧的，浏览框就从错误的根下钻，
+    // 且旧值会被写回 localStorage。
+    olStore.selectedMount = mount
     path.value = ''
   }
 
