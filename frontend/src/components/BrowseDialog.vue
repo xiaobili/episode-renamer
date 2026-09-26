@@ -21,6 +21,7 @@
       <div class="p-5">
         <div class="mb-4 flex items-center gap-2 border-b border-line pb-3">
           <AppButton
+            ref="parentButtonRef"
             size="sm"
             variant="secondary"
             :disabled="!currentPath || currentPath === rootPath"
@@ -111,6 +112,9 @@ const parentPath = ref('')
 const selected = ref(null)
 
 const listRef = ref(null)
+// 焦点交接的兜底目标（见 focusListIndex）：走进没有子目录的目录之后，
+// 往上走是自然的下一步。
+const parentButtonRef = ref(null)
 
 const rootPath = computed(() => props.rootPath || '')
 
@@ -169,8 +173,9 @@ function onListKeydown(event) {
     const target = dirs.value[current]
     if (!target) return
     // 下钻会把整列换掉（loading 期间列表卸载），所以焦点不能停在原地 ——
-    // 让 load() 在新目录渲染好后把焦点交给它的第一项。
-    navigate(target.path, { focusFirst: true })
+    // 由 load() 在新目录渲染好后做交接：成功给新列表第一项，
+    // 失败还给这一项（restoreIndex），别把用户从他按下的目录挪开。
+    navigate(target.path, { focusFirst: true, restoreIndex: current })
     return
   }
   let next
@@ -183,8 +188,9 @@ function onListKeydown(event) {
   items[next].focus()
 }
 
-async function load(path, { focusFirst = false } = {}) {
+async function load(path, { focusFirst = false, restoreIndex = 0 } = {}) {
   loading.value = true
+  let loaded = false
   try {
     let res
     if (props.source === 'openlist') {
@@ -196,19 +202,28 @@ async function load(path, { focusFirst = false } = {}) {
     dirs.value = data.dirs || []
     parentPath.value = data.parent
     currentPath.value = data.path
+    loaded = true
   } catch (e) {
     emit('error', '加载目录失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     loading.value = false
   }
-  // 键盘下钻后把焦点交还给新列表的第一项（见 onListKeydown）。
-  // 必须等 nextTick —— loading 翻回 false 的同一拍列表才重新挂载。
-  // 新目录没有子项时 listRef 为 null（模板走「此目录无子目录」那一支），
-  // 此时不夺焦：模态陷阱会把下一次 Tab 收回对话框内。
+  // 键盘下钻后的焦点交接（见 onListKeydown）。必须等 nextTick ——
+  // loading 翻回 false 的同一拍列表才重新挂载。
   if (focusFirst) {
     await nextTick()
-    listRef.value?.querySelector('button')?.focus()
+    focusListIndex(loaded ? 0 : restoreIndex)
   }
+}
+
+// 把焦点交给列表里的第 idx 项。拿不到列表或该项时退回「上级」按钮 ——
+// 下钻进一个空目录会走模板里「此目录无子目录」那一支，listRef 是 null；
+// 旧实现此时什么都不做，焦点便落到 body 上，而 aria-modal 的对话框还开着，
+// 读屏的虚拟光标于是停在背景页。最低要求是焦点留在对话框内，
+// 「上级」既是已有的控件、也是走进死路后的自然下一步。
+function focusListIndex(idx) {
+  const items = listRef.value ? Array.from(listRef.value.querySelectorAll('button')) : []
+  ;(items[idx] || items[0] || parentButtonRef.value?.$el)?.focus()
 }
 
 function navigate(path, opts) {
