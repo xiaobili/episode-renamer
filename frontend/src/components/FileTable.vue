@@ -72,7 +72,9 @@
                  :max="999" 相符。 -->
             <th class="min-w-[96px] px-4 py-3 text-left font-semibold md:w-[96px]">季</th>
             <th class="min-w-[96px] px-4 py-3 text-left font-semibold md:w-[96px]">集</th>
+            <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[180px]">标题</th>
             <th class="w-[80px] px-4 py-3 text-left font-semibold md:w-[96px]">状态</th>
+            <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">TMDB</th>
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[220px]">新文件名</th>
           </tr>
         </thead>
@@ -111,6 +113,12 @@
                 <div class="h-8 w-12 rounded-[4px] bg-sunken" />
               </td>
               <td class="px-4 py-2.5">
+                <div class="h-8 w-[120px] rounded-[4px] bg-sunken" />
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="h-6 w-16 rounded-[4px] bg-sunken" />
+              </td>
+              <td class="hidden px-4 py-2.5 lg:table-cell">
                 <div class="h-6 w-16 rounded-[4px] bg-sunken" />
               </td>
               <td class="px-4 py-2.5">
@@ -168,6 +176,15 @@
                 />
               </td>
               <td class="px-4 py-2.5">
+                <AppInput
+                  v-model="row.title"
+                  size="sm"
+                  aria-label="集标题"
+                  placeholder="TMDB 标题"
+                  @update:model-value="$emit('update-row', row)"
+                />
+              </td>
+              <td class="px-4 py-2.5">
                 <AppBadge :tone="row.needs_review ? 'warn' : 'neutral'">
                   <template #icon>
                     <AlertTriangle v-if="row.needs_review" class="h-3.5 w-3.5" aria-hidden="true" />
@@ -175,6 +192,22 @@
                   </template>
                   {{ row.needs_review ? '待确认' : '已解析' }}
                 </AppBadge>
+              </td>
+              <td class="hidden px-4 py-2.5 lg:table-cell">
+                <div class="flex items-center gap-1.5">
+                  <AppBadge :tone="tmdbTone(row.tmdb_status)">
+                    {{ tmdbLabel(row.tmdb_status) }}
+                  </AppBadge>
+                  <button
+                    type="button"
+                    class="rounded-[6px] p-1 text-ink-3 transition-colors duration-150 hover:bg-sunken hover:text-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+                    :title="row.tmdb_match ? `当前：${row.tmdb_match.name}` : '搜索剧集'"
+                    :aria-label="`为 ${row.show_name} 重新选择 TMDB 剧集`"
+                    @click="$emit('rematch', row)"
+                  >
+                    <Search class="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </div>
               </td>
               <td class="px-4 py-2.5">
                 <div class="truncate font-medium text-ink" :class="row.new_filename ? '' : 'text-ink-3'">
@@ -191,7 +224,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { AlertTriangle, Check, FileQuestion } from 'lucide-vue-next'
+import { AlertTriangle, Check, FileQuestion, Search } from 'lucide-vue-next'
 
 import AppBadge from './ui/AppBadge.vue'
 import AppButton from './ui/AppButton.vue'
@@ -202,6 +235,25 @@ import AppInput from './ui/AppInput.vue'
 // 骨架的职责是「占住版面、表达正在加载」，不是「预告有多少行」。
 const SKELETON_ROWS = 8
 
+const TMDB_LABELS = {
+  matched: '已匹配',
+  disabled: '未启用',
+  show_not_found: '未匹配',
+  season_not_found: '无此季',
+  episode_not_found: '无此集',
+  unavailable: '不可用',
+}
+
+function tmdbLabel(status) {
+  return TMDB_LABELS[status] || '未知'
+}
+
+function tmdbTone(status) {
+  if (status === 'matched') return 'accent'
+  if (status === 'disabled') return 'neutral'
+  return 'warn'
+}
+
 const props = defineProps({
   filesStore: { type: Object, required: true },
   previewRows: { type: Array, default: () => [] },
@@ -211,7 +263,7 @@ const props = defineProps({
   scanning: { type: Boolean, default: false },
 })
 defineEmits([
-  'preview-all', 'clear-all', 'toggle-all', 'select-row', 'update-row', 'quick-scan',
+  'preview-all', 'clear-all', 'toggle-all', 'select-row', 'update-row', 'quick-scan', 'rematch',
 ])
 
 // 空态文案随数据源变化：本地源可以直接去扫描，云盘源得先连上才有目录可选。

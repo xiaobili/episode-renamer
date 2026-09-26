@@ -65,6 +65,7 @@
           @select-row="({ row, val }) => row.selected = val"
           @update-row="ws.updatePreview"
           @quick-scan="ws.doScan"
+          @rematch="ws.rematchShow"
         />
       </main>
     </div>
@@ -101,6 +102,15 @@
     @error="(m) => ws.showToast(m, 'error')"
   />
 
+  <TmdbMatchDialog
+    v-model="ws.tmdbDialog.open"
+    :row="ws.tmdbDialog.row"
+    :results="ws.tmdbDialog.results"
+    :loading="ws.tmdbDialog.loading"
+    @search="ws.searchShow"
+    @pick="ws.pickShow"
+  />
+
   <!-- 不要给它加外层 v-if：外层 v-if 会先卸载组件，组件内部的过渡包装观察不到 show 的变化，
        离场动画会因此整个消失（第二期修过一次，别改回去）。 -->
   <Toast :show="ws.toast.show" :type="ws.toast.type" :msg="ws.toast.msg" />
@@ -123,6 +133,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ExecutingOverlay from '../components/ExecutingOverlay.vue'
 import ResultDialog from '../components/ResultDialog.vue'
 import BrowseDialog from '../components/BrowseDialog.vue'
+import TmdbMatchDialog from '../components/TmdbMatchDialog.vue'
 import Toast from '../components/Toast.vue'
 
 const ws = useWorkspaceStore()

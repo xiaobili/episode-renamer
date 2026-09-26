@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 
 import { scanDirectory } from '../api/scanner'
 import { previewRename, executeRename, dryRunRename } from '../api/renamer'
+import { searchTmdb } from '../api/tmdb'
 import { getPresets } from '../api/template'
 import {
   openlistLogin,
@@ -38,6 +39,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const resultDialog = ref(false)
   const lastResult = ref(null)
   const olForm = reactive({ server_url: '', username: '', password: '' })
+
+  // 剧名 -> tv_id。用户重选后写入, 随每次预览/执行下发。
+  // 键用 show_name **原文**（预览行上那个），后端会做归一化后匹配 ——
+  // 若这里用归一化形式，后端拿到后又归一化一次，两侧对不上就静默失效。
+  const tmdbOverrides = reactive({})
+
+  const tmdbDialog = reactive({
+    open: false,
+    row: null,
+    query: '',
+    results: [],
+    loading: false,
+  })
 
   const browse = reactive({
     open: false,
@@ -283,6 +297,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         create_season_folder: tplStore.createSeasonFolder,
         episode_pad_digits: settingsStore.episodePadDigits,
         season_pad_digits: settingsStore.seasonPadDigits,
+        tmdb_api_key: settingsStore.tmdb.apiKey,
+        tmdb_language: settingsStore.tmdb.language,
+        tmdb_overrides: { ...tmdbOverrides },
       })
       const previews = res.data.results || []
       previewRows.value = filesStore.files.map(f => {
@@ -296,6 +313,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           new_filename: pv.new_filename || '',
           needs_review: pv.needs_review || false,
           confidence: pv.confidence || 0,
+          title: pv.title || '',
+          tmdb_status: pv.tmdb_status || 'disabled',
+          tmdb_match: pv.tmdb_match || null,
           override: {},
         }
       })
@@ -309,6 +329,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       show_name: row.show_name,
       season: row.season,
       episode: row.episode,
+      // 空串必须传 null 而不是 ''：后端 apply_override 用 `is not None` 判断,
+      // 传 '' 会把手动标题写成空串, 覆盖掉 TMDB 查到的标题。
+      title: row.title ? row.title : null,
     }
   }
 
@@ -383,6 +406,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         overrides,
         episode_pad_digits: settingsStore.episodePadDigits,
         season_pad_digits: settingsStore.seasonPadDigits,
+        tmdb_api_key: settingsStore.tmdb.apiKey,
+        tmdb_language: settingsStore.tmdb.language,
+        tmdb_overrides: { ...tmdbOverrides },
       })
       lastResult.value = res.data
       resultDialog.value = true
@@ -399,6 +425,42 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // 「模态进出 200ms」就静默失效了。
       executeDryRun.value = false
     }
+  }
+
+  function rematchShow(row) {
+    tmdbDialog.row = row
+    tmdbDialog.query = row.show_name || ''
+    tmdbDialog.results = []
+    tmdbDialog.open = true
+    if (tmdbDialog.query) searchShow()
+  }
+
+  async function searchShow(query) {
+    const q = (typeof query === 'string' ? query : tmdbDialog.query) || ''
+    if (!q.trim()) return
+    tmdbDialog.loading = true
+    try {
+      const res = await searchTmdb({
+        q: q.trim(),
+        apiKey: settingsStore.tmdb.apiKey,
+        language: settingsStore.tmdb.language,
+      })
+      tmdbDialog.results = res.data?.data || []
+    } catch (e) {
+      showToast('搜索失败: ' + (e.response?.data?.detail || e.message), 'error')
+      tmdbDialog.results = []
+    } finally {
+      tmdbDialog.loading = false
+    }
+  }
+
+  async function pickShow(item) {
+    if (!tmdbDialog.row) return
+    const showName = tmdbDialog.row.show_name
+    if (showName) tmdbOverrides[showName] = item.tv_id
+    tmdbDialog.open = false
+    await buildPreview()
+    showToast(`已选用 ${item.name}${item.year ? ` (${item.year})` : ''}`, 'success')
   }
 
   // 模板或补零位数变更后立即重建预览。原来这个 watch 在 HomeView 的 setup 里，
@@ -430,6 +492,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     onPresetChange, onTemplateEdit,
     buildPreview, previewAll, updatePreview, toggleAll, clearAll,
     askConfirm, resolveConfirm, showToast,
+    tmdbOverrides, tmdbDialog, rematchShow, searchShow, pickShow,
     doDryRun, doExecute, executeAction,
   }
 })
