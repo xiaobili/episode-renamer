@@ -44,6 +44,10 @@
             @template-edit="ws.onTemplateEdit"
             @update:createSeasonFolder="v => tplStore.createSeasonFolder = v"
             @update:folderTemplate="v => tplStore.folderTemplate = v"
+            :generate-nfo="ws.generateNfo"
+            :nfo-overwrite="ws.nfoOverwrite"
+            @update:generateNfo="v => ws.generateNfo = v"
+            @update:nfoOverwrite="v => ws.nfoOverwrite = v"
           />
         </template>
       </AppLeftRail>

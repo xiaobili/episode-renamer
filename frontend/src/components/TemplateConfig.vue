@@ -35,6 +35,24 @@
       />
     </div>
 
+    <div class="flex flex-col gap-3 border-t border-line pt-3">
+      <AppCheckbox
+        :model-value="generateNfo"
+        :disabled="source === 'openlist'"
+        :label="source === 'openlist' ? '同时生成 NFO 文件（OpenList 暂不支持）' : '同时生成 NFO 文件'"
+        @update:model-value="$emit('update:generateNfo', $event)"
+      />
+      <AppCheckbox
+        :model-value="nfoOverwrite"
+        :disabled="!generateNfo || source === 'openlist'"
+        label="覆盖已存在的 NFO"
+        @update:model-value="$emit('update:nfoOverwrite', $event)"
+      />
+      <p v-if="generateNfo && source !== 'openlist'" class="text-[11px] leading-relaxed text-ink-3">
+        生成 tvshow.nfo、season.nfo 与每集 .nfo。剧集级文件需要该目录下只有一部剧，否则只写每集 NFO。
+      </p>
+    </div>
+
     <div class="flex flex-col gap-2">
       <div class="flex items-center gap-1.5 text-[12px] text-ink-3">
         <Info class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -81,10 +99,13 @@ const VARIABLE_DEFS = [
 const props = defineProps({
   tplStore: { type: Object, required: true },
   source: { type: String, required: true },
+  generateNfo: { type: Boolean, default: false },
+  nfoOverwrite: { type: Boolean, default: false },
 })
 defineEmits([
   'preset-change', 'template-edit',
   'update:createSeasonFolder', 'update:folderTemplate',
+  'update:generateNfo', 'update:nfoOverwrite',
 ])
 
 const tplInputRef = ref(null)

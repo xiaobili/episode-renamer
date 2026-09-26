@@ -35,6 +35,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const scanning = ref(false)
   const executing = ref(false)
   const executeDryRun = ref(false)
+  // NFO 选项是本次会话的工作参数, 不进设置页 —— 它跟「扫哪个目录」一样,
+  // 是这一次任务的属性, 不是长期偏好。
+  const generateNfo = ref(false)
+  const nfoOverwrite = ref(false)
   const conflictStrategy = ref('skip')
   const resultDialog = ref(false)
   const lastResult = ref(null)
@@ -170,7 +174,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       filesStore.scanResult = data
       scannedInfo.value = data
       showToast(`扫描完成，发现 ${data.total_files} 个文件`, 'success')
-      await buildPreview()
+      await refreshPreviewReportingFailure()
     } catch (e) {
       showToast('扫描失败: ' + (e.response?.data?.detail || e.message), 'error')
     } finally {
@@ -221,7 +225,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       filesStore.scanResult = data
       scannedInfo.value = data
       showToast(`扫描完成，发现 ${data.total_files} 个文件`, 'success')
-      await buildPreview()
+      await refreshPreviewReportingFailure()
     } catch (e) {
       showToast('扫描失败: ' + (e.response?.data?.detail || e.message), 'error')
     } finally {
@@ -325,6 +329,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         tmdb_language: settingsStore.tmdb.language,
         tmdb_enabled: settingsStore.tmdb.enabled,
         tmdb_overrides: { ...tmdbOverrides },
+        generate_nfo: generateNfo.value,
+        nfo_overwrite: nfoOverwrite.value,
       })
       const previews = res.data.results || []
       previewRows.value = filesStore.files.map(f => {
@@ -341,6 +347,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           title: pv.title || '',
           tmdb_status: pv.tmdb_status || 'disabled',
           tmdb_match: pv.tmdb_match || null,
+          nfo: pv.nfo || null,
+          nfo_scope: pv.nfo_scope || 'disabled',
           // 手动编辑在重建后**保留**（按 file id 沿用上一份 override），不再硬编码
           // 空对象。重建的触发者 —— 点「预览」、改模板、改补零位数、改 TMDB 设置
           // —— 都不是「放弃我的编辑」的意思。曾经这里是 `override: {}`，于是
@@ -468,6 +476,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         tmdb_language: settingsStore.tmdb.language,
         tmdb_enabled: settingsStore.tmdb.enabled,
         tmdb_overrides: { ...tmdbOverrides },
+        generate_nfo: generateNfo.value,
+        nfo_overwrite: nfoOverwrite.value,
       })
       lastResult.value = res.data
       resultDialog.value = true
@@ -491,7 +501,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // executeAction 会把 tmdb_enabled: false 发下去, 后端对每行都返回 disabled,
   // 于是任何「重选」都会被静默丢弃。
   //
-  // 判据与后端 build_tmdb_client 的 `enabled is False` 对齐（不是 `!enabled`）:
+  // 判据与后端 resolve_tmdb_client 的 `enabled is False` 对齐（不是 `!enabled`）:
   // 只有**显式关闭**才算关, 未表态不等于关 —— 否则一个被手工改坏的 localStorage
   // 会让前端拒绝搜索, 而同时发出去的 tmdb_enabled 并没让后端禁用, 两边不一致。
   function tmdbOff() {
@@ -605,6 +615,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     buildPreview, previewAll, updatePreview, toggleAll, clearAll,
     askConfirm, resolveConfirm, showToast,
     tmdbOverrides, tmdbDialog, rematchShow, searchShow, pickShow,
+    generateNfo, nfoOverwrite,
     doDryRun, doExecute, executeAction,
   }
 })

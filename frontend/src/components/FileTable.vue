@@ -75,6 +75,7 @@
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[180px]">标题</th>
             <th class="w-[80px] px-4 py-3 text-left font-semibold md:w-[96px]">状态</th>
             <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">TMDB</th>
+            <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">NFO</th>
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[220px]">新文件名</th>
           </tr>
         </thead>
@@ -120,6 +121,9 @@
               </td>
               <td class="hidden px-4 py-2.5 lg:table-cell">
                 <div class="h-6 w-16 rounded-[4px] bg-sunken" />
+              </td>
+              <td class="hidden px-4 py-2.5 lg:table-cell">
+                <div class="h-4 w-[140px] rounded-[4px] bg-sunken" />
               </td>
               <td class="px-4 py-2.5">
                 <div class="h-4 w-[200px] rounded-[4px] bg-sunken" />
@@ -209,6 +213,20 @@
                   </button>
                 </div>
               </td>
+              <td class="hidden px-4 py-2.5 lg:table-cell">
+                <div v-if="row.nfo" class="flex flex-col gap-0.5 text-[11px]">
+                  <span class="truncate text-ink-2" :title="row.nfo.episode">
+                    {{ nfoBaseName(row.nfo.episode) }}
+                  </span>
+                  <span v-if="row.nfo.tvshow" class="truncate text-ink-3" :title="row.nfo.tvshow">
+                    + tvshow.nfo
+                  </span>
+                  <span v-else class="text-warn" :title="nfoScopeHint(row.nfo_scope)">
+                    仅每集 NFO
+                  </span>
+                </div>
+                <span v-else class="text-[11px] text-ink-3">{{ nfoScopeHint(row.nfo_scope) }}</span>
+              </td>
               <td class="px-4 py-2.5">
                 <div class="truncate font-medium text-ink" :class="row.new_filename ? '' : 'text-ink-3'">
                   {{ row.new_filename || '(未解析)' }}
@@ -252,6 +270,27 @@ function tmdbTone(status) {
   if (status === 'matched') return 'accent'
   if (status === 'disabled') return 'neutral'
   return 'warn'
+}
+
+// NFO 落点列的文案表。键必须与后端 `nfo_scope` 的四个取值逐字一致
+// （Task 4 产生：disabled / unsupported_source / episode_only / full）——
+// 少一个键不会报错，只会让那一行显示成兜底的「—」，看起来像「没有 NFO 计划」，
+// 把真实原因藏起来（spec §9.4 要防的正是这种静默）。
+const NFO_SCOPE_HINTS = {
+  disabled: '未启用',
+  unsupported_source: '云盘不支持',
+  episode_only: '多剧混放，仅每集 NFO',
+  full: '—',
+}
+
+// 后端给的是**完整路径**（spec §9.4：预览必须能看出 tvshow.nfo 落到哪个库根），
+// 所以这里只取末段做显示，全路径留在 title 里。
+function nfoBaseName(path) {
+  return path ? path.split('/').pop() : ''
+}
+
+function nfoScopeHint(scope) {
+  return NFO_SCOPE_HINTS[scope] || '—'
 }
 
 const props = defineProps({
