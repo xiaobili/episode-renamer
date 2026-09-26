@@ -298,24 +298,32 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
     return episode_decisions + tvshow_decisions + season_decisions
 
 
-def dedupe_skipped_by_path(
+def dedupe_skipped_pairs(
     skipped: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """按**路径**给「跳过」清单去重, 保留首次出现的顺序。
+    """给「跳过」清单去重, 保留首次出现的顺序 —— 判据是 **(路径, 原因) 这一对**。
 
     多剧混放分支会为组内**每个**条目各发一条同路径的决策（一个 3 文件混放批次
     是 6 条决策 / 2 个路径）。不去重的话对话框把「2 个文件不会被写」读成
     「跳过 6 个」—— 数字本身就在撒谎。
 
+    **为什么按 (路径, 原因) 而不是只按路径**: 同一个路径上确实可能发生**两件
+    不同的事**。spec §9.1.1 的跟随就是活例: 旧前缀的孤儿想跟随时撞上「新名字处
+    已有文件」而放弃（那条文件本来就在那儿）, 而生成侧同时报「已存在」。只按路径
+    去重会让生成侧胜出、跟随那条被吃掉 —— 用户看到「已存在 → 去勾覆盖开关」,
+    而勾了也**不会**让孤儿移动（跟随无条件重查 dst.exists(), 覆盖开关管不着它）,
+    于是孤儿永久留下且无人提及。两份理由各自保留, 理由串各自写明是**哪件事**
+    （跟随失败的串里点明「覆盖开关不影响跟随」）。
+
     抽成公共函数是因为有**两个**消费者: 真实写盘的 write_nfo_files 与
-    local_renamer 的干跑分支。两处各写一遍必然漂移（干跑报 6、真跑报 2）。
+    local_renamer 的那段汇总。两处各写一遍必然漂移（干跑报 6、真跑报 2）。
     """
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     unique: list[tuple[str, str]] = []
     for path, reason in skipped:
-        if path in seen:
+        if (path, reason) in seen:
             continue
-        seen.add(path)
+        seen.add((path, reason))
         unique.append((path, reason))
     return unique
 
@@ -363,4 +371,4 @@ def write_nfo_files(
             # 写 NFO 失败不能让整批重命名崩掉 —— 重命名那个时候已经成功了
             skipped.append((decision.path, f"写入失败: {exc}"))
 
-    return written, dedupe_skipped_by_path(skipped)
+    return written, dedupe_skipped_pairs(skipped)

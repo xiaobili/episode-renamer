@@ -321,8 +321,18 @@ def test_overwrite_replaces_the_existing_nfo_when_asked(tmp_path):
 def test_rename_dup_keeps_the_episode_nfo_paired_with_the_video(tmp_path):
     """`rename_dup`（界面上的「自动编号」）把目标解析成 X_1.mkv —— 每集 NFO 必须
     跟着改名后的视频走（X_1.nfo）。不跟的话视频没有同名 NFO, 而 NFO 会落到 X.nfo:
-    那是冲突那一集的位置, 覆盖模式下还会把它的内容改写掉。"""
+    那是冲突那一集的位置, 覆盖模式下还会把它的内容改写掉。
+
+    **同一件事也适用于跟随**（spec §9.1.1 边界 4 的落点判据）: 调用点必须用
+    `result.new_path`（真实目标 X_1）, 不是 `plan.new_path`（X）。用 plan.new_path
+    时孤儿算出的目标是**冲突那一集**的 NFO, 它当然已存在 → 报一个**假的**「新名字处
+    已有文件」, 孤儿原地不动, 而新视频旁边一个配对 NFO 都没有。
+
+    变异验证: 把调用点的 `result.new_path` 改成 `plan.new_path` → 本用例 FAILED
+    （nfo_carried 为空, 旧前缀的孤儿还在）。
+    """
     video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video)
     show_dir = tmp_path / SHOW_DIR
     clash_video = show_dir / "绝命毒师 - S02E05.mkv"
     clash_video.write_bytes(b"existing video")
@@ -343,6 +353,9 @@ def test_rename_dup_keeps_the_episode_nfo_paired_with_the_video(tmp_path):
     assert result.results[0].nfo_path == str(renamed_nfo)
     assert renamed_nfo.is_file(), "NFO 必须与改名后的视频同名配对"
     assert str(renamed_nfo) in result.nfo_written
+    # 孤儿跟随到**真实目标**（_1）的前缀, 不是计划目标（X = 冲突那一集）的前缀
+    assert result.nfo_carried == [str(renamed_nfo)]
+    assert not old_nfo.exists()
     # 冲突那一集的视频与它的 NFO 都不该被碰
     assert clash_video.read_bytes() == b"existing video"
     assert clash_nfo.read_text(encoding="utf-8") == "冲突那一集的既有 NFO"
@@ -701,7 +714,7 @@ def test_a_conflicted_first_episode_does_not_drop_the_show_level_nfo(tmp_path):
 # 从不进入扫描、不在批次里, 重命名路径上原先没有任何东西碰它 —— 视频改名后它
 # 必然留下, 成为与新文件名不符的孤儿。这一节钉住「同前缀的那一个 .nfo 跟着走」。
 
-CARRY_TARGET_EXISTS_REASON = "同名 NFO 未跟随移动: 目标 NFO 已存在, 不覆盖"
+CARRY_TARGET_EXISTS_REASON = "旧前缀 NFO 未跟随: 新名字处已有文件, 覆盖开关不影响跟随"
 DROPPED_GROUP_REASON = "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
 
 
@@ -840,6 +853,38 @@ def test_carry_does_not_overwrite_an_existing_target_nfo(tmp_path):
     assert old_nfo.read_text(encoding="utf-8") == "旧的", "源文件也不许动"
     assert result.executed == 1 and result.failed == 0
     assert (show_dir / "绝命毒师 - S02E05.mkv").is_file()
+
+
+def test_carry_skip_reason_survives_alongside_the_generation_skip(tmp_path):
+    """跟随的跳过不许被生成侧的「已存在」吃掉（去重判据是 (路径, 原因) 这一对）。
+
+    同一个路径上会发生**两件不同的事**: 那份文件本来就在（生成没写, 它那条理由
+    带着「去勾覆盖开关」的可行动提示）, 以及孤儿想过来却没搬成（跟随没成）。
+    只按路径去重时生成侧胜出, 界面于是把用户引去勾一个**对孤儿无效**的开关 ——
+    跟随无条件重查 dst.exists(), 覆盖开关管不着它 —— 孤儿就这么永久留下且无人提及。
+    所以两条理由都留着, 各自写明是哪件事（跟随那条自己点明「覆盖开关不影响跟随」）。
+
+    变异验证: 把 dedupe_skipped_pairs 改回只按路径去重 → 本用例 FAILED
+    （跟随那条理由消失, 界面只剩「已存在」）。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video, "旧的")
+    show_dir = tmp_path / SHOW_DIR
+    target = show_dir / "绝命毒师 - S02E05.nfo"
+    target.write_text("已经在那儿的", encoding="utf-8")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        nfo_options=named_options(overwrite=False),
+        nfo_matches={"f1": make_match()},
+    )
+
+    reasons = [item["reason"] for item in result.nfo_skipped if item["path"] == str(target)]
+    assert "已存在" in reasons, "生成侧那条（带可行动提示）"
+    assert CARRY_TARGET_EXISTS_REASON in reasons, "跟随侧那条（说明拖住它的是文件）"
+    assert result.nfo_carried == []
+    assert old_nfo.read_text(encoding="utf-8") == "旧的"
+    assert target.read_text(encoding="utf-8") == "已经在那儿的"
 
 
 def test_a_failed_carry_move_does_not_abort_the_batch(tmp_path, monkeypatch):

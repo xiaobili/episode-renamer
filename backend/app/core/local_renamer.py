@@ -12,7 +12,7 @@ from ..models.file import (
 from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
 from ..config import settings
 from .nfo_writer import (
-    build_nfo_decisions, dedupe_skipped_by_path, episode_nfo_path, write_nfo_files,
+    build_nfo_decisions, dedupe_skipped_pairs, episode_nfo_path, write_nfo_files,
 )
 from .parser import apply_override, parse_filename, _SEASON_DIR_PATTERNS
 from .template import PadConfig, apply_template, apply_folder_template
@@ -57,7 +57,11 @@ _DROPPED_GROUP_NFO_REASON = "该剧（季）下没有文件真正改名落地, �
 # 同前缀 NFO 跟随移动时的原因串（spec §9.1.1 的失败处理之一）。
 # 不写成同一类里的例外: 目标是**别人已存在的元数据**, 宁可留下可见的孤儿,
 # 也不静默改写它。
-_CARRIED_NFO_TARGET_EXISTS_REASON = "同名 NFO 未跟随移动: 目标 NFO 已存在, 不覆盖"
+# 串里明写「覆盖开关不影响跟随」: 同一个路径上生成侧也会报一条「已存在」, 那条
+# 带着「去勾覆盖开关」的可行动提示 —— 用户会把两条都读成同一件事, 于是去勾那个
+# **对孤儿无效**的开关（跟随无条件重查 dst.exists(), 覆盖开关管不着它）, 孤儿
+# 就这么永久留下。这条串自己说清拖住它的是文件、不是开关。
+_CARRIED_NFO_TARGET_EXISTS_REASON = "旧前缀 NFO 未跟随: 新名字处已有文件, 覆盖开关不影响跟随"
 
 # 「视频真的动了」的状态集合 —— 只有这些行的同前缀 NFO 才跟随移动。
 # dry_run 也算: 那一行**将会**真的动, 干跑要为它列出计划。
@@ -429,13 +433,13 @@ def batch_rename(
     nfo_written: list[str] = []
     nfo_skipped: list[dict] = []
 
-    # 所有「没发生的事」先汇总成 (路径, 原因) 对, 最后**统一按路径去重**。
-    # 三处来源都可能对同一个路径发多条: 同一集的两个来源（模板不含清晰度,
-    # 都算出同一个落点）、多剧混放为组内每个条目各发一条组级决策、以及
-    # 生成侧与跟随侧的跳过撞在同一个目标 NFO 上。不去重就会让对话框把 1 个
-    # 路径读成 N 个 —— 数字本身撒谎, 与混放那处同一类。
-    # 保留首次出现的顺序; 撞车时**先生成的先赢**（生成侧的「已存在」带着可行动
-    # 提示, 比跟随侧的说明更有用, 见下面 extend 的顺序）。
+    # 所有「没发生的事」先汇总成 (路径, 原因) 对, 最后统一去重（按**这一对**去重,
+    # 见 nfo_writer.dedupe_skipped_pairs）。三处来源都可能对同一个路径发多条:
+    # 同一集的两个来源（模板不含清晰度, 都算出同一个落点）、多剧混放为组内每个
+    # 条目各发一条组级决策、以及生成侧与跟随侧在同一个目标 NFO 上各报一条。
+    # 前两类是同一件事重复发, 必须合并（否则对话框把 1 个路径读成 N 个 ——
+    # 数字本身撒谎）; 第三类是**两件不同的事**（那份文件本来就在 → 生成没写;
+    # 孤儿想过来 → 没搬成）, 理由串各说各的, 两条都留着。
     skipped_pairs: list[tuple[str, str]] = []
 
     # 没落地的行: 它们的每集决策一律不写（理由见 _keep_decision）。组级决策由
@@ -499,15 +503,16 @@ def batch_rename(
             nfo_written = written_paths
             skipped_pairs.extend(write_skipped)
 
-    # 跟随侧报的跳过放在**最后**: 撞车时先生成的先赢（见上面 skipped_pairs 的注释）。
+    # 跟随侧报的跳过单独一排（它报的是「搬」这件事, 生成侧的报的是「写」）。
     skipped_pairs.extend(carry_skipped)
 
-    # 统一去重（复用写盘/干跑共用的那个实现）: 同一路径可能被多处报过 ——
-    # 同一集的两个来源、混放为每个条目各发一条的组级决策、生成与跟随撞在同一个
-    # 目标 NFO 上。不去重, 对话框就会把 1 个路径读成 N 个。
+    # 统一去重（复用写盘/干跑共用的那个实现, 判据是 (路径, 原因) 这一对）:
+    # 同一集的两个来源、混放为每个条目各发一条的组级决策都会对同一路径发同样
+    # 的原因 —— 那些必须合并, 不去重对话框就会把 1 个路径读成 N 个。
+    # 而「生成说已存在」+「跟随说没搬成」是两件不同的事, 两条都留着。
     nfo_skipped = [
         {"path": path, "reason": reason}
-        for path, reason in dedupe_skipped_by_path(skipped_pairs)
+        for path, reason in dedupe_skipped_pairs(skipped_pairs)
     ]
 
     return BatchRenameResult(
