@@ -154,3 +154,25 @@ button:not(:disabled) {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-border-control);
 }
+
+/* ==========================================================================
+   动效兜底：系统开启「减弱动态效果」时，全站动效一并关停（spec §11）。
+   --------------------------------------------------------------------------
+   用通配选择器 + !important 是有意的：本项目的动效分布在三处 ——
+   Tailwind 的 transition-* / animate-* 工具类、各组件 <style> 块里的
+   transition、以及 AppButton / ExecutingOverlay 的 animate-spin。
+   通配符是唯一能一次覆盖全部三处、且新增组件时不会漏的写法。
+
+   duration 用 .01ms 而不是 0：Vue 的 <Transition> 依赖 transitionend
+   事件来收尾，duration: 0 时事件可能不触发，元素会卡在离场状态。
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
