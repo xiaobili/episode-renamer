@@ -22,13 +22,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from .api import scanner, parser, renamer, template, openlist
+from .api import scanner, parser, renamer, template, openlist, tmdb
 
 app.include_router(scanner.router)
 app.include_router(parser.router)
 app.include_router(renamer.router)
 app.include_router(template.router)
 app.include_router(openlist.router)
+app.include_router(tmdb.router)
 
 
 @app.get("/health")
