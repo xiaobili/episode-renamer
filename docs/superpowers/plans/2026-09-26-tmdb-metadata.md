@@ -1104,6 +1104,12 @@ class TmdbResolver:
 
             try:
                 hits = await self._cache.get_or_create(key, fetch_search)
+            except TmdbNotFoundError:
+                # 与 detail 路径 (:257) 和 season 路径 (:273) 对称。search 是唯一
+                # 漏掉这一支的路径 —— 而客户端在任何 404 上都抛它, 拦截式代理 /
+                # DNS 屏蔽网络对被封主机回 404 是现实场景。漏掉会让预览请求 500,
+                # 违反「TMDB 故障绝不阻断重命名」。
+                return STATUS_SHOW_NOT_FOUND
             except TmdbUnavailableError:
                 return STATUS_UNAVAILABLE
 
@@ -2104,6 +2110,7 @@ from ..config import settings
 from ..core.tmdb_client import (
     TmdbAuthError,
     TmdbClient,
+    TmdbNotFoundError,
     TmdbUnavailableError,
 )
 
@@ -2147,6 +2154,12 @@ async def test_tmdb(
         hits = await client.search_tv(PROBE_QUERY)
     except TmdbAuthError as exc:
         return {"success": False, "status": "invalid_key", "message": str(exc)}
+    except TmdbNotFoundError as exc:
+        # 404 也归为不可达。本仓库的约定是「任何 Tmdb* 失败都不得逃过分级」——
+        # 客户端在任何 404 上都抛它, 而拦截式代理 / DNS 屏蔽网络对被封主机回 404
+        # 是现实场景。漏掉这一支, 这个端点会吐 500 + traceback,
+        # 而它存在的全部意义就是给设置页一个可读状态。
+        return {"success": False, "status": "unreachable", "message": str(exc)}
     except TmdbUnavailableError as exc:
         return {"success": False, "status": "unreachable", "message": str(exc)}
 
@@ -2175,6 +2188,9 @@ async def search_tv(
         # 不要在这里再拼一次前缀 —— TmdbAuthError 的消息本身就是
         # 「TMDB API Key 无效」, 拼出来会是「TMDB API Key 无效: TMDB API Key 无效」。
         raise HTTPException(status_code=400, detail=str(exc))
+    except TmdbNotFoundError as exc:
+        # 与 Unavailable 同样归 502。见 /test 里那一支的说明。
+        raise HTTPException(status_code=502, detail=str(exc))
     except TmdbUnavailableError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
