@@ -1756,7 +1756,11 @@ from ..models.file import (
 
 - [ ] **Step 10: 写路由测试**
 
-在 `backend/tests/test_rename_routes.py` 末尾追加：
+在 `backend/tests/test_rename_routes.py` 末尾追加下面的用例，并在文件顶部 import 区加上：
+
+```python
+from app.core.tmdb_client import TmdbAuthError, TmdbClient
+```
 
 ```python
 TITLE_TEMPLATE = "{show} - S{season_padded}E{episode_padded} - {title}{extension}"
@@ -1779,21 +1783,19 @@ def test_manual_title_override_wins_over_tmdb(client):
     assert row["new_filename"] == "Test Show - S01E02 - 手工标题.mkv"
 
 
-def test_tmdb_auth_error_becomes_400(client, monkeypatch):
+def test_invalid_tmdb_key_returns_400_not_silent_disabled(client, monkeypatch):
     # Review Focus 2：Key 无效必须报错, 不得静默降级成 disabled ——
     # 静默会让用户以为「功能没做」而不是「我填错了」。
     #
-    # 这里 monkeypatch 客户端, 而不发一次真实请求: 需要出网的用例在单元套件里是
-    # **构造性地不稳定**（换机器 / CI / 断网时红或超时）。完整链路已由两端覆盖 ——
-    # Task 1 的 `test_401_raises_auth_error` 用 MockTransport 证明了「真实 401 →
-    # TmdbAuthError」, 本用例只需证明「TmdbAuthError → 400」这条路由契约。
-    # 真实 Key 的端到端验证留在本计划「完成后」一节的 deferred-to-human 清单里。
-    from app.core.tmdb_client import TmdbAuthError, TmdbClient
-
-    async def always_401(self, query, year=None):
+    # 本用例**密闭, 不发起任何网络调用**。链路两端各有归属:
+    # 「真实 401 → TmdbAuthError」由 Task 1 的 test_401_raises_auth_error
+    # （MockTransport 回 401）覆盖; 这里只证明后半段「TmdbAuthError → 400」。
+    # 之前那版直接打真 TMDB, 换台机器或断网就会红, 在单元套件里是
+    # 构造性的不稳定, 故改为让客户端在鉴权点抛同名异常。
+    async def fake_search_tv(self, query, year=None):
         raise TmdbAuthError("TMDB API Key 无效")
 
-    monkeypatch.setattr(TmdbClient, "search_tv", always_401)
+    monkeypatch.setattr(TmdbClient, "search_tv", fake_search_tv)
 
     res = client.post("/api/rename/preview", json={
         "file_ids": ["f1"],
@@ -1801,10 +1803,12 @@ def test_tmdb_auth_error_becomes_400(client, monkeypatch):
         "source": "local",
         "path": "/media/Test Show",
         "overrides": OVERRIDES,
-        "tmdb_api_key": "whatever",
+        "tmdb_api_key": "definitely-invalid",
     })
     assert res.status_code == 400, res.text
     assert "TMDB" in res.json()["detail"]
+    # 文案不再重复前缀（异常自带的这句已含 "TMDB" 与「无效」）
+    assert res.json()["detail"] == "TMDB API Key 无效"
 
 
 def test_tmdb_overrides_are_accepted_by_the_request_model(client):
