@@ -2220,6 +2220,51 @@ git commit -m "feat(backend): TMDB 测试连接与剧集搜索端点（Key 走�
 
 ---
 
+### Task 4 补充：补齐两个端点的分支覆盖（审查轮追加）
+
+**这一节是审查的产物。** 上面 Step 1 的五条用例只覆盖了 `/test` 的 `not_configured` 一条分支与 `/search` 的「空查询 400」—— 而 `/api/tmdb/test` 存在的**全部意义**就是告诉用户「你的 Key 到底能不能用」，它的四个 status 分支就是这个端点的产品价值本身。分支写错的后果是用户拿着一个显示错误的诊断，去改一个本来没问题的配置。
+
+`/search` 同理：`year` 透传与 400-vs-502 的错误分级都无回归保护。
+
+**Files:**
+- Modify: `backend/tests/test_tmdb_routes.py`（**纯追加**，不改动 Step 1 那五条）
+
+- [ ] **Step A: 建立单一打桩缝**
+
+加两个辅助：一个构造 `TmdbSearchItem` 的小函数，一个 `_stub_search` —— 把 `TmdbClient.search_tv` 的替换收敛到**唯一一处**。这样新用例不可能绕过打桩直接触网，密闭性是**由构造保证**的，而不是靠每条用例自觉。
+
+- [ ] **Step B: 补 `/test` 的分支**
+
+至少覆盖 `ok` / `invalid_key` / `unreachable` / `disabled` 四条（`not_configured` 已有）。每条都要有鉴别力，具体地：
+
+- **`disabled` 必须喂一个有效 Key**，再断言 `status == "disabled"` —— 它钉的是「服务端开关优先于用户 Key」。若不给 Key，`not_configured` 分支会同样的满足它，这条用例就什么都没证明。
+- **`ok` 用两条名字不同的命中**，使 `sample` 钉住的是**第一条**而不是「某一个元素」。
+- `ok` 还要断言 `auth_mode` 的两种取值：v3 Key ↔ `"v3_api_key"`，`eyJ` 开头的 Token ↔ `"v4_bearer"`。
+- `invalid_key` / `unreachable` 除 status 外断言 `success is False`。
+
+- [ ] **Step C: 补 `/search` 的行为**
+
+- 正常返回时 `data` 的元素形状（`tv_id` / `name` / `original_name` / `year`）
+- **`year` 被真的透传**：假客户端要**同时**做两件事 —— 记录收到的 `year`，并**按其分支返回不同结果**。只做前者是一条断言，只做后者是另一条；两件都做，去掉 `year=year` 才会同时红两处。若假客户端无论收没收到 `year` 都返回同一份数据，这条用例在两种实现下都会绿 —— 那就白写了。
+- `TmdbUnavailableError` → **502**（与 400 分开断言）
+- `TmdbAuthError` → 400，且 detail **精确等于** `"TMDB API Key 无效"`（钉住「不再重复前缀」那条注释，而不只是钉住状态码）
+
+- [ ] **Step D: 变异验证并提交**
+
+这十条是刻画测试（钉住已发布行为），**不声称有 RED** —— 它们的鉴别力完全建立在变异之上。请为**每一条**找到一个能杀死它的变异，确认该变异**恰好只红这一条**，记哈希往返。
+
+```bash
+cd backend && python -m pytest tests/ -v
+unshare -rn python -m pytest tests/ -q    # 确认仍然密闭
+```
+
+```bash
+git add backend/tests/test_tmdb_routes.py
+git commit -m "test(backend): 补齐 TMDB 辅助端点的分支覆盖（/test 四个 status 与 /search 的 502/400、year 透传）"
+```
+
+---
+
 ### Task 5: 前端设置存储与断言
 
 把 TMDB 三项设置纳入既有的「localStorage → 随请求下发」链路（spec §10.4）。这个项目有过「设置写进去没人读」的前科，故本任务的断言脚本是必需的，不是可选的。
