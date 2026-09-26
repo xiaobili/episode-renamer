@@ -368,7 +368,7 @@ tmdb_overrides: dict[str, int] = {}   # 剧名 -> tv_id
   "nfo": {
     "episode": "/media/绝命毒师/Season 02/绝命毒师 - S02E05.nfo",
     "season":  "/media/绝命毒师/Season 02/season.nfo",
-    "show":    "/media/绝命毒师/tvshow.nfo"
+    "tvshow":  "/media/绝命毒师/tvshow.nfo"
   },
   "nfo_scope": "full"
 }
