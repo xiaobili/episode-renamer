@@ -58,6 +58,29 @@ assert('openlist 半残缺也能补全', normalizeSettings({ openlist: { concurr
 })
 assert('非法冲突策略回落默认', normalizeSettings({ conflictStrategy: 'nuke' }).conflictStrategy, 'skip')
 
+// --- TMDB 分组 ---
+assert('tmdb 默认未配置', defaultSettings().tmdb, { apiKey: '', language: 'zh-CN', enabled: true })
+assert('tmdb 半残缺也能补全', normalizeSettings({ tmdb: { apiKey: 'k' } }).tmdb,
+  { apiKey: 'k', language: 'zh-CN', enabled: true })
+assert('只给一个字段不影响 tmdb 完整性',
+  normalizeSettings({ conflictStrategy: 'abort' }).tmdb,
+  { apiKey: '', language: 'zh-CN', enabled: true })
+
+// --- tmdb 字段的类型防御（localStorage 里的值可能被手工改坏）---
+assert('apiKey 非字符串回落空串', normalizeSettings({ tmdb: { apiKey: 123 } }).tmdb.apiKey, '')
+assert('apiKey 为空串时保持空串', normalizeSettings({ tmdb: { apiKey: '' } }).tmdb.apiKey, '')
+assert('language 非字符串回落 zh-CN', normalizeSettings({ tmdb: { language: 42 } }).tmdb.language, 'zh-CN')
+assert('language 为空串回落 zh-CN', normalizeSettings({ tmdb: { language: '   ' } }).tmdb.language, 'zh-CN')
+assert('enabled 非布尔回落 true', normalizeSettings({ tmdb: { enabled: 'yes' } }).tmdb.enabled, true)
+assert('enabled false 被保留', normalizeSettings({ tmdb: { enabled: false } }).tmdb.enabled, false)
+
+// --- tmdb 往返读写 ---
+const tmdbStorage = fakeStorage()
+writeSettings(tmdbStorage, { ...defaultSettings(), tmdb: { apiKey: 'secret', language: 'ja-JP', enabled: false } })
+assert('写盘后读回 apiKey', readSettings(tmdbStorage).tmdb.apiKey, 'secret')
+assert('写盘后读回 language', readSettings(tmdbStorage).tmdb.language, 'ja-JP')
+assert('写盘后读回 enabled', readSettings(tmdbStorage).tmdb.enabled, false)
+
 // --- 旧字段名迁移（旧的 SettingsView 写的是 defaultTemplate） ---
 assert('旧字段 defaultTemplate 被迁移', normalizeSettings({ defaultTemplate: 'plex' }).defaultTemplateId, 'plex')
 assert('新字段优先于旧字段', normalizeSettings({ defaultTemplate: 'plex', defaultTemplateId: 'emby_standard' }).defaultTemplateId, 'emby_standard')

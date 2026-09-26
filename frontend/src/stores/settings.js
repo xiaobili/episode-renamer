@@ -33,6 +33,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const seasonPadDigits = ref(initial.seasonPadDigits)
   const conflictStrategy = ref(initial.conflictStrategy)
   const openlist = reactive({ ...initial.openlist })
+  const tmdb = reactive({ ...initial.tmdb })
 
   function apply(data) {
     const next = normalizeSettings(data)
@@ -40,6 +41,9 @@ export const useSettingsStore = defineStore('settings', () => {
     episodePadDigits.value = next.episodePadDigits
     seasonPadDigits.value = next.seasonPadDigits
     conflictStrategy.value = next.conflictStrategy
+    tmdb.apiKey = next.tmdb.apiKey
+    tmdb.language = next.tmdb.language
+    tmdb.enabled = next.tmdb.enabled
     openlist.serverUrl = next.openlist.serverUrl
     openlist.concurrency = next.openlist.concurrency
     openlist.requestInterval = next.openlist.requestInterval
@@ -51,6 +55,7 @@ export const useSettingsStore = defineStore('settings', () => {
       episodePadDigits: episodePadDigits.value,
       seasonPadDigits: seasonPadDigits.value,
       conflictStrategy: conflictStrategy.value,
+      tmdb: { ...tmdb },
       openlist: { ...openlist },
     }
   }
@@ -64,7 +69,7 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
-    defaultTemplateId, episodePadDigits, seasonPadDigits, conflictStrategy, openlist,
+    defaultTemplateId, episodePadDigits, seasonPadDigits, conflictStrategy, tmdb, openlist,
     storageAvailable,
     load, save, apply, toObject,
   }

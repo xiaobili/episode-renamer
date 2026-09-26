@@ -18,6 +18,13 @@ export function defaultSettings() {
     episodePadDigits: 2,
     seasonPadDigits: 2,
     conflictStrategy: 'skip',
+    // TMDB 未配置时 enabled 仍为 true —— 后端在 api_key 为空时自行降级为 disabled。
+    // 前端把「未配置」与「已禁用」当成两件事，用户才知道该去填 Key 还是该去打开开关。
+    tmdb: {
+      apiKey: '',
+      language: 'zh-CN',
+      enabled: true,
+    },
     openlist: {
       serverUrl: '',
       concurrency: 3,
@@ -49,6 +56,10 @@ export function normalizeSettings(raw) {
     ? raw.openlist
     : {}
 
+  const tmdb = (raw.tmdb && typeof raw.tmdb === 'object' && !Array.isArray(raw.tmdb))
+    ? raw.tmdb
+    : {}
+
   // defaultTemplate 是第一版的字段名。这里读一次做迁移，否则升级后
   // 用户已保存的默认模板会被静默丢掉、退回 emby_standard。
   const templateId = typeof raw.defaultTemplateId === 'string'
@@ -62,6 +73,15 @@ export function normalizeSettings(raw) {
     conflictStrategy: CONFLICT_STRATEGIES.includes(raw.conflictStrategy)
       ? raw.conflictStrategy
       : def.conflictStrategy,
+    tmdb: {
+      apiKey: asString(tmdb.apiKey, def.tmdb.apiKey),
+      // 只有「非空字符串」才算有效语言。空串与纯空白都回落到默认，
+      // 否则会把空语言下发给 TMDB，拿到的是原语言数据而用户以为设置了中文。
+      language: (typeof tmdb.language === 'string' && tmdb.language.trim())
+        ? tmdb.language.trim()
+        : def.tmdb.language,
+      enabled: typeof tmdb.enabled === 'boolean' ? tmdb.enabled : def.tmdb.enabled,
+    },
     openlist: {
       serverUrl: asString(openlist.serverUrl, def.openlist.serverUrl),
       concurrency: clampNumber(openlist.concurrency, 1, 10, def.openlist.concurrency, true),
