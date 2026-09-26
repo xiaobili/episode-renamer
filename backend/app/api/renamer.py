@@ -21,6 +21,7 @@ from ..core.tmdb_resolver import (
     TmdbResolver,
 )
 from .scanner import get_default_client
+from .tmdb import build_tmdb_client
 
 router = APIRouter(prefix="/api", tags=["renamer"])
 
@@ -45,17 +46,13 @@ def _pad_from_request(req) -> PadConfig | None:
 
 
 def _tmdb_client_from_request(req) -> Optional[TmdbClient]:
-    """未启用或未配置 Key 时返回 None —— 调用方据此降级为 disabled, 不发任何请求。"""
-    if not settings.tmdb_enabled:
-        return None
-    key = req.tmdb_api_key if req.tmdb_api_key is not None else settings.tmdb_api_key
-    if not key:
-        return None
-    return TmdbClient(
-        api_key=key,
-        language=req.tmdb_language or settings.tmdb_language,
-        timeout=settings.tmdb_timeout,
-    )
+    """未启用或未配置 Key 时返回 None —— 调用方据此降级为 disabled, 不发任何请求。
+
+    优先级与「空串算未提供」的判定**全部收敛在 build_tmdb_client 一处**
+    （与 /api/tmdb/* 共用, 见那里的注释与 spec §10.3）。这里只做一件事:
+    把 None 翻译成 preview/execute 的降级语义（spec §5.4: TMDB 不阻断重命名）。
+    """
+    return build_tmdb_client(req.tmdb_api_key, req.tmdb_language, req.tmdb_enabled)
 
 
 def _tmdb_summary(status: str, match: Optional[EpisodeMatch] = None) -> dict:

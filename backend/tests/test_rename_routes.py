@@ -362,3 +362,99 @@ def test_tmdb_status_literals_are_the_wire_contract():
     assert STATUS_SEASON_NOT_FOUND == "season_not_found"
     assert STATUS_EPISODE_NOT_FOUND == "episode_not_found"
     assert STATUS_UNAVAILABLE == "unavailable"
+
+
+def _recording_client_cls(sink):
+    """能记录构造实参的离线替身。
+
+    monkeypatch 的是 `api/tmdb.py` 里那个 `TmdbClient` —— build_tmdb_client
+    在**调用时**按模块全局查找它, 所以钉在这里既能看见「用哪个 Key 构造」,
+    也能看见「到底有没有被构造」, 且全程不出网。
+    """
+
+    class _RecordingTmdbClient(_FakeTmdbClient):
+        def __init__(self, api_key, language, timeout=0):
+            sink["api_key"] = api_key
+            sink["language"] = language
+            sink["constructed"] = True
+
+    return _RecordingTmdbClient
+
+
+def test_blank_request_key_falls_back_to_env_key(client, monkeypatch):
+    # findings 1: 设置页的提示「留空则用服务端 .env 的配置」必须为真。
+    # 空串是「未提供」而不是「用户提供了一把空 Key」—— 用 `is not None` 判断会
+    # 把空串当成已提供, key 为空 → 返回 None → **静默禁用 TMDB**, 而界面说它会
+    # 回退到 .env。Docker 部署(只配 .env、不经界面填 Key)正是这么被破坏的。
+    from app.config import settings
+    from app.api import tmdb as tmdb_api
+
+    sink = {}
+    monkeypatch.setattr(settings, "tmdb_api_key", "from-env")
+    monkeypatch.setattr(tmdb_api, "TmdbClient", _recording_client_cls(sink))
+
+    row = preview(client, template=TITLE_TEMPLATE, tmdb_api_key="")
+    assert row["tmdb_status"] == "matched"  # 没被短路成 disabled
+    assert sink["api_key"] == "from-env"    # 用的是 .env 的那把
+
+
+def test_request_key_overrides_env_key_on_rename(client, monkeypatch):
+    # 优先级的另一半: 设置页填的值必须能盖掉 .env, 否则又是「设置不生效」。
+    from app.config import settings
+    from app.api import tmdb as tmdb_api
+
+    sink = {}
+    monkeypatch.setattr(settings, "tmdb_api_key", "from-env")
+    monkeypatch.setattr(tmdb_api, "TmdbClient", _recording_client_cls(sink))
+
+    preview(client, template=TITLE_TEMPLATE, tmdb_api_key="from-request")
+    assert sink["api_key"] == "from-request"
+
+
+def test_blank_request_language_falls_back_to_env_language(client, monkeypatch):
+    # 语言与 Key 同一套优先级 —— 前端 store 里 language 被归一化过, 但老客户端
+    # 或手改过的 localStorage 仍可能发出空串。
+    from app.config import settings
+    from app.api import tmdb as tmdb_api
+
+    sink = {}
+    monkeypatch.setattr(settings, "tmdb_api_key", "from-env")
+    monkeypatch.setattr(settings, "tmdb_language", "zh-CN")
+    monkeypatch.setattr(tmdb_api, "TmdbClient", _recording_client_cls(sink))
+
+    preview(client, template=TITLE_TEMPLATE, tmdb_api_key="k", tmdb_language="")
+    assert sink["language"] == "zh-CN"
+
+
+def test_request_disable_wins_over_key(client, monkeypatch):
+    # findings 2: 设置页的「启用 TMDB 元数据」勾选框必须真的生效。
+    # 取消勾选前它是死设置 —— 写进 localStorage 却没人读, 全程零报错。
+    from app.api import tmdb as tmdb_api
+
+    sink = {}
+    monkeypatch.setattr(tmdb_api, "TmdbClient", _recording_client_cls(sink))
+
+    row = preview(client, template=TITLE_TEMPLATE,
+                  tmdb_api_key="from-request", tmdb_enabled=False)
+    assert row["tmdb_status"] == "disabled"
+    assert row["tmdb_match"] is None
+    # 连客户端都没构造 = 一个网络请求都不会发出去
+    assert sink.get("constructed") is None
+    # 关闭的是 TMDB, 不是重命名本身(spec §5.4)
+    assert row["new_filename"] == "Test Show - S01E02 - .mkv"
+
+
+def test_server_side_disable_beats_request_enable(client, monkeypatch):
+    # 服务端的 tmdb_enabled 为假时压过用户的勾选 —— 与 /api/tmdb/test 报的
+    # disabled 是同一语义, 否则那个总开关对 preview/execute 形同虚设。
+    from app.config import settings
+    from app.api import tmdb as tmdb_api
+
+    sink = {}
+    monkeypatch.setattr(settings, "tmdb_enabled", False)
+    monkeypatch.setattr(tmdb_api, "TmdbClient", _recording_client_cls(sink))
+
+    row = preview(client, template=TITLE_TEMPLATE,
+                  tmdb_api_key="from-request", tmdb_enabled=True)
+    assert row["tmdb_status"] == "disabled"
+    assert sink.get("constructed") is None

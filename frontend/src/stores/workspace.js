@@ -299,6 +299,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         season_pad_digits: settingsStore.seasonPadDigits,
         tmdb_api_key: settingsStore.tmdb.apiKey,
         tmdb_language: settingsStore.tmdb.language,
+        tmdb_enabled: settingsStore.tmdb.enabled,
         tmdb_overrides: { ...tmdbOverrides },
       })
       const previews = res.data.results || []
@@ -408,6 +409,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         season_pad_digits: settingsStore.seasonPadDigits,
         tmdb_api_key: settingsStore.tmdb.apiKey,
         tmdb_language: settingsStore.tmdb.language,
+        tmdb_enabled: settingsStore.tmdb.enabled,
         tmdb_overrides: { ...tmdbOverrides },
       })
       lastResult.value = res.data
@@ -469,12 +471,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // 补零位数两项是修复「设置不生效」时补上的：它们与模板同为渲染的输入，
   // 漏掉它们会让用户保存设置后回到工作区**仍看到旧位数** —— 与修复前那种
   // 「设置不生效」的观感一模一样，而 spec §15.3 要求的是「预览列立即显示」。
+  //
+  // TMDB 三项同因：它们也是渲染的输入（决定标题列与 TMDB 列的内容），
+  // 而且三者都真的随请求下发了。语言从 zh-CN 改成 ja-JP 却不回刷，用户回到
+  // 工作区看到的仍是旧语种的标题 —— 与「设置不生效」是同一个观感。
   // 设置 store 只在点「保存设置」时写入（草稿语义，见 SettingsView），所以
-  // 把这两项放进依赖数组不会让未保存的草稿影响工作区（Review Focus 5）。
+  // 把这些放进依赖数组不会让未保存的草稿影响工作区（Review Focus 5）。
   watch(
     () => [
       tplStore.currentTemplate, tplStore.folderTemplate, tplStore.createSeasonFolder,
       settingsStore.episodePadDigits, settingsStore.seasonPadDigits,
+      settingsStore.tmdb.apiKey, settingsStore.tmdb.language, settingsStore.tmdb.enabled,
     ],
     () => { if (filesStore.files.length) buildPreview() },
     { deep: true },

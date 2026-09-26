@@ -43,6 +43,9 @@ class RenamePreviewRequest(BaseModel):
     season_pad_digits: Optional[int] = None
     tmdb_api_key: Optional[str] = None
     tmdb_language: Optional[str] = None
+    # 前端设置页的「启用 TMDB 元数据」勾选框。None = 老客户端没传, 视为未表态;
+    # False = 用户显式关闭, 优先级最高(见 api/tmdb.py 的 build_tmdb_client)。
+    tmdb_enabled: Optional[bool] = None
     tmdb_overrides: dict[str, int] = Field(default_factory=dict)
 
 
@@ -59,6 +62,9 @@ class RenameExecuteRequest(BaseModel):
     season_pad_digits: Optional[int] = None
     tmdb_api_key: Optional[str] = None
     tmdb_language: Optional[str] = None
+    # 前端设置页的「启用 TMDB 元数据」勾选框。None = 老客户端没传, 视为未表态;
+    # False = 用户显式关闭, 优先级最高(见 api/tmdb.py 的 build_tmdb_client)。
+    tmdb_enabled: Optional[bool] = None
     tmdb_overrides: dict[str, int] = Field(default_factory=dict)
 
 

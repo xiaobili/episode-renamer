@@ -257,3 +257,58 @@ def test_env_key_is_used_when_header_absent(client, monkeypatch):
     res = client.get("/api/tmdb/search", params={"q": "x"})
     assert res.status_code == 200, res.text
     assert captured["key"] == "from-env"
+
+
+def test_build_tmdb_client_is_the_single_decision_point(monkeypatch):
+    # findings 1.2: /api/tmdb/* 与 /api/rename/* 的优先级只剩这一个决策点,
+    # 所以在这里逐条钉死。任一侧再长出第二套判断, 都会与这里对不上。
+    from app.config import settings
+    from app.api.tmdb import build_tmdb_client
+
+    monkeypatch.setattr(settings, "tmdb_api_key", "from-env")
+    monkeypatch.setattr(settings, "tmdb_language", "zh-CN")
+
+    # 空串与 None 一律算「未提供」→ 回落 .env。
+    # 这是 findings 1 的核心: 写成 `is not None` 会让空串被当成已提供。
+    assert build_tmdb_client("", "").api_key == "from-env"
+    assert build_tmdb_client("", "").language == "zh-CN"
+    assert build_tmdb_client(None, None).api_key == "from-env"
+    # 提供了就用提供的 —— 设置页的值必须能盖掉 .env
+    assert build_tmdb_client("from-req", "ja-JP").api_key == "from-req"
+    assert build_tmdb_client("from-req", "ja-JP").language == "ja-JP"
+    # 未表态(None) 不改变任何东西
+    assert build_tmdb_client("from-req", None, None) is not None
+    assert build_tmdb_client("from-req", None, True) is not None
+    # 关闭: 请求显式关, 或服务端关, 都是 None
+    assert build_tmdb_client("from-req", None, False) is None
+    monkeypatch.setattr(settings, "tmdb_enabled", False)
+    assert build_tmdb_client("from-req", None, True) is None
+    # 两侧都没 Key → None（怎么表达由调用方决定: 抛 400 还是降级 disabled）
+    monkeypatch.setattr(settings, "tmdb_enabled", True)
+    monkeypatch.setattr(settings, "tmdb_api_key", "")
+    assert build_tmdb_client(None, None) is None
+
+
+def test_search_endpoint_reports_disabled_when_server_switch_is_off(client, monkeypatch):
+    # 收敛前的实际缺陷: /search 只看 Key、从不看 settings.tmdb_enabled,
+    # 于是服务端总开关对搜索端点形同虚设(填了 Key 就照查不误)。
+    # /test 早就报 disabled —— 两处不一致正是因为优先级有两个判断点。
+    from app.config import settings
+
+    _stub_search(monkeypatch, hits=[_item(1, "Breaking Bad")])
+    monkeypatch.setattr(settings, "tmdb_enabled", False)
+    res = client.get("/api/tmdb/search", params={"q": "x"},
+                     headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 400, res.text
+    assert res.json()["detail"] == "TMDB 已被服务端禁用"
+
+
+def test_search_endpoint_wants_a_key_not_a_disabled_message(client, monkeypatch):
+    # 两种成因两种文案(spec §5.3): 「去填 Key」与「去开服务端开关」是两件事。
+    from app.config import settings
+
+    _stub_search(monkeypatch)
+    monkeypatch.setattr(settings, "tmdb_api_key", "")
+    res = client.get("/api/tmdb/search", params={"q": "x"})
+    assert res.status_code == 400, res.text
+    assert res.json()["detail"] == "TMDB 未配置 API Key"
