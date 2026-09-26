@@ -3026,6 +3026,11 @@ cd frontend && node scripts/check-settings-schema.mjs && node scripts/check-sfc-
 
 以下步骤需要真实 TMDB Key 与浏览器，按项目惯例标为 `deferred-to-human`：
 
+0. **先验设置的接线**（这一条是下面所有条目的前提，且**没有自动化覆盖**）：设置页改动 TMDB 三项 → 点「保存设置」→ **刷新页面** → 三项应保留 → 再回工作区扫描一个目录 → 预览表「TMDB」列应反映设置页的选择（如 `language` 改了，标题语种应随之变化）。
+
+   **为什么必须人工做**：`stores/settings.js` 的接线在本仓库**零自动化覆盖** —— `check-settings-schema.mjs` 加载不了它（vue/pinia + 无扩展名导入），`check-sfc-compile.mjs` 只读 `.vue`，而 `npm run build` 在 `tmdb` 从 store 的返回对象里消失时**不会失败**。这个仓库刻意没有前端测试设施（`settingsSchema.js` 开头的注释写着这一点），所以这一条是本计划**已知且被接受**的验证缺口，不是遗漏。
+   漏接线的症状正是本仓库有前科的那一类：设置写进 `localStorage` 却没人读，全程零报错。
+
 1. 设置页填入有效的 TMDB API Key（v3 或 v4 均可），点「测试连接」→ 应显示 `连接正常（v3_api_key，示例：…）`
 2. 工作区扫描一个真实剧集目录（如 `绝命毒师` 的若干集），模板含 `{title}` → 预览表「标题」列应显示每集真实标题，「TMDB」列为「已匹配」
 3. 把模板改成 `{show} - S{season_padded}E{episode_padded} - {title}`，「新文件名」列应随之带上标题
