@@ -21,6 +21,11 @@
 - **`dist/` 不进任务提交。** 每个任务只 `git add` 实际改动的文件，**不要 `git add -A`**；构建产物在 Task 5 单独打一个 `build:` 提交（项目惯例，见 ledger R45）。
 - **文案里的状态字面值必须与后端逐字一致**（`nfo_scope` 四值 `disabled`/`unsupported_source`/`episode_only`/`full`；`tmdb_status` 六值）。
 - **每个提交只含本任务的文件**，且提交信息说明「为什么」，不只说「改了什么」。
+- **不要用 `cmd | tail -N; echo $?` 这种写法读退出码** —— `$?` 取的是 **`tail`** 的状态，恒为 0，
+  于是这条检查**永远不会失败**。要既截断输出又拿到真实退出码，用重定向：
+  `cmd > /tmp/x.log 2>&1; echo "exit=$?"; tail -3 /tmp/x.log`。
+  （本计划初稿在四处的 `npm run build` 检查上都犯了这个错，由 Task 3 的实施者实测发现 —— 见 ledger R9。
+  它和 T1 那个同值 fixture 是同一族：**一条不可能变红的检查**。）
 
 ## Review Focus
 
@@ -619,7 +624,7 @@ import { buildRenamePayload } from './renamePayload'
 Run: `cd frontend && node scripts/check-sfc-compile.mjs; echo "sfc=$?"`
 Expected: 全部 `OK`，`sfc=0`。
 
-Run: `cd frontend && npm run build 2>&1 | tail -5; echo "build=$?"`
+Run: `cd frontend && npm run build > /tmp/build.log 2>&1; echo "build=$?"; tail -3 /tmp/build.log`
 Expected: `✓ built in ...`，`build=0`。
 
 Run（源码级接线检查 —— 证明两个调用点都用了同一个构造器，而不是各留一份字面量）：
@@ -797,7 +802,7 @@ function nfoNullHint(row) {
 Run: `cd frontend && node scripts/check-sfc-compile.mjs; echo "sfc=$?"`
 Expected: `OK src/components/FileTable.vue` 与 `OK src/views/HomeView.vue` 在列，`sfc=0`。
 
-Run: `cd frontend && npm run build 2>&1 | tail -5; echo "build=$?"`
+Run: `cd frontend && npm run build > /tmp/build.log 2>&1; echo "build=$?"; tail -3 /tmp/build.log`
 Expected: `✓ built in ...`，`build=0`。
 
 Run（确认新文案进入源码，且没有把「未启用」误删 —— 设置页关着时那条仍是必需的）：
@@ -931,7 +936,7 @@ const props = defineProps({
 Run: `cd frontend && node scripts/check-sfc-compile.mjs; echo "sfc=$?"`
 Expected: `OK src/components/TemplateConfig.vue` 与 `OK src/components/ResultDialog.vue` 在列，`sfc=0`。
 
-Run: `cd frontend && npm run build 2>&1 | tail -5; echo "build=$?"`
+Run: `cd frontend && npm run build > /tmp/build.log 2>&1; echo "build=$?"; tail -3 /tmp/build.log`
 Expected: `✓ built in ...`，`build=0`。
 
 Run:
@@ -1009,7 +1014,7 @@ Expected: 四个 `exit=0`，各自末行是「全部通过」或「全部 SFC �
 
 - [ ] **Step 3: 构建并做产物级检查**
 
-Run: `cd frontend && npm run build 2>&1 | tail -5; echo "build=$?"`
+Run: `cd frontend && npm run build > /tmp/build.log 2>&1; echo "build=$?"; tail -3 /tmp/build.log`
 Expected: `✓ built in ...`，`build=0`。
 
 Run:
