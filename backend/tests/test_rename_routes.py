@@ -209,7 +209,7 @@ def test_tmdb_overrides_are_accepted_by_the_request_model(client):
 class _FakeTmdbClient:
     """离线替身: 固定返回「Test Show」第 1 季第 2 集「Breakage」, 不碰网络。
 
-    `fail=` 的两种取值对应两种**不同深度**的故障, 两者在路由层都必须得到
+    `fail=` 的取值对应链条上**不同步骤**的故障, 它们在路由层都必须得到
     「200 + 重命名照做」, 但走的是链条上不同的几段（见
     test_tmdb_outage_does_not_block_the_rename 的说明）:
     - `"search"`: search_tv 抛 TmdbUnavailableError —— 已分类的故障
@@ -218,6 +218,12 @@ class _FakeTmdbClient:
       （如 int(number) 拿到 null）。它必须先经过守卫的宽捕获才会变成 unavailable,
       所以它也是唯一能钉住「守卫的宽捕获还在」的那种故障。取值与
       test_tmdb_resolver.FakeClient 的 `fail=` 对齐。
+    - `"detail"`: get_tv_detail 抛 TmdbUnavailableError —— 故障发生在**剧集详情**
+      那一步, 走的是 _resolve_show 里 detail 分支自己的分类点。
+    - `"season"`: get_season 抛 TmdbUnavailableError —— 故障发生在**季详情**那一步,
+      分类点在 resolve_many 接住 _resolve_season 的那一处（单季失败不拖垮其余分组）。
+    四个取值各是一次**不同调用点**的钉子: 只覆盖 search 的话, 上面两处的分类被删掉
+    也不会有任何用例转红。
     """
 
     language = "zh-CN"
@@ -241,9 +247,13 @@ class _FakeTmdbClient:
         return [TmdbSearchItem(tv_id=1396, name=query, original_name=query, year=2008)]
 
     async def get_tv_detail(self, tv_id):
+        if self._fail == "detail":
+            raise TmdbUnavailableError("TMDB 请求失败: connection refused")
         return TmdbShow(tv_id=tv_id, name="Test Show", original_name="Test Show", year=2008)
 
     async def get_season(self, tv_id, season_number):
+        if self._fail == "season":
+            raise TmdbUnavailableError("TMDB 请求失败: connection refused")
         return TmdbSeason(season_number=season_number, episodes={
             2: TmdbEpisode(episode_number=2, name="Breakage"),
         })
@@ -386,7 +396,7 @@ def test_dry_run_route_merges_the_tmdb_title(disk_client, fake_tmdb, tmp_path):
     assert not os.path.isfile(str(tmp_path / "Test Show - S01E02 - Breakage.mkv"))
 
 
-@pytest.mark.parametrize("fail", ["search", "value"])
+@pytest.mark.parametrize("fail", ["search", "value", "detail", "season"])
 def test_tmdb_outage_does_not_block_the_rename(
     disk_client, failing_tmdb, tmp_path, fail
 ):
@@ -399,13 +409,23 @@ def test_tmdb_outage_does_not_block_the_rename(
     「任何异常都变成 4xx/5xx」或「吞掉后什么都不写」, 全套测试依然全绿, 而每一次
     重命名都被阻断 / 被谎报成 disabled。
 
-    两个 fail= 取值覆盖链条上不同的段（都以「返回 200 且盘上真的换了名字」收尾）:
-    - `"value"`（未分类异常）钉住**守卫的宽捕获**: 这是唯一一条必须经过
-      _guarded 的宽捕获才能降级的路径。删掉宽捕获, ValueError 会一路冒到路由。
-    - `"search"`（TmdbUnavailableError）钉住**调用点的分类**: 它是已分类的降级
-      语义, 由 _resolve_show 的 `except TmdbUnavailableError` 接住并翻成
-      unavailable。把那处 re-raise 掉, 异常同样一路冒到路由。
-    两个 mutate 都实测过: 只有本条用例红（见最终修复报告的变异记录）。
+    四个 fail= 取值覆盖链条上**四个不同的分类点**（都以「返回 200 且盘上真的换了
+    名字」收尾）:
+    - `"value"`（未分类异常, search 步骤）钉住**守卫的宽捕获**: 这是唯一一条必须
+      经过 _guarded 的宽捕获才能降级的路径。删掉宽捕获, ValueError 会一路冒到路由。
+    - `"search"`（TmdbUnavailableError, search 步骤）钉住 _resolve_show 里
+      search 分支的 `except TmdbUnavailableError`。
+    - `"detail"` / `"season"`: 同一种已分类异常, 但发生在**剧集详情**与**季详情**
+      两步, 各自的分类点与前两处是不同的代码（detail 在 _resolve_show 的详情分支,
+      season 在 resolve_many 接住 _resolve_season 的那一处）。不补这两个取值,
+      把那两处分类删掉全套测试依然全绿。
+    变异记录（每条只改一处, 跑全套, 均为实测）:
+    - 删 _guarded 的宽捕获 → 红 3 条, 其中**路由级**只有本条的 [value];
+    - 删 search 分支的分类 → 红 6 条, 路由级有本条的 [search] 与 [value];
+    - 删 detail 分支的分类 → 红 1 条, 就是本条的 [detail];
+    - 删 resolve_many 里 season 的分类 → 红 3 条, 路由级只有本条的 [season]。
+    四个取值各自让**不同的**路由级参数转红（value / search / detail / season）,
+    也就说明这四处分类点没有一处是冗余的。
 
     两段断言各管一头, 缺一不可:
     - preview 是唯一**暴露 tmdb_status 的行**（execute/dry-run 回的是
@@ -421,7 +441,16 @@ def test_tmdb_outage_does_not_block_the_rename(
     row = res.json()["results"][0]
     # 故障被分类成 unavailable, 不是静默假装没事(disabled / matched)
     assert row["tmdb_status"] == "unavailable"
-    assert row["tmdb_match"] is None
+    if fail == "season":
+        # 季那一步失败时, 剧集本身**已经**解析出来了, 所以 tmdb_match 仍在 ——
+        # 它表达的一直是「剧集级匹配」, 与 status 落在六态降级的哪一态无关
+        # （season_not_found / episode_not_found 同样带着它）。断言状态而不是
+        # 断言它为空, 才不会把这条用例钉在「故障必须发生在剧集解析之前」上。
+        assert row["tmdb_match"]["tv_id"] == 1396
+    else:
+        # 其余三步都失败在剧集解析之前, 没有可报的剧集 —— 也证明故障没有被
+        # 伪装成一次成功匹配
+        assert row["tmdb_match"] is None
     assert row["new_filename"] == "Test Show - S01E02 - .mkv"
 
     res = disk_client.post("/api/rename/execute", json=_tmdb_write_payload())

@@ -5,12 +5,14 @@ from ..models.api import RenamePreviewRequest, RenameExecuteRequest
 from ..models.file import (
     FileInfo, ParsedInfo, RenamePlan, BatchRenameResult, OverrideInfo,
 )
+from ..models.nfo import NfoEntry, NfoOptions
 from ..core.local_renamer import batch_rename as local_batch_rename
 from ..core.openlist_renamer import (
     build_openlist_rename_plan, execute_openlist_batch,
 )
 from ..config import settings
 from ..core.template import PadConfig
+from ..core.nfo_writer import build_nfo_decisions
 from ..core.parser import apply_override, parse_filename
 from ..core.tmdb_client import TmdbAuthError, TmdbClient
 from ..core.tmdb_resolver import (
@@ -48,7 +50,7 @@ def _pad_from_request(req) -> PadConfig | None:
 def _tmdb_client_from_request(req) -> Optional[TmdbClient]:
     """未启用或未配置 Key 时返回 None —— 调用方据此降级为 disabled, 不发任何请求。
 
-    优先级与「空串算未提供」的判定**全部收敛在 build_tmdb_client 一处**
+    优先级与「空串算未提供」的判定**全部收敛在 resolve_tmdb_client 一处**
     （与 /api/tmdb/* 共用, 见那里的注释与 spec §10.3）。这里只做一件事:
     把 None 翻译成 preview/execute 的降级语义（spec §5.4: TMDB 不阻断重命名）。
     """
@@ -68,23 +70,25 @@ def _tmdb_summary(status: str, match: Optional[EpisodeMatch] = None) -> dict:
 
 async def _with_tmdb_titles(
     req, files: list[FileInfo]
-) -> tuple[dict[str, dict], dict[str, dict]]:
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, EpisodeMatch]]:
     """查 TMDB 并把标题并进 overrides。
 
-    返回 (合并后的 overrides, 每文件的 TMDB 摘要)。
+    返回 (合并后的 overrides, 每文件的 TMDB 摘要, 每文件的 EpisodeMatch)。
 
+    第三项供 NFO 生成消费 —— 它是 NFO 内容的唯一来源, 不重新查 TMDB。
     **手动指定的 title 永远优先于 TMDB** —— 这也是 episode_not_found 的兜底手段。
     """
     merged: dict[str, dict] = {
         f.id: dict(req.overrides.get(f.id) or {}) for f in files
     }
     summaries: dict[str, dict] = {}
+    matches_by_file: dict[str, EpisodeMatch] = {}
 
     client = _tmdb_client_from_request(req)
     if client is None:
         for f in files:
             summaries[f.id] = _tmdb_summary(STATUS_DISABLED)
-        return merged, summaries
+        return merged, summaries, matches_by_file
 
     # 用「覆盖之后」的解析结果去查 TMDB：用户手改的剧名/季/集才是他想要的那一部
     parsed: dict[str, ParsedInfo] = {}
@@ -113,11 +117,33 @@ async def _with_tmdb_titles(
 
     for f, match in zip(files, matches):
         summaries[f.id] = _tmdb_summary(match.status, match)
+        matches_by_file[f.id] = match
         if match.status == STATUS_MATCHED and match.episode and match.episode.name:
             if not merged[f.id].get("title"):
                 merged[f.id]["title"] = match.episode.name
 
-    return merged, summaries
+    return merged, summaries, matches_by_file
+
+
+def _nfo_options_from_request(req) -> NfoOptions:
+    return NfoOptions(
+        enabled=bool(getattr(req, "generate_nfo", False)),
+        overwrite=bool(getattr(req, "nfo_overwrite", False)),
+    )
+
+
+def _nfo_supported(source: str) -> bool:
+    """本期只有本地源能写 NFO。
+
+    OpenList 要写文件得先给 OpenListClient 加 /api/fs/put 上传能力,
+    那是独立的一块工作与风险, 见 spec §2 与 §14。
+    """
+    return source == "local"
+
+
+def _show_key(plan: RenamePlan) -> str:
+    """plan 的剧名（解析失败时为 ""）。剧集级 NFO 按剧分组, 判定也按剧 —— 见 preview。"""
+    return plan.parsed.show_name if plan.parsed else ""
 
 
 _cached_files: dict[str, list[FileInfo]] = {}
@@ -151,27 +177,79 @@ async def preview_rename(req: RenamePreviewRequest):
     # 两遍解析的原因: {title} 是模板的渲染输入之一, 所以 TMDB 的标题必须在
     # build_rename_plan 渲染之前到手。第一遍只解析拿 (剧名, 季, 集), 批量查完
     # TMDB 后再把标题并进 overrides, 第二遍才渲染。
-    merged, summaries = await _with_tmdb_titles(req, files)
+    merged, summaries, matches_by_file = await _with_tmdb_titles(req, files)
 
-    results: list[dict] = []
+    # 计划只构建一次 —— NFO 落点的推导与响应共用同一批 plan,
+    # 重复构建不但浪费, 两份结果一旦分叉就会出现「预览说写这里、实际写那里」。
+    plans: list[RenamePlan] = []
     for f in files:
-        overrides = merged.get(f.id) or {}
-        override = OverrideInfo(**overrides) if overrides else None
+        overrides_for_f = merged.get(f.id) or {}
+        override_for_f = OverrideInfo(**overrides_for_f) if overrides_for_f else None
 
         if source == "local":
             from ..core.local_renamer import build_rename_plan
-            plan = build_rename_plan(
+            plans.append(build_rename_plan(
                 f, req.template, req.folder_template,
-                req.create_season_folder, override, pad=pad,
-            )
+                req.create_season_folder, override_for_f, pad=pad,
+            ))
         elif source == "openlist":
-            plan = build_openlist_rename_plan(
+            plans.append(build_openlist_rename_plan(
                 f, req.template, req.folder_template,
-                req.create_season_folder, override, pad=pad,
-            )
+                req.create_season_folder, override_for_f, pad=pad,
+            ))
         else:
             raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
 
+    # NFO 落点必须在预览里可见 —— 「tvshow.nfo 会写到哪里」是库根污染的
+    # 唯一防线（spec §9.4）。这里只算决策, 绝不落盘。
+    nfo_options = _nfo_options_from_request(req)
+    nfo_paths_by_file: dict[str, dict] = {}
+    nfo_scope = "disabled"
+
+    if nfo_options.enabled:
+        if not _nfo_supported(source):
+            nfo_scope = "unsupported_source"
+        elif _tmdb_client_from_request(req) is None:
+            # 启用了 NFO 但没有 TMDB —— 没有任何内容可写, 如实报 disabled,
+            # 而不是让它落到下面算出 episode_only（那会暗示「只是没写剧集级」）。
+            nfo_scope = "disabled"
+        else:
+            decisions = build_nfo_decisions(
+                [
+                    NfoEntry(
+                        file_id=plan.file_id,
+                        new_path=plan.new_path,
+                        show_name=_show_key(plan),
+                        season=plan.parsed.season if plan.parsed else None,
+                        episode=plan.parsed.episode if plan.parsed else None,
+                        show=getattr(matches_by_file.get(plan.file_id), "show", None),
+                        season_data=getattr(matches_by_file.get(plan.file_id), "season", None),
+                        episode_data=getattr(matches_by_file.get(plan.file_id), "episode", None),
+                    )
+                    for plan in plans
+                ],
+                nfo_options,
+            )
+            for decision in decisions:
+                if decision.content is None:
+                    continue
+                nfo_paths_by_file.setdefault(decision.file_id, {})[decision.kind] = decision.path
+
+            # nfo_scope 说的是「剧集级 NFO 有没有被计划」, 判定按**剧**而不是按文件:
+            # 剧集级决策按契约只挂在组内首个 file_id 上（见 build_nfo_decisions 的
+            # 顺序/归属契约), 所以同一部剧选了两集时, 第二个文件根本没有 "tvshow" 键。
+            # 逐文件 all(...) 会把它假阴性报成 episode_only —— 而 tvshow.nfo 明明
+            # 在计划里, 前端据此显示的提示会把真实落点藏起来, 那正是 §9.4 要防的静默。
+            planned_shows = {
+                _show_key(plan) for plan in plans
+                if "tvshow" in nfo_paths_by_file.get(plan.file_id, {})
+            }
+            nfo_scope = "full" if all(
+                _show_key(plan) in planned_shows for plan in plans
+            ) else "episode_only"
+
+    results: list[dict] = []
+    for f, plan in zip(files, plans):
         summary = summaries.get(f.id) or _tmdb_summary(STATUS_DISABLED)
         results.append({
             "original_path": plan.original_path,
@@ -193,6 +271,8 @@ async def preview_rename(req: RenamePreviewRequest):
                 "original_name": summary["original_name"],
                 "year": summary["year"],
             } if summary["tv_id"] else None,
+            "nfo": nfo_paths_by_file.get(f.id) or None,
+            "nfo_scope": nfo_scope,
         })
 
     return {
@@ -212,7 +292,7 @@ async def execute_rename(req: RenameExecuteRequest):
     source = req.source.lower()
     pad = _pad_from_request(req)
 
-    merged, _summaries = await _with_tmdb_titles(req, files)
+    merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
     effective_overrides = merged
 
     if source == "local":
@@ -225,6 +305,11 @@ async def execute_rename(req: RenameExecuteRequest):
             dry_run=False,
             conflict_strategy=req.conflict_strategy,
             pad=pad,
+            # _nfo_supported 为假时传**未启用**的 options 而不是 None: 两者在
+            # batch_rename 里走同一分支, 但显式传让「OpenList 不写 NFO」这条规则
+            # 在调用点就看得见, 而不是依赖 batch_rename 内部的空值判断。
+            nfo_options=_nfo_options_from_request(req) if _nfo_supported(source) else NfoOptions(),
+            nfo_matches=matches_by_file,
         )
 
     elif source == "openlist":
@@ -268,7 +353,7 @@ async def dry_run_rename(req: RenameExecuteRequest):
     source = req.source.lower()
     pad = _pad_from_request(req)
 
-    merged, _summaries = await _with_tmdb_titles(req, files)
+    merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
     effective_overrides = merged
 
     if source == "local":
@@ -281,6 +366,8 @@ async def dry_run_rename(req: RenameExecuteRequest):
             dry_run=True,
             conflict_strategy=req.conflict_strategy,
             pad=pad,
+            nfo_options=_nfo_options_from_request(req) if _nfo_supported(source) else NfoOptions(),
+            nfo_matches=matches_by_file,
         )
     elif source == "openlist":
         client = get_default_client()

@@ -26,7 +26,7 @@ REASON_NOT_CONFIGURED = "not_configured"
 # 各端点自己的文案（spec §5.3 错误分级: 用户要做的事不同 ——「去开服务端总开关」
 # 还是「去填 Key」）。文案按端点分, 但**成因只有一个来源**, 见 resolve_tmdb_client。
 _UNAVAILABLE_MESSAGES = {
-    "rename": {
+    "search": {
         REASON_DISABLED: "TMDB 已被服务端禁用",
         REASON_NOT_CONFIGURED: "TMDB 未配置 API Key",
     },
@@ -107,7 +107,7 @@ def _client(header_key: Optional[str], header_language: Optional[str]) -> TmdbCl
     client, reason = resolve_tmdb_client(header_key, header_language)
     if client is None:
         raise HTTPException(
-            status_code=400, detail=_UNAVAILABLE_MESSAGES["rename"][reason]
+            status_code=400, detail=_UNAVAILABLE_MESSAGES["search"][reason]
         )
     return client
 
