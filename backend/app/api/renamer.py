@@ -60,14 +60,12 @@ def _tmdb_client_from_request(req) -> Optional[TmdbClient]:
 
 def _tmdb_summary(status: str, match: Optional[EpisodeMatch] = None) -> dict:
     show = match.show if match else None
-    episode = match.episode if match else None
     return {
         "status": status,
         "tv_id": show.tv_id if show else None,
         "name": show.name if show else None,
         "original_name": show.original_name if show else None,
         "year": show.year if show else None,
-        "episode_title": episode.name if episode else None,
     }
 
 
@@ -111,8 +109,10 @@ async def _with_tmdb_titles(
             for f in files
         ])
     except TmdbAuthError as exc:
-        # 401 是配置错误, 必须让用户看见 —— 不可静默降级成 disabled
-        raise HTTPException(status_code=400, detail=f"TMDB API Key 无效: {exc}")
+        # 401 是配置错误, 必须让用户看见 —— 不可静默降级成 disabled。
+        # 直接用异常自带的消息: TmdbAuthError 的文案本身就是「TMDB API Key 无效」,
+        # 再拼一层前缀会得到「TMDB API Key 无效: TMDB API Key 无效」。
+        raise HTTPException(status_code=400, detail=str(exc))
 
     for f, match in zip(files, matches):
         summaries[f.id] = _tmdb_summary(match.status, match)

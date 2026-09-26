@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.renamer import cache_files
+from app.core.tmdb_client import TmdbAuthError, TmdbClient
 from app.core.tmdb_resolver import (
     STATUS_DISABLED,
     STATUS_EPISODE_NOT_FOUND,
@@ -154,9 +155,20 @@ def test_manual_title_override_wins_over_tmdb(client):
     assert row["new_filename"] == "Test Show - S01E02 - 手工标题.mkv"
 
 
-def test_invalid_tmdb_key_returns_400_not_silent_disabled(client):
+def test_invalid_tmdb_key_returns_400_not_silent_disabled(client, monkeypatch):
     # Review Focus 2：Key 无效必须报错, 不得静默降级 ——
     # 静默会让用户以为「功能没做」而不是「我填错了」。
+    #
+    # 本用例**密闭, 不发起任何网络调用**。链路两端各有归属:
+    # 「真实 401 → TmdbAuthError」由 Task 1 的 test_401_raises_auth_error
+    # （MockTransport 回 401）覆盖; 这里只证明后半段「TmdbAuthError → 400」。
+    # 之前那版直接打真 TMDB, 换台机器或断网就会红/超时, 在单元套件里是
+    # 构造性的不稳定, 故改为让客户端在鉴权点抛同名异常。
+    async def fake_search_tv(self, query, year=None):
+        raise TmdbAuthError("TMDB API Key 无效")
+
+    monkeypatch.setattr(TmdbClient, "search_tv", fake_search_tv)
+
     res = client.post("/api/rename/preview", json={
         "file_ids": ["f1"],
         "template": TITLE_TEMPLATE,
@@ -167,6 +179,8 @@ def test_invalid_tmdb_key_returns_400_not_silent_disabled(client):
     })
     assert res.status_code == 400, res.text
     assert "TMDB" in res.json()["detail"]
+    # 文案不再重复前缀（异常自带的这句已含 "TMDB" 与「无效」）
+    assert res.json()["detail"] == "TMDB API Key 无效"
 
 
 def test_tmdb_overrides_are_accepted_by_the_request_model(client):
