@@ -1105,11 +1105,15 @@ class TmdbResolver:
             try:
                 hits = await self._cache.get_or_create(key, fetch_search)
             except TmdbNotFoundError:
-                # 与 detail 路径 (:257) 和 season 路径 (:273) 对称。search 是唯一
-                # 漏掉这一支的路径 —— 而客户端在任何 404 上都抛它, 拦截式代理 /
-                # DNS 屏蔽网络对被封主机回 404 是现实场景。漏掉会让预览请求 500,
-                # 违反「TMDB 故障绝不阻断重命名」。
-                return STATUS_SHOW_NOT_FOUND
+                # 这里**刻意不与 detail 路径对称**, 别把它「修」回去。
+                # 两条路径的 404 含义不同: get_tv_detail(tv_id) 的 404 确实意味着
+                # 「那个 tv_id 不存在」→ show_not_found; 而 /search/tv 对不存在的剧
+                # 是回 200 + 空结果, 所以它上面的 404 只可能来自基础设施
+                # (代理 / DNS 屏蔽被拦截) → 归 unavailable。
+                # 归成 show_not_found 会让代理屏蔽时预览显示「剧集未找到」,
+                # 把用户推去核对文件名, 而真正的问题在网络。
+                # 关键是不接住它会让预览请求 500, 违反「TMDB 故障绝不阻断重命名」。
+                return STATUS_UNAVAILABLE
             except TmdbUnavailableError:
                 return STATUS_UNAVAILABLE
 
