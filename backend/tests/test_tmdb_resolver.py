@@ -324,6 +324,17 @@ def test_unclassified_error_is_degraded_not_raised():
     assert matches[0].status == STATUS_UNAVAILABLE
 
 
+def test_malformed_search_hit_is_degraded_not_raised():
+    # 守卫的覆盖面必须包含「读外部 payload 的字段」这一步, 而不只是客户端调用
+    # 本身: hits[0].tv_id 是外部数据的字段, 一个缺 tv_id 的畸形条目会让它抛
+    # AttributeError。索引若留在守卫外, 这个 AttributeError 会一路冒到路由层
+    # 变成 500（与上面那条同一类缺陷, 只是炸点换了一行）。
+    matches, _ = resolve(
+        [ResolveRequest("绝命毒师", 2, 5)], client=FakeClient(hits=[object()])
+    )
+    assert matches[0].status == STATUS_UNAVAILABLE
+
+
 def test_failed_lookup_is_not_cached():
     # 失败不缓存：第一次失败、第二次成功 —— 必须真的重试，而不是把失败存下来。
     cache = TmdbCache(ttl=3600)

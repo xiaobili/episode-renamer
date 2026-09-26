@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.renamer import cache_files
-from app.core.tmdb_client import TmdbAuthError, TmdbClient
+from app.core.tmdb_client import TmdbAuthError, TmdbClient, TmdbUnavailableError
 from app.core.tmdb_resolver import (
     STATUS_DISABLED,
     STATUS_EPISODE_NOT_FOUND,
@@ -187,6 +187,14 @@ def test_invalid_tmdb_key_returns_400_not_silent_disabled(client, monkeypatch):
 
 def test_tmdb_overrides_are_accepted_by_the_request_model(client):
     # 只验证请求模型接受字段且不 422（未配 Key 时不会真的去查）
+    #
+    # 但 200 **证明不了**「模型声明了这个字段」—— Pydantic 默认忽略未知字段,
+    # 把 tmdb_overrides 从 RenamePreviewRequest 里删掉, 下面这条 POST 依然 200。
+    # 所以真正钉住声明的是 model_fields 那一条; 200 只顺带证明它没被 422 拒绝。
+    from app.models.api import RenamePreviewRequest
+
+    assert "tmdb_overrides" in RenamePreviewRequest.model_fields
+
     res = client.post("/api/rename/preview", json={
         "file_ids": ["f1"],
         "template": TEMPLATE,
@@ -199,14 +207,37 @@ def test_tmdb_overrides_are_accepted_by_the_request_model(client):
 
 
 class _FakeTmdbClient:
-    """离线替身: 固定返回「Test Show」第 1 季第 2 集「Breakage」, 不碰网络。"""
+    """离线替身: 固定返回「Test Show」第 1 季第 2 集「Breakage」, 不碰网络。
+
+    `fail=` 的两种取值对应两种**不同深度**的故障, 两者在路由层都必须得到
+    「200 + 重命名照做」, 但走的是链条上不同的几段（见
+    test_tmdb_outage_does_not_block_the_rename 的说明）:
+    - `"search"`: search_tv 抛 TmdbUnavailableError —— 已分类的故障
+      （连接被拒 / 超时）。
+    - `"value"`: search_tv 抛 ValueError —— **未分类**的故障, 只能在映射层炸出来
+      （如 int(number) 拿到 null）。它必须先经过守卫的宽捕获才会变成 unavailable,
+      所以它也是唯一能钉住「守卫的宽捕获还在」的那种故障。取值与
+      test_tmdb_resolver.FakeClient 的 `fail=` 对齐。
+    """
 
     language = "zh-CN"
+    # 类属性而不是只写在 __init__ 里: _recording_client_cls 那个子类重写了
+    # __init__ 且不调 super(), 只在 __init__ 里赋值会让它的 self._fail 变成
+    # AttributeError —— 而那会**在 search_tv 里**抛出, 被守卫归类成 unavailable,
+    # 表现为一条与本次改动毫不相干的用例(str_env_key 那条)莫名其妙地转红。
+    _fail = None
+
+    def __init__(self, fail=None):
+        self._fail = fail
 
     def cache_fingerprint(self):
         return "fake-client"
 
     async def search_tv(self, query, year=None):
+        if self._fail == "search":
+            raise TmdbUnavailableError("TMDB 请求失败: connection refused")
+        if self._fail == "value":
+            raise ValueError("invalid literal for int() with base 10: None")
         return [TmdbSearchItem(tv_id=1396, name=query, original_name=query, year=2008)]
 
     async def get_tv_detail(self, tv_id):
@@ -225,6 +256,26 @@ def fake_tmdb(monkeypatch):
     monkeypatch.setattr(
         renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
     )
+
+
+@pytest.fixture
+def failing_tmdb(monkeypatch):
+    """把「客户端**能**构造、但外部调用一定失败」的假客户端装进路由。
+
+    与 disabled 的区别正在这里: disabled 时 TmdbResolver 根本不会被构造, 那条
+    路径证明不了解析器故障时的行为。返回的是安装函数而不是装好的客户端, 让同一
+    条用例能覆盖 `fail=` 的多个取值。
+    """
+    from app.api import renamer as renamer_api
+
+    def install(fail):
+        monkeypatch.setattr(
+            renamer_api,
+            "_tmdb_client_from_request",
+            lambda req: _FakeTmdbClient(fail=fail),
+        )
+
+    return install
 
 
 class _OverrideOnlyTmdbClient(_FakeTmdbClient):
@@ -333,6 +384,55 @@ def test_dry_run_route_merges_the_tmdb_title(disk_client, fake_tmdb, tmp_path):
     # 干跑绝不落盘
     assert os.path.isfile(str(tmp_path / "Test.Show.S01E02.mkv"))
     assert not os.path.isfile(str(tmp_path / "Test Show - S01E02 - Breakage.mkv"))
+
+
+@pytest.mark.parametrize("fail", ["search", "value"])
+def test_tmdb_outage_does_not_block_the_rename(
+    disk_client, failing_tmdb, tmp_path, fail
+):
+    """铁律「TMDB 故障绝不阻断重命名」在**路由层**的钉子。
+
+    此前它只在解析器层被钉住（test_unclassified_error_is_degraded_not_raised
+    之类）, 而在路由层唯一能走到 unavailable 的路径是 disabled —— 那条路径上
+    TmdbResolver 根本不会被构造, 解析器一次都不会被调用。于是「解析器故障时路由
+    与解析器的接口还成立」这件事没有任何用例管: 把 _with_tmdb_titles 换成
+    「任何异常都变成 4xx/5xx」或「吞掉后什么都不写」, 全套测试依然全绿, 而每一次
+    重命名都被阻断 / 被谎报成 disabled。
+
+    两个 fail= 取值覆盖链条上不同的段（都以「返回 200 且盘上真的换了名字」收尾）:
+    - `"value"`（未分类异常）钉住**守卫的宽捕获**: 这是唯一一条必须经过
+      _guarded 的宽捕获才能降级的路径。删掉宽捕获, ValueError 会一路冒到路由。
+    - `"search"`（TmdbUnavailableError）钉住**调用点的分类**: 它是已分类的降级
+      语义, 由 _resolve_show 的 `except TmdbUnavailableError` 接住并翻成
+      unavailable。把那处 re-raise 掉, 异常同样一路冒到路由。
+    两个 mutate 都实测过: 只有本条用例红（见最终修复报告的变异记录）。
+
+    两段断言各管一头, 缺一不可:
+    - preview 是唯一**暴露 tmdb_status 的行**（execute/dry-run 回的是
+      BatchRenameResult, 没有这一列）, 所以「故障被分类成 unavailable, 而不是
+      静默假装 disabled/matched」只能在预览响应上断。
+    - execute 必须用**真的存在**的文件 (disk_client/tmp_path): 只断言 200 的话,
+      一个「返回空结果 + 200」的实现照样能骗过它, 盘上什么都没发生。
+    """
+    failing_tmdb(fail)
+
+    res = disk_client.post("/api/rename/preview", json=_tmdb_write_payload())
+    assert res.status_code == 200, res.text
+    row = res.json()["results"][0]
+    # 故障被分类成 unavailable, 不是静默假装没事(disabled / matched)
+    assert row["tmdb_status"] == "unavailable"
+    assert row["tmdb_match"] is None
+    assert row["new_filename"] == "Test Show - S01E02 - .mkv"
+
+    res = disk_client.post("/api/rename/execute", json=_tmdb_write_payload())
+    assert res.status_code == 200, res.text
+    row = res.json()["results"][0]
+    # 重命名照做, 且真的落到盘上 —— 没有 {title} 的回落文件名
+    assert row["success"] is True
+    assert row["new_filename"] == "Test Show - S01E02 - .mkv"
+    assert row["new_path"] == str(tmp_path / "Test Show - S01E02 - .mkv")
+    assert os.path.isfile(str(tmp_path / "Test Show - S01E02 - .mkv"))
+    assert not os.path.isfile(str(tmp_path / "Test.Show.S01E02.mkv"))
 
 
 def test_tmdb_override_selects_that_tv_id_and_skips_search(client, override_only_tmdb):

@@ -18,9 +18,19 @@ def _no_ambient_tmdb(monkeypatch):
 
     需要「环境里有 key」的用例（Task 4 的 test_header_key_overrides_env_key 之类）
     在用例内部再 monkeypatch 一次即可 —— autouse 夹具先执行，用例内的覆盖生效。
+
+    **五项 TMDB 设置全钉**，不只是「决定要不要出网」的那两项。另外三项今天没有
+    用例读它们，但那是**潜伏**状态而不是安全状态：`tmdb_language` 会进
+    TmdbClient、`tmdb_timeout` 会进它的超时、`tmdb_cache_ttl` 在模块导入时就被
+    `_DEFAULT_CACHE` 读走 —— 只要将来有一条用例顺手读其中一个，它就会随本机的
+    `.env` 变化，而这正是本夹具要消灭的那类偶发性。钉死成 config.py 里的默认值，
+    行为与「环境干净」时完全一致。
     """
     monkeypatch.setattr(settings, "tmdb_api_key", "")
     monkeypatch.setattr(settings, "tmdb_enabled", True)
+    monkeypatch.setattr(settings, "tmdb_language", "zh-CN")
+    monkeypatch.setattr(settings, "tmdb_timeout", 10.0)
+    monkeypatch.setattr(settings, "tmdb_cache_ttl", 3600)
 
 
 @pytest.fixture(autouse=True)
