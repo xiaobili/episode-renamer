@@ -91,3 +91,18 @@ export function writeSettings(storage, data) {
     // 配额满 / 只读存储。设置不持久化不应让保存按钮崩掉。
   }
 }
+
+// 设置页的「默认服务器地址」要预填进 OpenList 登录表单。
+// 优先级：设置页的值 > 上次实际使用的地址（olStore 的自有存储）> 空串。
+// 设置页的值优先，因为它正是「默认」二字的所指 —— 它必须能被用户感知到
+// 生效，否则就退回成本次修复前那种「写进 localStorage 却无人读」的死设置。
+// 回落上次使用的地址只在设置页留空时发生，保留「换过一次服务器」的便利。
+//
+// 两个入参都做类型防御：调用方给的可能是被手工改坏的 localStorage 值，
+// 非字符串（null / undefined / 对象）一律视为「未设置」，而不是被当成真值
+// 拼进表单（那会让表单里出现 "[object Object]"）。
+export function resolveOpenListServerUrl(settingsUrl, lastUsedUrl) {
+  if (typeof settingsUrl === 'string' && settingsUrl) return settingsUrl
+  if (typeof lastUsedUrl === 'string' && lastUsedUrl) return lastUsedUrl
+  return ''
+}

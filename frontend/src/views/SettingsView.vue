@@ -44,6 +44,7 @@
             v-model="draft.openlist.serverUrl"
             label="默认服务器地址"
             placeholder="http://localhost:5244"
+            hint="连接 OpenList 时预填此地址；留空则沿用上次连接过的地址"
           />
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <AppInput

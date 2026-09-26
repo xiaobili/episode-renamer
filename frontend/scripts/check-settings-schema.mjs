@@ -3,6 +3,7 @@ import {
   defaultSettings,
   normalizeSettings,
   readSettings,
+  resolveOpenListServerUrl,
   writeSettings,
 } from '../src/stores/settingsSchema.js'
 
@@ -96,6 +97,19 @@ const throwingRead = {
   setItem: () => {},
 }
 assert('getItem 抛异常时返回全默认', readSettings(throwingRead), defaultSettings())
+
+// --- 设置页「默认服务器地址」作为登录表单预填值 ---
+// 优先级：设置页的值 > 上次实际使用的地址 > 空串。
+// 设置页的值优先，因为它就是「默认」二字的所指；回落上次使用的地址
+// 只在设置页为空时发生，保留「换过一次服务器」的便利。
+assert('设置页有值时用设置页的值',
+  resolveOpenListServerUrl('http://settings:5244', 'http://last:5244'), 'http://settings:5244')
+assert('设置页为空时回落上次使用的地址',
+  resolveOpenListServerUrl('', 'http://last:5244'), 'http://last:5244')
+assert('两者都为空时返回空串', resolveOpenListServerUrl('', ''), '')
+assert('设置页值非字符串时回落上次使用',
+  resolveOpenListServerUrl(null, 'http://last:5244'), 'http://last:5244')
+assert('两者都非字符串时返回空串', resolveOpenListServerUrl(null, undefined), '')
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
 process.exitCode = failed === 0 ? 0 : 1

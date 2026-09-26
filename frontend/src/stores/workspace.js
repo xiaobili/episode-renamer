@@ -14,6 +14,7 @@ import { useFilesStore } from './files'
 import { useTemplateStore } from './template'
 import { useOpenListStore } from './openlist'
 import { useSettingsStore } from './settings'
+import { resolveOpenListServerUrl } from './settingsSchema'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const filesStore = useFilesStore()
@@ -102,7 +103,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (preset) tplStore.setPreset(preset)
     }
 
-    olForm.server_url = olStore.serverUrl || ''
+    // 设置页的「默认服务器地址」在这里生效。修复前这一行只读 olStore.serverUrl
+    // —— 那是另一个 localStorage 键（episode-renamer:openlist），而设置页写的是
+    // openlist.serverUrl（episode-renamer:settings），两者从不相通，于是这项设置
+    // 写进去就再没人读。优先级见 resolveOpenListServerUrl。
+    olForm.server_url = resolveOpenListServerUrl(
+      settingsStore.openlist.serverUrl,
+      olStore.serverUrl,
+    )
     olForm.username = olStore.username || ''
 
     const statusRes = await apiOlStatus()
