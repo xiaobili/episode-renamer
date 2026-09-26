@@ -230,11 +230,30 @@
                   <span v-if="row.nfo.tvshow" class="truncate text-ink-3" :title="row.nfo.tvshow">
                     + tvshow.nfo
                   </span>
-                  <span v-else-if="row.nfo.episode" class="text-warn" :title="nfoScopeHint(row.nfo_scope)">
+                  <!-- 这条的判据必须是**批次级**的 nfo_scope, 不能是「本行 nfo 里没有
+                       tvshow 键」: 剧集级决策按契约只挂在组内第一条 file_id 上
+                       （nfo_writer.build_nfo_decisions 的 group[0]）, 所以一个 10 集的
+                       剧目录里有 9 行的 nfo 都没有 tvshow 键 —— 逐行判会给这 9 行打出
+                       假警告, 而 tvshow.nfo 明明在计划里。后端把 nfo_scope 从「按文件」
+                       改成「按剧」判定, 正是同一个根因的修法。
+                       真正的 episode_only（多剧混放）批次里剧集级决策的 content 均为
+                       None → 被过滤 → 每行都没有 tvshow 键, 故这个条件恰好打在正确的
+                       那一批行上; 而 full 批次的非代表行不再有第二行 —— 信息无损,
+                       落点已由代表行显示。 -->
+                  <span
+                    v-else-if="row.nfo_scope === 'episode_only'"
+                    class="text-warn"
+                    :title="nfoScopeHint(row.nfo_scope)"
+                  >
                     仅每集 NFO
                   </span>
                 </div>
-                <span v-else class="text-[11px] text-ink-3">{{ nfoScopeHint(row.nfo_scope) }}</span>
+                <span
+                  v-else
+                  class="text-[11px]"
+                  :class="nfoNullHint(row).warn ? 'text-warn' : 'text-ink-3'"
+                  :title="nfoNullHint(row).title"
+                >{{ nfoNullHint(row).text }}</span>
               </td>
               <td class="px-4 py-2.5">
                 <div class="truncate font-medium text-ink" :class="row.new_filename ? '' : 'text-ink-3'">
@@ -300,6 +319,23 @@ function nfoBaseName(path) {
 
 function nfoScopeHint(scope) {
   return NFO_SCOPE_HINTS[scope] || '—'
+}
+
+// 只有这两个 scope 是**批次级**事实: 整批都不写 NFO, 所以按行重复报批次原因是对的。
+const BATCH_NFO_SCOPES = new Set(['disabled', 'unsupported_source'])
+
+// `nfo` 为 null 的行：本行没有任何落点。两种成因必须分开说 ——
+//   · disabled / unsupported_source：整批都不写, 照实报批次原因;
+//   · full / episode_only：批次里确实有东西要写, 只是不在本行（本行的 episode 决策
+//     content 为 None, 即 TMDB 没匹配到这一集）—— 那是**本行自己的**状态, 说
+//     「本集无 NFO」。若这里改报批次原因（如「多剧混放，仅每集 NFO」）, 同一文件状态
+//     就会因为「这一行是不是组代表」而渲染成两种不同的字, 读起来像两回事。
+// 与非空分支的第一行用同一句话, 正是为了让这两种归属的渲染一致。
+function nfoNullHint(row) {
+  if (BATCH_NFO_SCOPES.has(row.nfo_scope)) {
+    return { text: nfoScopeHint(row.nfo_scope), warn: false, title: undefined }
+  }
+  return { text: '本集无 NFO', warn: true, title: 'TMDB 未匹配到本集，不写本集 NFO' }
 }
 
 const props = defineProps({

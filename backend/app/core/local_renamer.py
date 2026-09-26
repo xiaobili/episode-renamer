@@ -270,6 +270,11 @@ def batch_rename(
                 if decision.content is None:
                     nfo_skipped.append({"path": decision.path, "reason": decision.reason or "无内容"})
                 elif Path(decision.path).exists() and not nfo_options.overwrite:
+                    # "已存在" 是**前端 ResultDialog 的判据串**: 出现它才追加那行可行动
+                    # 提示「如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行」。
+                    # 前端没有测试、后端也不断言这个串与前端消费者的关系, 所以改字
+                    # 不会让任何检查变红, 只会让提示静默消失。改这里要同步前端。
+                    # 另一半在 nfo_writer.write_nfo_files（真实写盘那条路径）。
                     nfo_skipped.append({"path": decision.path, "reason": "已存在"})
                 elif decision.path not in nfo_written:
                     nfo_written.append(decision.path)

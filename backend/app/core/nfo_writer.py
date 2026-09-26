@@ -323,6 +323,11 @@ def write_nfo_files(
 
         target = Path(decision.path)
         if target.exists() and not overwrite:
+            # "已存在" 是**前端 ResultDialog 的判据串**: 出现它才追加那行可行动提示
+            # 「如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行」。前端没有
+            # 测试、后端也不断言这个串与前端消费者的关系, 所以改字不会让任何检查
+            # 变红, 只会让提示静默消失。改这里要同步前端。
+            # 另一半在 local_renamer.py 的干跑分支（同名串, 同一判据）。
             skipped.append((decision.path, "已存在"))
             continue
 
