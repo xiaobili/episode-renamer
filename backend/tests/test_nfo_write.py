@@ -462,10 +462,50 @@ def test_mixed_shows_in_one_directory_write_episode_nfo_only(tmp_path):
         str(show_dir / "绝命毒师 - S02E05.nfo"),
         str(show_dir / "绝命律师 - S01E01.nfo"),
     ])
-    assert len(result.nfo_skipped) == 4, "4 条: 两部剧各一条 tvshow + 各一条 season"
-    assert all("多部剧混放" in item["reason"] for item in result.nfo_skipped)
+    # 2 条**而不是 4 条**: 混放分支为组内每个条目各发一条同路径的决策（这里 4 条
+    # 决策、2 个路径）, 跳过清单按路径去重后才对得上「有 2 个文件不会被写」。
+    # 去重前这里是 4 —— 对话框会把它读成「跳过 4 个」。
+    assert [(item["path"], item["reason"]) for item in result.nfo_skipped] == [
+        (str(show_dir / "tvshow.nfo"), f"{show_dir} 下有多部剧混放, 不写剧集级 NFO"),
+        (str(show_dir / "season.nfo"), f"{show_dir} 下有多部剧混放, 不写剧集级 NFO"),
+    ]
     assert not (show_dir / "tvshow.nfo").exists()
     assert not (show_dir / "season.nfo").exists()
+
+
+def test_mixed_shows_do_not_inflate_the_skipped_count(tmp_path):
+    """3 文件混放批次（6 条决策 / 2 个路径）报 2 条跳过, 干跑与真跑一个数字。
+
+    这是 1 部剧 2 集 + 1 部剧 1 集：混放守卫按**组内每个条目**各发一条同路径的
+    剧集级/季级决策, 于是 6 条决策只对应 2 个真实路径 —— 不去重就报「跳过 6 个」。
+    干跑那条路径是**另一份实现**（local_renamer 自己拼清单, 不走 write_nfo_files）,
+    两处各写一遍必然漂移, 所以这里对同一个夹具先干跑后真跑, 断言两者相等。
+    """
+    first = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    second = make_video(tmp_path, filename="绝命毒师.S02E06.mkv")
+    third = make_video(tmp_path, filename="绝命律师.S01E01.mkv")
+    files = [make_file(first, "f1"), make_file(second, "f2"), make_file(third, "f3")]
+    matches = {
+        "f1": make_match(),
+        "f2": make_match(episode_no=6),
+        "f3": make_match(show_name="绝命律师", season_no=1, episode_no=1),
+    }
+
+    # 剧名取自**父目录名**, 所以第三个文件得靠手改剧名才会与另外两个分属两部剧
+    # （否则三部文件同属「绝命毒师」, 守卫不拒绝, 也就复现不出这个形状）。
+    overrides = {"f3": {"show_name": "绝命律师"}}
+    dry = batch_rename(files, TEMPLATE, dry_run=True, overrides=overrides,
+                       nfo_options=named_options(), nfo_matches=matches)
+    real = batch_rename(files, TEMPLATE, overrides=overrides,
+                        nfo_options=named_options(), nfo_matches=matches)
+
+    assert dry.nfo_written == real.nfo_written
+    assert len(real.nfo_written) == 3, "每集 NFO 照写（3 个视频）"
+    assert len(real.nfo_skipped) == 2, "2 个路径（tvshow + season）而不是 6 条决策"
+    assert len(dry.nfo_skipped) == 2, "干跑那条实现必须报同一个数字"
+    assert [item["path"] for item in dry.nfo_skipped] == [
+        item["path"] for item in real.nfo_skipped
+    ]
 
 
 def make_subtitle(video, file_id="f2"):
@@ -521,3 +561,123 @@ def test_subtitle_gets_no_nfo_and_show_level_files_land_on_the_video(tmp_path):
     assert result.results[1].success is True
     assert not Path(subtitle.path).is_file(), "字幕原文件应已被重命名"
     assert (show_dir / "绝命毒师 - S02E05.srt").is_file()
+
+
+# --- 没落地的行不写 NFO（审查 Important 1）------------------------------------
+# 写盘阶段原来看的是「这条决策算出来了没有」, 而不是「这一行真的落到那儿了没有」。
+# 于是 skip 策略下目标名被占用时（视频一步没动）, 给**它**算的每集 NFO 会落在
+# **占住这个名字的另一个视频**旁边; abort 下更糟: 行上报着 nfo_path=None, 磁盘上
+# 却出现了一个新文件。这两条用例就是审查复现的 CASE1 / CASE2。
+
+def test_file_that_was_not_renamed_writes_no_nfo(tmp_path):
+    """CASE1: strategy=skip、目标名被另一个视频占住 —— 一个字都不许落盘。
+
+    变异验证: 去掉 local_renamer 里 `_keep_decision` 那道过滤（或把它换成恒真）
+    → 本用例 FAILED: 绝命毒师 - S02E05.nfo 会出现在**占用者**旁边（那是一个
+    与它毫无关系的视频）, 且 nfo_written 非空。
+    """
+    video = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    show_dir = tmp_path / SHOW_DIR
+    occupier = show_dir / "绝命毒师 - S02E05.mkv"
+    occupier.write_bytes(b"occupying video")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        conflict_strategy="skip",
+        nfo_options=named_options(),
+        nfo_matches={"f1": make_match()},
+    )
+
+    assert result.results[0].status == "skipped_conflict"
+    assert result.results[0].nfo_path is None
+    assert result.skipped == 1 and result.failed == 0
+    # 视频一步没动, 所以它旁边也不该多出任何 NFO
+    assert video.is_file()
+    assert not (show_dir / "绝命毒师 - S02E05.nfo").exists()
+    assert not (show_dir / "绝命毒师.S02E05.nfo").exists()
+    # 整批一条都没落地 → 剧集级/季级的落点同样是凭空推出来的, 一并不写
+    assert result.nfo_written == []
+    assert not (show_dir / "tvshow.nfo").exists()
+    assert not (show_dir / "season.nfo").exists()
+    # 不写要报出来（留白等于静默）: 这一行的 NFO 被跳过, 原因是它没改名
+    assert result.nfo_skipped == [{
+        "path": str(show_dir / "绝命毒师 - S02E05.nfo"),
+        "reason": "该文件未改名, 不写 NFO",
+    }]
+    assert occupier.read_bytes() == b"occupying video"
+
+
+def test_abort_strategy_writes_no_nfo_for_the_conflicted_row(tmp_path):
+    """CASE2: strategy=abort —— 用户选了最保守的策略, 不能反而多出一个文件。
+
+    abort 那条分支原先在给 result.nfo_path 赋值**之前**就 `continue` 了, 于是
+    行上永远报 None, 而写盘阶段照样把那一集的 NFO 写出去 —— 用户被告知「这一行
+    没有落点」, 转头却发现自己的 NFO 已经躺在别人视频旁边。
+
+    abort 行必须**走到**下面那段共用逻辑（没落地 → 不写 + 报跳过）, 所以本用例
+    同时钉住那个既有的 `continue` 残留: 恢复它, 本用例 FAILED（nfo_written 非空,
+    且 nfo_skipped 里没有那条「该文件未改名」）。
+
+    计数与改动前一致: abort 的冲突行计入 failed, 不是 skipped。
+    """
+    video = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    show_dir = tmp_path / SHOW_DIR
+    (show_dir / "绝命毒师 - S02E05.mkv").write_bytes(b"occupying video")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        conflict_strategy="abort",
+        nfo_options=named_options(),
+        nfo_matches={"f1": make_match()},
+    )
+
+    assert result.results[0].status == "conflict"
+    assert result.results[0].nfo_path is None
+    assert result.failed == 1 and result.skipped == 0
+    assert video.is_file()
+    assert result.nfo_written == []
+    assert not (show_dir / "绝命毒师 - S02E05.nfo").exists()
+    assert not (show_dir / "tvshow.nfo").exists()
+    assert [item["path"] for item in result.nfo_skipped] == [
+        str(show_dir / "绝命毒师 - S02E05.nfo"),
+    ]
+
+
+def test_a_conflicted_first_episode_does_not_drop_the_show_level_nfo(tmp_path):
+    """反面: 组代表那一行没落地, 也不能把整部剧的 tvshow.nfo 丢掉。
+
+    E05 的目标名被占（跳过）, E06 照常改名 —— 剧集级/季级决策按契约挂在组内
+    **第一条**（排序后是 E05, 也就是那条没落地的行）上。判据写成「决策的 file_id
+    没落地就整条丢掉」会把这个批次的两份剧集级 NFO 一起吞掉, 而 E06 明明就在
+    那个目录里。组级决策属于**整组**, 判据必须是「该目录下有没有真的落地一个
+    视频」。
+
+    变异验证: 把 _keep_decision 的组级分支也换成 `decision.file_id not in
+    dead_file_ids` → 本用例 FAILED（tvshow.nfo / season.nfo 都不再被写）。
+    """
+    conflicted = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    renamed = make_video(tmp_path, filename="绝命毒师.S02E06.mkv")
+    show_dir = tmp_path / SHOW_DIR
+    (show_dir / "绝命毒师 - S02E05.mkv").write_bytes(b"occupying video")
+
+    result = batch_rename(
+        [make_file(conflicted, "f1"), make_file(renamed, "f2")], TEMPLATE,
+        conflict_strategy="skip",
+        nfo_options=named_options(),
+        nfo_matches={"f1": make_match(), "f2": make_match(episode_no=6)},
+    )
+
+    assert [r.status for r in result.results] == ["skipped_conflict", "renamed"]
+    assert result.results[0].nfo_path is None
+    assert result.results[1].nfo_path == str(show_dir / "绝命毒师 - S02E06.nfo")
+    assert sorted(result.nfo_written) == sorted([
+        str(show_dir / "绝命毒师 - S02E06.nfo"),
+        str(show_dir / "tvshow.nfo"),
+        str(show_dir / "season.nfo"),
+    ])
+    # 没落地那一集的 NFO 一个字节都没写, 但清单里报了它
+    assert not (show_dir / "绝命毒师 - S02E05.nfo").exists()
+    assert result.nfo_skipped == [{
+        "path": str(show_dir / "绝命毒师 - S02E05.nfo"),
+        "reason": "该文件未改名, 不写 NFO",
+    }]

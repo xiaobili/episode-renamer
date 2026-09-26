@@ -298,6 +298,28 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
     return episode_decisions + tvshow_decisions + season_decisions
 
 
+def dedupe_skipped_by_path(
+    skipped: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """按**路径**给「跳过」清单去重, 保留首次出现的顺序。
+
+    多剧混放分支会为组内**每个**条目各发一条同路径的决策（一个 3 文件混放批次
+    是 6 条决策 / 2 个路径）。不去重的话对话框把「2 个文件不会被写」读成
+    「跳过 6 个」—— 数字本身就在撒谎。
+
+    抽成公共函数是因为有**两个**消费者: 真实写盘的 write_nfo_files 与
+    local_renamer 的干跑分支。两处各写一遍必然漂移（干跑报 6、真跑报 2）。
+    """
+    seen: set[str] = set()
+    unique: list[tuple[str, str]] = []
+    for path, reason in skipped:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append((path, reason))
+    return unique
+
+
 def write_nfo_files(
     decisions: list[NfoDecision],
     overwrite: bool = False,
@@ -341,4 +363,4 @@ def write_nfo_files(
             # 写 NFO 失败不能让整批重命名崩掉 —— 重命名那个时候已经成功了
             skipped.append((decision.path, f"写入失败: {exc}"))
 
-    return written, skipped
+    return written, dedupe_skipped_by_path(skipped)
