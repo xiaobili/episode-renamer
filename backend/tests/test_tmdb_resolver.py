@@ -2,7 +2,6 @@ import asyncio
 
 import pytest
 
-from app.core import tmdb_resolver
 from app.core.tmdb_client import (
     TmdbAuthError,
     TmdbNotFoundError,
@@ -20,23 +19,6 @@ from app.core.tmdb_resolver import (
     normalize_show_name,
 )
 from app.models.tmdb import TmdbEpisode, TmdbSeason, TmdbSearchItem, TmdbShow
-
-
-@pytest.fixture(autouse=True)
-def _isolate_default_cache():
-    """逐例清空进程级默认缓存, 否则用例之间会互相污染。
-
-    `_DEFAULT_CACHE` 是刻意的进程级共享（生产里预览接口每次按键都会调 resolve_many,
-    缓存不跨 resolver 实例就等于没有）。但测试里它是跨用例的全局状态: 凡是不传
-    `cache=` 的用例都写同一批键（FakeClient 的指纹与语言是常量), 于是先跑的用例
-    填充的命中会让后跑的用例根本打不到假客户端 —— 断言请求次数的用例会以
-    「结果看着合理但其实是旧的」的方式失败, 而不是报错。
-
-    monkeypatch 在这里帮不上忙: 缓存对象在模块导入时就已绑定, 测试要清的是它的内容。
-    """
-    tmdb_resolver._DEFAULT_CACHE.clear()
-    yield
-    tmdb_resolver._DEFAULT_CACHE.clear()
 
 
 SHOW = TmdbShow(tv_id=1396, name="绝命毒师", original_name="Breaking Bad", year=2008)

@@ -227,6 +227,34 @@ def fake_tmdb(monkeypatch):
     )
 
 
+class _OverrideOnlyTmdbClient(_FakeTmdbClient):
+    """已指定 tv_id 时的替身: 记下 search_tv 的调用次数。
+
+    自动搜索返回 1396, 而用例会用 9999 作为 tmdb_overrides 的值 —— 两条路径
+    因此可以区分: 请求体里的 tv_id 若没被传下去, 结果会退回 1396 且
+    search_calls 从 0 变成 1。
+    """
+
+    def __init__(self):
+        self.search_calls = 0
+
+    def cache_fingerprint(self):
+        return "override-only-client"
+
+    async def search_tv(self, query, year=None):
+        self.search_calls += 1
+        return await super().search_tv(query, year)
+
+
+@pytest.fixture
+def override_only_tmdb(monkeypatch):
+    from app.api import renamer as renamer_api
+
+    client = _OverrideOnlyTmdbClient()
+    monkeypatch.setattr(renamer_api, "_tmdb_client_from_request", lambda req: client)
+    return client
+
+
 def test_tmdb_title_reaches_the_rendered_filename(client, fake_tmdb):
     # 这是本任务的核心断言: {title} 是模板输入, 所以标题必须在渲染之前拿到。
     # 单遍解析（先渲染再查 TMDB）会让这一条红 —— 上面那些用例全都不会。
@@ -305,6 +333,21 @@ def test_dry_run_route_merges_the_tmdb_title(disk_client, fake_tmdb, tmp_path):
     # 干跑绝不落盘
     assert os.path.isfile(str(tmp_path / "Test.Show.S01E02.mkv"))
     assert not os.path.isfile(str(tmp_path / "Test Show - S01E02 - Breakage.mkv"))
+
+
+def test_tmdb_override_selects_that_tv_id_and_skips_search(client, override_only_tmdb):
+    # tmdb_overrides 是「预览表里手动重选」这条能力的**唯一承载**: 它若静默失效,
+    # 用户点了重选却毫无反应 —— 这正是 spec 对这类失灵点名的措辞。
+    # 此前唯一发送该字段的用例跑在 disabled 路径上（TmdbResolver 根本不会被构造）,
+    # 所以删掉 renamer.py 里 overrides=req.tmdb_overrides 那一处传递, 全套测试全绿。
+    # 这里用 9999（自动搜索会返回 1396）让两条路径可区分。
+    row = preview(client, template=TITLE_TEMPLATE,
+                  tmdb_overrides={"Test Show": 9999})
+    assert row["tmdb_status"] == "matched"
+    assert row["tmdb_match"]["tv_id"] == 9999
+    # 既然请求体已指定 tv_id, 就不该再去搜索 —— 否则用户的重选会被自动匹配盖掉
+    assert override_only_tmdb.search_calls == 0
+    assert row["title"] == "Breakage"
 
 
 def test_tmdb_status_literals_are_the_wire_contract():
