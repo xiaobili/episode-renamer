@@ -63,6 +63,9 @@
           :all-selected="ws.allSelected"
           :active-source="ws.activeSource"
           :scanning="ws.scanning"
+          :tmdb-pending-scrape="ws.tmdbPendingScrape"
+          :nfo-needs-scrape="ws.nfoNeedsScrape"
+          :scraping="ws.scraping"
           @preview-all="ws.previewAll"
           @clear-all="ws.clearAll"
           @toggle-all="ws.toggleAll"
@@ -70,6 +73,7 @@
           @update-row="ws.updatePreview"
           @quick-scan="ws.doScan"
           @rematch="ws.rematchShow"
+          @scrape="ws.scrapeTitles"
         />
       </main>
     </div>

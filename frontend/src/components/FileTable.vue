@@ -12,6 +12,15 @@
         <AppButton
           size="sm"
           variant="secondary"
+          :loading="scraping"
+          :disabled="!filesStore.files.length || scanning"
+          @click="$emit('scrape')"
+        >
+          刮削标题
+        </AppButton>
+        <AppButton
+          size="sm"
+          variant="secondary"
           :disabled="!filesStore.files.length"
           @click="$emit('preview-all')"
         >
@@ -301,10 +310,14 @@ const TMDB_LABELS = {
 }
 
 function tmdbLabel(status) {
+  // 未刮削时后端报的是 disabled（它确实没被启用），但把这个成因说成「未启用」
+  // 会把用户推去设置页翻一个本来就开着的开关。成因必须说对（spec §17.5）。
+  if (props.tmdbPendingScrape) return '未刮削'
   return TMDB_LABELS[status] || '未知'
 }
 
 function tmdbTone(status) {
+  if (props.tmdbPendingScrape) return 'neutral'
   if (status === 'matched') return 'accent'
   if (status === 'disabled') return 'neutral'
   return 'warn'
@@ -356,11 +369,19 @@ const BATCH_NFO_SCOPES = new Set(['disabled', 'unsupported_source'])
 //     「本集无 NFO」。若这里改报批次原因（如「多剧混放，仅每集 NFO」）, 同一文件状态
 //     就会因为「这一行是不是组代表」而渲染成两种不同的字, 读起来像两回事。
 // 后两支与非空分支的第一行用同一句话, 正是为了让这两种归属的渲染一致。
+// 第四支（未刮削）由 spec §17.5 追加，它也是批次级成因，故紧跟在字幕之后。
 function nfoNullHint(row) {
   // is_subtitle 由扫描器给（local_scanner 的 _build_file_info）, 经扫描响应的
   // model_dump 与 workspace 的 `...f` 原样到达行上 —— 不需要在这里再嗅扩展名。
   if (row.is_subtitle) {
     return { text: '字幕不写 NFO', warn: false, title: undefined }
+  }
+  // 「勾了生成 NFO 但本次没刮削」：后端此时同样报 disabled，而「未启用」会把用户
+  // 推去设置页翻一个本来就开着的开关。它是**批次级**成因，故与下面 disabled /
+  // unsupported_source 同一位置（在 is_subtitle 之后，与该分支的既有次序一致）。
+  // nfoNeedsScrape 已经含了「勾了 NFO」这个条件 —— 没勾时这里仍是「未启用」，对的。
+  if (props.nfoNeedsScrape) {
+    return { text: '未刮削', warn: false, title: '未刮削标题：NFO 的内容全部来自 TMDB' }
   }
   if (BATCH_NFO_SCOPES.has(row.nfo_scope)) {
     return { text: nfoScopeHint(row.nfo_scope), warn: false, title: undefined }
@@ -375,9 +396,15 @@ const props = defineProps({
   allSelected: Boolean,
   activeSource: String,
   scanning: { type: Boolean, default: false },
+  // 未刮削时 TMDB 列该说「未刮削」（设置页关着时不算 —— 见 scrapeGate 的注释）。
+  tmdbPendingScrape: { type: Boolean, default: false },
+  // 「勾了生成 NFO 但本次没刮削」：NFO 列要说「未刮削」而不是「未启用」。
+  nfoNeedsScrape: { type: Boolean, default: false },
+  scraping: { type: Boolean, default: false },
 })
 defineEmits([
   'preview-all', 'clear-all', 'toggle-all', 'select-row', 'update-row', 'quick-scan', 'rematch',
+  'scrape',
 ])
 
 // 「本批里真的有剧集级落点的剧名」—— 用来把「仅每集 NFO」的警告钉到正确的行上。
