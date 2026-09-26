@@ -293,6 +293,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // 用户改完点「预览」看到的还是按原解析结果算出来的文件名, 改动一点作用都没有。
       // 构造方式与 executeAction 完全一致（含未编辑行得到空对象这件事:
       // 后端把空 dict 当作「没有 override」, 不会误当成「把这些字段清空」）。
+      //
+      // 这个映射同时也是下面重建新行时 override 的**来源**
+      // （`override: overrides[f.id] || {}`）—— 一份映射两处用: 发出去的
+      // 与留在行上的必须是同一份, 否则「预览里显示的」与「随后执行会写出的」
+      // 就会不一致。
       const overrides = {}
       previewRows.value.forEach(r => {
         if (r.override) overrides[r.id] = r.override
@@ -327,7 +332,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           title: pv.title || '',
           tmdb_status: pv.tmdb_status || 'disabled',
           tmdb_match: pv.tmdb_match || null,
-          override: {},
+          // 手动编辑在重建后**保留**（按 file id 沿用上一份 override），不再硬编码
+          // 空对象。重建的触发者 —— 点「预览」、改模板、改补零位数、改 TMDB 设置
+          // —— 都不是「放弃我的编辑」的意思。曾经这里是 `override: {}`，于是
+          // 「改标题 → 点预览 → 点执行」会静默丢掉手动标题：预览按 override 渲染
+          // （显示「我的标题」），执行读到的 override 却是空的，写出 TMDB 标题 ——
+          // 用户看到的与实际写出的不一致，全程零报错。
+          //
+          // 要放弃某行的编辑，就把那个字段改回去：标题清空即回落 TMDB 标题
+          // （updatePreview 的 `title: row.title ? row.title : null` 保证了这点）。
+          // 重新扫描不会把编辑串到别的文件上：file id 是后端 utils.generate_id()
+          // 生成的随机 uuid4（每次扫描都全新），所以扫描后的 id 与上一份**必然**
+          // 全部不同，`overrides[f.id]` 一律落空 —— 不需要再为「同名文件」设防。
+          override: overrides[f.id] || {},
         }
       })
     } catch (e) {
