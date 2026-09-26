@@ -288,6 +288,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     try {
       const ids = filesStore.files.map(f => f.id)
+      // 逐行编辑必须随预览一起下发。行内那几个输入框（剧名/季/集/标题）改的只是
+      // 前端这一行, 而「新文件名」列是**服务端**按模板渲染的 —— 不把 override 发上去,
+      // 用户改完点「预览」看到的还是按原解析结果算出来的文件名, 改动一点作用都没有。
+      // 构造方式与 executeAction 完全一致（含未编辑行得到空对象这件事:
+      // 后端把空 dict 当作「没有 override」, 不会误当成「把这些字段清空」）。
+      const overrides = {}
+      previewRows.value.forEach(r => {
+        if (r.override) overrides[r.id] = r.override
+      })
       const res = await previewRename({
         file_ids: ids,
         source: filesStore.source,
@@ -295,6 +304,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         template: tplStore.currentTemplate,
         folder_template: tplStore.folderTemplate,
         create_season_folder: tplStore.createSeasonFolder,
+        overrides,
         episode_pad_digits: settingsStore.episodePadDigits,
         season_pad_digits: settingsStore.seasonPadDigits,
         tmdb_api_key: settingsStore.tmdb.apiKey,
@@ -429,7 +439,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  // 设置页那个「启用 TMDB 元数据」勾选框关掉之后, 这三个入口都不得再查 TMDB,
+  // 也不得让用户以为一件不会发生的事发生了 —— 关着的时候 buildPreview /
+  // executeAction 会把 tmdb_enabled: false 发下去, 后端对每行都返回 disabled,
+  // 于是任何「重选」都会被静默丢弃。
+  //
+  // 判据与后端 build_tmdb_client 的 `enabled is False` 对齐（不是 `!enabled`）:
+  // 只有**显式关闭**才算关, 未表态不等于关 —— 否则一个被手工改坏的 localStorage
+  // 会让前端拒绝搜索, 而同时发出去的 tmdb_enabled 并没让后端禁用, 两边不一致。
+  function tmdbOff() {
+    return settingsStore.tmdb.enabled === false
+  }
+
+  const TMDB_OFF_TOAST = 'TMDB 元数据已关闭，请在设置中启用'
+
   function rematchShow(row) {
+    // 关着的时候不打开一个注定查不出东西的搜索框 —— 打开它等于给用户一个
+    // 必然失败的入口, 而失败原因(开关)在界面上完全看不见。
+    if (tmdbOff()) {
+      showToast(TMDB_OFF_TOAST, 'warning')
+      return
+    }
     tmdbDialog.row = row
     tmdbDialog.query = row.show_name || ''
     tmdbDialog.results = []
@@ -440,6 +470,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function searchShow(query) {
     const q = (typeof query === 'string' ? query : tmdbDialog.query) || ''
     if (!q.trim()) return
+    // 早退必须在 searchTmdb(...) 之前 —— 这里返回得比构造请求早一步,
+    // 所以关掉开关后这条路径一个网络请求都不会发出去。
+    if (tmdbOff()) {
+      tmdbDialog.results = []
+      showToast(TMDB_OFF_TOAST, 'warning')
+      return
+    }
     tmdbDialog.loading = true
     try {
       const res = await searchTmdb({
@@ -458,6 +495,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function pickShow(item) {
     if (!tmdbDialog.row) return
+    // 对话框开着的期间用户可能去设置页把开关关了（rematchShow 的守卫只挡在
+    // 打开那一刻）。此时选择会被后端丢弃, 所以既不能写入 tmdbOverrides
+    // （重新打开开关后它会突然生效）, 更不能弹「已选用」骗用户。
+    if (tmdbOff()) {
+      tmdbDialog.open = false
+      showToast(TMDB_OFF_TOAST, 'warning')
+      return
+    }
     const showName = tmdbDialog.row.show_name
     if (showName) tmdbOverrides[showName] = item.tv_id
     tmdbDialog.open = false
