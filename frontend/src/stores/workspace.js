@@ -114,17 +114,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const tmdbDisabled = computed(() => isTmdbDisabled(settingsStore.tmdb))
 
   // 预览表 TMDB 列该说「未刮削」吗（设置页关着时不说，见 scrapeGate 的注释）。
+  // `scraping` 也是输入：在刮削返回之前，屏幕上那张表**确实**还是刮削前的那一张，
+  // 此刻 `scraped` 已被乐观置位，若只看它就会显示「未启用」——那是误诊断（见 scrapeGate）。
   const tmdbPendingScrape = computed(() => isTmdbPendingScrape({
     scraped: scraped.value,
     tmdbDisabled: tmdbDisabled.value,
+    scraping: scraping.value,
   }))
 
   // 「勾了生成 NFO，但本次没刮削，所以一个 NFO 也写不出来」——
-  // 左栏提示与 NFO 列共用这一个判据（spec §17.5）。
+  // 左栏提示与 NFO 列共用这一个判据（spec §17.5）。同样把在途刮削算作「未刮削」。
   const nfoNeedsScrape = computed(() => nfoBlockedByScrape({
     generateNfo: generateNfo.value,
     scraped: scraped.value,
     tmdbDisabled: tmdbDisabled.value,
+    scraping: scraping.value,
   }))
 
   const allSelected = computed(() => {
@@ -513,6 +517,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       })
       const ids = selected.map(r => r.id)
       const fn = dryRun ? dryRunRename : executeRename
+      // **在 await 之前**读进局部变量：这是「执行那一刻」的事实，要与载荷说的
+      // 一致。放在 await 之后读的话，干跑在途时用户重选剧集（pickShow 会置位
+      // scraped）会让记录下来的标志与刚发出去的载荷对不上 —— 结果对话框于是把
+      // 「本次没刮削」补在一条**已经刮削过**的载荷上，成了一句假话。
+      // （变量名不叫 nfoBlockedByScrape：那会遮蔽同名的导入函数。）
+      const nfoBlocked = nfoNeedsScrape.value
       const res = await fn(buildRenamePayload({
         mode: 'execute',
         fileIds: ids,
@@ -541,8 +551,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         // NFO 的跳过原因由后端给（「TMDB 未匹配, 不写残缺 NFO」），但那条文案在
         // 「本次没刮削」时会把成因说成「没匹配到」。这个标志在**执行那一刻**算好
         // 记在结果上（与 dry_run 同样的做法：载荷里没有能区分的东西），
-        // 结果对话框据此把真实成因补上（spec §17.5）。
-        nfo_blocked_by_scrape: nfoNeedsScrape.value,
+        // 结果对话框据此把真实成因补上（spec §17.5）。用 await 前捕获的局部变量
+        // （见上面），保证它与同一次载荷同源。
+        nfo_blocked_by_scrape: nfoBlocked,
       }
       resultDialog.value = true
       if (!dryRun) {
@@ -587,10 +598,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       showToast(TMDB_OFF_TOAST, 'warning')
       return
     }
+    const previous = scraped.value
     scraped.value = true
     scraping.value = true
     try {
-      await refreshPreviewReportingFailure()
+      // 失败要回退：否则一次 401 之后 TMDB 列会一直说「未启用」（把「Key 无效」说成
+      // 「去设置页打开开关」），且后续每次自动回刷都继续带着被拒的 Key 重试。
+      if (!await refreshPreviewReportingFailure()) scraped.value = previous
     } finally {
       scraping.value = false
     }

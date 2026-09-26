@@ -23,11 +23,16 @@
         @update:model-value="$emit('update:includeSubs', $event)"
       />
 
+      <!-- 刮削在途时扫描一并禁用（spec §17.4）。这是一场**镜像竞态**：刮削在途时
+           发起扫描，两个请求都在飞，若刮削的响应后到，它会用「带标题的表」覆盖
+           「扫描的表」，而此刻 `scraped` 已被乐观置位、扫描又有把 scraped 重置为
+           false 的职责 —— 两边拉锯的结果同样是「预览与执行不一致」（表里是新名，
+           载荷按 scraped 走另一条路）。 -->
       <AppButton
         variant="primary"
         block
         :loading="scanning"
-        :disabled="!localPath"
+        :disabled="!localPath || scraping"
         @click="$emit('scan')"
       >
         {{ scanning ? '扫描中…' : '扫描' }}
@@ -87,7 +92,7 @@
           variant="primary"
           block
           :loading="scanning"
-          :disabled="!openlistBrowsePath"
+          :disabled="!openlistBrowsePath || scraping"
           @click="$emit('scan')"
         >
           {{ scanning ? '扫描中…' : '扫描' }}
@@ -112,6 +117,9 @@ defineProps({
   recursive: { type: Boolean, default: true },
   includeSubs: { type: Boolean, default: true },
   scanning: { type: Boolean, default: false },
+  // 刮削在途（见模板里扫描按钮上的注释）。默认 false 而非 required：本组件在
+  // 没有 workspace store 的上下文里（如单独预览）也该能渲染。
+  scraping: { type: Boolean, default: false },
   openlistBrowsePath: { type: String, default: '' },
   olStore: { type: Object, required: true },
   olForm: { type: Object, required: true },

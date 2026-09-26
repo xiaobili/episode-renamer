@@ -18,10 +18,15 @@
         >
           刮削标题
         </AppButton>
+        <!-- 「预览」与「清空」在刮削在途时一并禁用（spec §17.4）：`scraped` 是在
+             await **之前**乐观置位的，而屏幕上的表还是刮削前那一张 —— 此刻放行
+             它们，用户是在对一张马上就会被换掉的表做决定。与既有的 scanning /
+             executing 同一手法（禁用而非排队：排队会让「点了没反应」，队列的语义
+             在这里也没有意义）。 -->
         <AppButton
           size="sm"
           variant="secondary"
-          :disabled="!filesStore.files.length"
+          :disabled="!filesStore.files.length || scraping"
           @click="$emit('preview-all')"
         >
           预览
@@ -29,7 +34,7 @@
         <AppButton
           size="sm"
           variant="danger"
-          :disabled="!filesStore.files.length"
+          :disabled="!filesStore.files.length || scraping"
           @click="$emit('clear-all')"
         >
           清空
@@ -380,6 +385,15 @@ function nfoNullHint(row) {
   // 推去设置页翻一个本来就开着的开关。它是**批次级**成因，故与下面 disabled /
   // unsupported_source 同一位置（在 is_subtitle 之后，与该分支的既有次序一致）。
   // nfoNeedsScrape 已经含了「勾了 NFO」这个条件 —— 没勾时这里仍是「未启用」，对的。
+  //
+  // **这一支能生效，靠的是一条跨端的前提**：未刮削时后端为**每一行**都返回 `nfo: None`。
+  // 后端位置：backend/app/api/renamer.py 的 preview_rename —— 启用了 NFO 而
+  // `_tmdb_client_from_request(req) is None` 时，它把 `nfo_scope` 置成 "disabled" 并
+  // **跳过** build_nfo_decisions，于是 nfo_paths_by_file 全空，返回给每行的
+  // `"nfo": nfo_paths_by_file.get(f.id) or None` 都是 None（workspace 的
+  // `nfo: pv.nfo || null` 只是再兜一层）。若后端哪天在这里回了**非空**的落点，
+  // 这个 v-else 分支就整个不再进入 ——「未刮削」会**静默消失**，退回成下面那条
+  // 「未启用」的误诊断，而两端都不会报任何错。
   if (props.nfoNeedsScrape) {
     return { text: '未刮削', warn: false, title: '未刮削标题：NFO 的内容全部来自 TMDB' }
   }

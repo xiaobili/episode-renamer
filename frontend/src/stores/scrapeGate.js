@@ -19,14 +19,21 @@ export function isTmdbDisabled(tmdb) {
 
 // 预览表的 TMDB 列该说「未刮削」吗。
 // 设置页关着时**不说** —— 那时「未启用」才是对的成因，且它可行动（去设置页打开）。
-export function tmdbPendingScrape({ scraped, tmdbDisabled }) {
-  return !scraped && !tmdbDisabled
+//
+// 「在途的刮削视为尚未刮削」（`|| scraping`）：`scraped` 是在 await **之前**乐观置位的，
+// 而在刮削返回之前，屏幕上那张表**确实**还是刮削前的那一张（后端报的仍是 disabled）。
+// 此刻说「未启用」是误诊断 —— 把用户推去翻一个本来就开着的开关；说「未刮削」是实话。
+export function tmdbPendingScrape({ scraped, tmdbDisabled, scraping }) {
+  return (!scraped || scraping) && !tmdbDisabled
 }
 
 // NFO 会因为「本次没刮削」而写不出来吗。三个条件缺一不可：
 //   · generateNfo   —— 没勾「生成 NFO」时 NFO 列本就说「未启用」，与刮削无关；
 //   · !scraped      —— 已刮削就不是这个成因；
 //   · !tmdbDisabled —— 设置页关着时成因是那个开关，不是「忘了点按钮」。
-export function nfoBlockedByScrape({ generateNfo, scraped, tmdbDisabled }) {
-  return Boolean(generateNfo) && !scraped && !tmdbDisabled
+// `scraping` 的理由与上面完全相同：在途刮削时表还是旧表，成因是「还没刮完」。
+// 注意 `|| scraping` 只写在 `!scraped` 那一边：设置页关着时**永远**不成立
+// （刮削按钮本身就被 tmdbOff() 挡下，不会有在途刮削）。
+export function nfoBlockedByScrape({ generateNfo, scraped, tmdbDisabled, scraping }) {
+  return Boolean(generateNfo) && (!scraped || scraping) && !tmdbDisabled
 }

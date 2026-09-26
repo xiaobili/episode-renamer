@@ -32,7 +32,10 @@ const base = {
   source: 'local',
   template: '{show} - S{season_padded}E{episode_padded}{extension}',
   folderTemplate: 'Season {season_padded}',
-  createSeasonFolder: true,
+  // 与 generateNfo **取不同的值**（见下面「只关 TMDB」那一块）：三个布尔各是一个
+  // 独立字段，只靠「取不同值」钉不住它们 —— 布尔只有两个值，三字段必有重复。
+  // 故这里只负责让本字段与 generateNfo 分开，真正的鉴别力来自交叉钉住。
+  createSeasonFolder: false,
   conflictStrategy: 'skip',
   overrides: { f1: { title: '我的标题' } },
   // 补零位数与 NFO 两项**必须取不同的值**。取同值时「互换实现里这两个字段」
@@ -75,12 +78,22 @@ assert('source 透传', on.source, 'local')
 assert('path 透传', on.path, '/media/绝命毒师/Season 02/')
 assert('template 透传', on.template, base.template)
 assert('folder_template 透传', on.folder_template, 'Season {season_padded}')
-assert('create_season_folder 透传', on.create_season_folder, true)
+assert('create_season_folder 透传', on.create_season_folder, false)
 assert('overrides 透传', on.overrides, { f1: { title: '我的标题' } })
 assert('episode_pad_digits 透传', on.episode_pad_digits, 2)
 assert('season_pad_digits 透传', on.season_pad_digits, 3)
 assert('generate_nfo 透传', on.generate_nfo, true)
 assert('nfo_overwrite 透传', on.nfo_overwrite, false)
+
+// 三个布尔各是一个独立字段，**只靠「取不同值」钉不住**：布尔只有两个值，三个字段必有重复，
+// 而重复的那一对互换后两条断言拿到同一个值 → 双双通过（本计划第三次栽在同一形态）。
+// 故只动**一个**输入，断言另两个**不受影响** —— 互换实现会在这里红。
+const tmdbOffPayload = buildRenamePayload({
+  ...base, tmdb: { ...base.tmdb, enabled: false },
+})
+assert('只关 TMDB 时 tmdb_enabled 变 false', tmdbOffPayload.tmdb_enabled, false)
+assert('只关 TMDB 时 generate_nfo 不受影响', tmdbOffPayload.generate_nfo, true)
+assert('只关 TMDB 时 create_season_folder 不受影响', tmdbOffPayload.create_season_folder, false)
 
 // --- conflict_strategy 只属于 execute（RenamePreviewRequest 没有这个字段）---
 assertKey('preview 载荷不含 conflict_strategy', off, 'conflict_strategy', false)
