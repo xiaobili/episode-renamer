@@ -3001,7 +3001,9 @@ cd frontend && node scripts/check-sfc-compile.mjs && npm run build
 cd frontend && grep -rl "tmdb_status" dist/assets/ | head -3
 ```
 
-预期：至少命中一个文件 —— 证明新代码真的进了产物，而不是被 tree-shake 掉或构建用的是旧源码。
+预期：至少命中一个文件。
+
+**这条 grep 能证明什么、不能证明什么（实施阶段实测，不要高估它）**：它证明**产物不是陈旧的** —— `tmdb_status` 在 `frontend/src` 里存在于 `workspace.js`，若构建跑的是旧源码就不会命中。但**它不能证明新列进了产物**：删掉 `FileTable.vue` 整个 TMDB `<td>` 之后，这条 grep **仍然命中**（那个字符串也来自 `workspace.js`）。所以别把它当成「新 UI 已发布」的证据 —— 那要人工看界面（见「完成后」一节）。
 
 - [ ] **Step 7: 提交**
 
@@ -3038,6 +3040,9 @@ cd frontend && node scripts/check-settings-schema.mjs && node scripts/check-sfc-
 5. 在「集」列手改一个不存在的集号（如 999）→ 该行「TMDB」列应变为「无此集」，`{title}` 渲染为空，**其余行不受影响**
 6. 设置页把 API Key 改成无效值再保存 → 回到工作区点「预览」→ 应弹出 TMDB 配置错误提示，而不是静默无标题
 7. 断开网络后预览 → 「TMDB」列应为「不可用」，**重命名仍可正常执行**
+8. **执行后的文件名必须与预览显示的一致** —— 预览里有标题，执行后就该有标题。这条**没有机械覆盖**：`executeAction` 与 `buildPreview` 是两个独立的下发点，而实验证明只从前者移除 TMDB 字段时，四个前端检查（断言脚本 / SFC 编译 / `npm run build` / 产物 grep）**全部照绿**。这正是本仓库有前科的那类故障（「只加 buildPreview 一处…写出的文件名与预览不一致」），所以它必须由人工验。
+9. **取消勾选「启用 TMDB 元数据」并保存** → 回工作区预览 → 「TMDB」列应变为「未启用」。这条同样没有机械覆盖（后端此前根本没有 `enabled` 请求字段，勾选框曾是死设置）。
+10. **在 `.env` 里配好 Key、设置页留空** → 预览应正常显示 TMDB 标题，而不是「未启用」。空白字段必须回退到 `.env`，这是 Docker 部署的主用例。
 
 ## 与下一期的衔接
 
