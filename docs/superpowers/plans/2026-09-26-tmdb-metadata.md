@@ -550,6 +550,7 @@ import asyncio
 import pytest
 
 from app.core.tmdb_client import TmdbNotFoundError, TmdbUnavailableError
+from app.core import tmdb_resolver
 from app.core.tmdb_resolver import (
     STATUS_EPISODE_NOT_FOUND,
     STATUS_MATCHED,
@@ -559,7 +560,6 @@ from app.core.tmdb_resolver import (
     ResolveRequest,
     TmdbCache,
     TmdbResolver,
-    _DEFAULT_CACHE,
     normalize_show_name,
 )
 from app.models.tmdb import TmdbEpisode, TmdbSeason, TmdbSearchItem, TmdbShow
@@ -567,18 +567,19 @@ from app.models.tmdb import TmdbEpisode, TmdbSeason, TmdbSearchItem, TmdbShow
 
 @pytest.fixture(autouse=True)
 def _isolate_default_cache():
-    """每个用例前清空进程级缓存。
+    """逐例清空进程级默认缓存, 否则用例之间会互相污染。
 
-    本文件里只有缓存相关的几个用例显式传 `cache=`，其余走模块级的 `_DEFAULT_CACHE`。
-    而假客户端的 `cache_fingerprint()` 与 `language` 都是常量，于是**所有用例的缓存键必然碰撞** ——
-    先前用例的命中会让后面的假客户端根本不被调用，请求计数与注入失败的断言就落在陈旧值上
-    （实测：不清则 6 failed / 17 passed，每个用例单独跑均通过）。
+    `_DEFAULT_CACHE` 是刻意的进程级共享（生产里预览接口每次按键都会调 resolve_many,
+    缓存不跨 resolver 实例就等于没有）。但测试里它是跨用例的全局状态: 凡是不传
+    `cache=` 的用例都写同一批键（FakeClient 的指纹与语言是常量), 于是先跑的用例
+    填充的命中会让后跑的用例根本打不到假客户端 —— 断言请求次数的用例会以
+    「结果看着合理但其实是旧的」的方式失败, 而不是报错。
 
-    生产环境没有测试边界，所以清缓存纯属测试隔离，不影响任何被断言的属性 ——
-    「缓存跨 resolver 实例存活」仍由 `test_cache_survives_across_resolver_instances` 等
-    显式传 `cache=` 的用例守护。
+    monkeypatch 在这里帮不上忙: 缓存对象在模块导入时就已绑定, 测试要清的是它的内容。
     """
-    _DEFAULT_CACHE.clear()
+    tmdb_resolver._DEFAULT_CACHE.clear()
+    yield
+    tmdb_resolver._DEFAULT_CACHE.clear()
 
 
 SHOW = TmdbShow(tv_id=1396, name="绝命毒师", original_name="Breaking Bad", year=2008)
