@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..models.tmdb import TmdbEpisode, TmdbSeason, TmdbShow
 from .tmdb_client import (
-    TmdbAuthError,
     TmdbNotFoundError,
     TmdbUnavailableError,
 )

@@ -10,7 +10,6 @@ from app.core.tmdb_resolver import (
     STATUS_SEASON_NOT_FOUND,
     STATUS_SHOW_NOT_FOUND,
     STATUS_UNAVAILABLE,
-    EpisodeMatch,
     ResolveRequest,
     TmdbCache,
     TmdbResolver,
@@ -51,7 +50,14 @@ def make_season(number=2, episodes=(5, 6)):
 
 
 class FakeClient:
-    """计数器 + 固定响应的假客户端。断言请求次数靠它，不碰网络。"""
+    """计数器 + 固定响应的假客户端。断言请求次数靠它，不碰网络。
+
+    `search_tv` 与 `get_season` 开头各让出一次控制权。真实网络调用一定会挂起，
+    而 `asyncio.gather` 只在协程被 await 真正挂起时才会交错执行 —— 没有这个让出点，
+    test_concurrent_same_key_is_merged 里两个并发任务永远一前一后跑完，
+    把 TmdbCache 的锁整个删掉该用例照样通过（实测过）。守护「同键并发只打一次
+    外部请求」这个承诺的只有这一条用例，所以这个让出点不能删。
+    """
 
     def __init__(self, hits=None, show=SHOW, seasons=None, fail=None):
         self.api_key = "fake"
@@ -66,6 +72,7 @@ class FakeClient:
         return "fake-fp"
 
     async def search_tv(self, query, year=None):
+        await asyncio.sleep(0)  # 让出控制权，使并发任务可交错（见类 docstring）
         self.calls["search"].append(query)
         if self._fail == "search":
             raise TmdbUnavailableError("boom")
@@ -76,6 +83,7 @@ class FakeClient:
         return self._show
 
     async def get_season(self, tv_id, season_number):
+        await asyncio.sleep(0)  # 同上：让出控制权，使并发任务可交错
         self.calls["season"].append((tv_id, season_number))
         if self._fail == "season":
             raise TmdbUnavailableError("boom")
