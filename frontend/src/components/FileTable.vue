@@ -51,7 +51,49 @@
           </tr>
         </thead>
         <tbody>
-          <template v-if="previewRows.length">
+          <!-- 加载中：骨架行。条件不是裸的 scanning —— 重新扫描一个已扫过的目录时
+               旧数据仍然有效，用预览行是否为空做闸门，首屏才显示骨架。
+               脉动动画**不加**：spec §11 的动效表是穷举的五行，没有「骨架呼吸」这一条，
+               「正在加载」由形状（8 行按真实列结构排布的灰块）与容器上的忙碌语义标记表达。
+               行高与真实数据行一致：59.4px 是在浏览器里量出来的（真实行由 13px 文件名
+               + 11px 路径两行 + 上下各 10px 内边距 + 1px 上边框构成），
+               取整成 58 或 60 都会与真实行高差一截（1.4px / 0.6px），数据到达时便会有跳动。 -->
+          <template v-if="scanning && !previewRows.length">
+            <tr
+              v-for="n in SKELETON_ROWS"
+              :key="`skeleton-${n}`"
+              class="h-[59.4px] border-t border-line"
+              aria-hidden="true"
+            >
+              <td class="hidden px-4 py-2.5 sm:table-cell">
+                <div class="h-4 w-6 rounded-[4px] bg-sunken" />
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="h-4 w-4 rounded-[4px] bg-sunken" />
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="h-4 w-[240px] rounded-[4px] bg-sunken" />
+                <div class="mt-1 h-3 w-[180px] rounded-[4px] bg-sunken" />
+              </td>
+              <td class="hidden px-4 py-2.5 md:table-cell">
+                <div class="h-8 w-[120px] rounded-[4px] bg-sunken" />
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="h-8 w-12 rounded-[4px] bg-sunken" />
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="h-8 w-12 rounded-[4px] bg-sunken" />
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="h-6 w-16 rounded-[4px] bg-sunken" />
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="h-4 w-[200px] rounded-[4px] bg-sunken" />
+              </td>
+            </tr>
+          </template>
+
+          <template v-else-if="previewRows.length">
             <tr
               v-for="(row, idx) in previewRows"
               :key="row.id"
@@ -145,12 +187,17 @@ import AppButton from './ui/AppButton.vue'
 import AppCheckbox from './ui/AppCheckbox.vue'
 import AppInput from './ui/AppInput.vue'
 
+// 骨架行数：取一个能填满常见视口的高度，不必等于真实文件数 ——
+// 骨架的职责是「占住版面、表达正在加载」，不是「预告有多少行」。
+const SKELETON_ROWS = 8
+
 defineProps({
   filesStore: { type: Object, required: true },
   previewRows: { type: Array, default: () => [] },
   scannedInfo: Object,
   allSelected: Boolean,
   activeSource: String,
+  scanning: { type: Boolean, default: false },
 })
 defineEmits([
   'preview-all', 'clear-all', 'toggle-all', 'select-row', 'update-row', 'quick-scan',

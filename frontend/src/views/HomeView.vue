@@ -58,6 +58,7 @@
           :scanned-info="ws.scannedInfo"
           :all-selected="ws.allSelected"
           :active-source="ws.activeSource"
+          :scanning="ws.scanning"
           @preview-all="ws.previewAll"
           @clear-all="ws.clearAll"
           @toggle-all="ws.toggleAll"
@@ -100,6 +101,8 @@
     @error="(m) => ws.showToast(m, 'error')"
   />
 
+  <!-- 不要给它加外层 v-if：外层 v-if 会先卸载组件，组件内部的过渡包装观察不到 show 的变化，
+       离场动画会因此整个消失（第二期修过一次，别改回去）。 -->
   <Toast :show="ws.toast.show" :type="ws.toast.type" :msg="ws.toast.msg" />
 </template>
 

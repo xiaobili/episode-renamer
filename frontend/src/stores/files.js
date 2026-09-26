@@ -4,7 +4,6 @@ import { ref } from 'vue'
 export const useFilesStore = defineStore('files', () => {
   const files = ref([])
   const loading = ref(false)
-  const scanning = ref(false)
   const source = ref('local')
   const scanResult = ref(null)
 
@@ -26,5 +25,5 @@ export const useFilesStore = defineStore('files', () => {
     scanResult.value = null
   }
 
-  return { files, loading, scanning, source, scanResult, setFiles, updateFile, getFileById, clear }
+  return { files, loading, source, scanResult, setFiles, updateFile, getFileById, clear }
 })
