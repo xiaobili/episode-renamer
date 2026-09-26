@@ -79,6 +79,7 @@ class FakeClient:
         return list(self._hits)
 
     async def get_tv_detail(self, tv_id):
+        await asyncio.sleep(0)  # 同上：让出控制权，使并发任务可交错
         self.calls["detail"].append(tv_id)
         return self._show
 
