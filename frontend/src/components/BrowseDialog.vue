@@ -86,7 +86,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ChevronRight, Folder, X } from 'lucide-vue-next'
 
 import AppModal from './ui/AppModal.vue'
@@ -150,16 +150,29 @@ const breadcrumbs = computed(() => {
   return rootIdx >= 0 ? segs.slice(rootIdx) : segs
 })
 
-// 目录项是 <button>，天然可 Tab 聚焦并可用 Enter / Space 激活。
+// 目录项是 <button>，天然可 Tab 聚焦并可用 Enter / Space 激活 ——
+// 激活即「选中」（click），这是这一列的主用法。
 // 这里再补上方向键与 Home / End，让长目录不必按很多次 Tab
 // （spec §8.3：BrowseDialog「补 aria 与键盘导航」）。
+// ArrowRight 是「下钻」，对应鼠标的双击。双击（@dblclick）只有鼠标能触发，
+// 少了这个键，键盘用户能选中目录却进不去子目录，而面包屑只能往上。
 function onListKeydown(event) {
-  const KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+  const KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'ArrowRight']
   if (!KEYS.includes(event.key)) return
   const items = Array.from(listRef.value?.querySelectorAll('button') || [])
   if (!items.length) return
   event.preventDefault()
   const current = items.indexOf(document.activeElement)
+  if (event.key === 'ArrowRight') {
+    // items 由 v-for="d in dirs" 渲染，与 dirs 同序，可以按下标取路径
+    if (current < 0) return
+    const target = dirs.value[current]
+    if (!target) return
+    // 下钻会把整列换掉（loading 期间列表卸载），所以焦点不能停在原地 ——
+    // 让 load() 在新目录渲染好后把焦点交给它的第一项。
+    navigate(target.path, { focusFirst: true })
+    return
+  }
   let next
   if (event.key === 'Home') next = 0
   else if (event.key === 'End') next = items.length - 1
@@ -170,7 +183,7 @@ function onListKeydown(event) {
   items[next].focus()
 }
 
-async function load(path) {
+async function load(path, { focusFirst = false } = {}) {
   loading.value = true
   try {
     let res
@@ -188,12 +201,20 @@ async function load(path) {
   } finally {
     loading.value = false
   }
+  // 键盘下钻后把焦点交还给新列表的第一项（见 onListKeydown）。
+  // 必须等 nextTick —— loading 翻回 false 的同一拍列表才重新挂载。
+  // 新目录没有子项时 listRef 为 null（模板走「此目录无子目录」那一支），
+  // 此时不夺焦：模态陷阱会把下一次 Tab 收回对话框内。
+  if (focusFirst) {
+    await nextTick()
+    listRef.value?.querySelector('button')?.focus()
+  }
 }
 
-function navigate(path) {
+function navigate(path, opts) {
   if (!path || path === currentPath.value) return
   selected.value = null
-  load(path)
+  load(path, opts)
 }
 
 function goParent() {

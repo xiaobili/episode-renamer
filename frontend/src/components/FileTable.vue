@@ -48,8 +48,8 @@
 
     <!-- 滚动容器。flex-1 + min-h-0 让它吃掉父容器剩余高度并在内部滚动，
          而不是把页面撑高（spec §7.2）。 -->
-    <div v-else class="min-h-0 flex-1 overflow-auto">
-      <table class="w-full min-w-[560px] text-[13px]">
+    <div v-else class="min-h-0 flex-1 overflow-auto" :aria-busy="scanning ? 'true' : undefined">
+      <table class="w-full min-w-[560px] text-[13px]" aria-label="文件重命名预览">
         <thead class="sticky top-0 z-[1] bg-sunken">
           <tr class="text-ink-2">
             <th class="hidden w-12 px-4 py-3 text-left font-semibold sm:table-cell">#</th>
