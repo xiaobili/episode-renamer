@@ -1279,7 +1279,7 @@ git commit -m "feat(backend): NFO 写盘与重命名集成（dry-run 只列清�
   - `_with_tmdb_titles(req, files) -> tuple[dict[str, dict], dict[str, dict], dict[str, EpisodeMatch]]` —— **签名从第一期的二元组变为三元组**，新增 `matches: file_id -> EpisodeMatch`
   - `_nfo_options_from_request(req) -> NfoOptions`
   - `_nfo_supported(source: str) -> bool`
-  - 预览响应行新增 `nfo`（`{episode, season, show}`）与 `nfo_scope`（`full` / `episode_only` / `unsupported_source` / `disabled`）
+  - 预览响应行新增 `nfo`（`{episode, tvshow, season}` —— **键名是 `tvshow` 不是 `show`**，与本步骤代码的三桶 `kind` 及 Task 5 前端的 `row.nfo.tvshow` 一致；本行原写 `show` 是笔误，spec §11 已同步）与 `nfo_scope`（`full` / `episode_only` / `unsupported_source` / `disabled`）
 
 - [ ] **Step 1: 写失败的测试**
 
