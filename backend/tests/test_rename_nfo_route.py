@@ -506,3 +506,49 @@ def test_subtitle_sorted_before_the_video_does_not_take_the_show_level_row(tmp_p
     # 两者都照常重命名（过滤只作用于 NFO）
     assert sorted(p.name for p in show_dir.glob("*.srt")) == ["Test Show - S01E02.chs.srt"]
     assert (show_dir / "Test Show - S01E03.mkv").is_file()
+
+
+def test_preview_reports_no_nfo_plan_for_a_batch_without_videos(tmp_path, monkeypatch):
+    """0 个视频条目时不得报 full / episode_only —— 那是从 0 行推出的事实。
+
+    路由的 `all(...)` 判据原本直接在 `plans` 上跑: 空集上恒为 True, 所以
+    `file_ids: []` 会算出 nfo_scope = "full"（那个分支连响应都进不去 ——
+    results 为空, 没有行承载它; 真正能观察到的是**纯字幕批次**: plans 非空、
+    video_ids 为空, 一个 NFO 都不会写, 却会走到 all(...) 的 else 报出
+    "episode_only"）。修好后如实报 disabled。
+
+    变异验证: 去掉 renamer.py 里 video_plans 的非空守卫（恢复在 plans 上 all）
+    → 本用例 FAILED（row["nfo_scope"] == "episode_only"）。
+    """
+    from app.api import renamer as renamer_api
+
+    show_dir = tmp_path / "Test Show"
+    show_dir.mkdir(parents=True)
+    subtitle = show_dir / "Test.Show.S01E02.chs.srt"
+    subtitle.write_bytes(b"")
+    sub_info = _file("f1", subtitle).model_copy(
+        update={"is_subtitle": True, "extension": ".srt"}
+    )
+
+    cache_files([sub_info])
+    monkeypatch.setattr(
+        renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
+    )
+    client = TestClient(app)
+
+    res = client.post("/api/rename/preview", json=payload(
+        file_ids=["f1"], generate_nfo=True,
+    ))
+    assert res.status_code == 200, res.text
+    row = res.json()["results"][0]
+    assert row["nfo"] is None, "字幕不进 NFO 管线, 一行落点都没有"
+    assert row["nfo_scope"] == "disabled"
+
+    # 同一个批次的执行侧: 一个 NFO 文件都不该出现（判据一致性）
+    res = client.post("/api/rename/execute", json=payload(
+        file_ids=["f1"], generate_nfo=True,
+    ))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["nfo_written"] == [] and body["nfo_skipped"] == []
+    assert list(tmp_path.rglob("*.nfo")) == []

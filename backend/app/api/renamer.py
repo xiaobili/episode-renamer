@@ -251,9 +251,20 @@ async def preview_rename(req: RenamePreviewRequest):
                 _show_key(plan) for plan in plans
                 if "tvshow" in nfo_paths_by_file.get(plan.file_id, {})
             }
-            nfo_scope = "full" if all(
-                _show_key(plan) in planned_shows for plan in plans
-            ) else "episode_only"
+            # 判据落在**视频**上（NFO 管线只处理视频, 见上面的 video_ids）。字幕的
+            # 剧名虽然与同一集的视频相同, 但让一个永远不会有 NFO 的行替批次背书是
+            # 同一类错: 行级的东西不该决定批次级的事实。
+            video_plans = [plan for plan in plans if plan.file_id in video_ids]
+            # 空集上 all(...) 恒为 True: 一个 0 行的批次（路由接受 file_ids: []）会
+            # 因此报出 "full" 这个批次级事实 —— 0 行数据推出的事实。没有任何视频
+            # 条目时如实报「没有 NFO 计划」, 而不是把自己算成 full/episode_only。
+            # （纯字幕批次走的就是这一支: 一个 NFO 都不会写。）
+            if not video_plans:
+                nfo_scope = "disabled"
+            elif all(_show_key(plan) in planned_shows for plan in video_plans):
+                nfo_scope = "full"
+            else:
+                nfo_scope = "episode_only"
 
     results: list[dict] = []
     for f, plan in zip(files, plans):

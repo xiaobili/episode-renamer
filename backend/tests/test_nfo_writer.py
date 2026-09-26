@@ -1,7 +1,6 @@
 import xml.etree.ElementTree as ET
 
 from app.core.nfo_writer import (
-    XML_DECLARATION,
     build_episode_nfo,
     build_season_nfo,
     build_tvshow_nfo,
@@ -106,7 +105,13 @@ def test_tvshow_escapes_ampersand_and_angle_brackets():
 
 
 def test_tvshow_starts_with_xml_declaration():
-    assert build_tvshow_nfo(SHOW).startswith(XML_DECLARATION)
+    # 必须断言**字面值**, 不能拿模块自己的 XML_DECLARATION 常量来比 —— 那是自证:
+    # 把常量弱化成 `<?xml version="1.0"?>`（丢掉 spec 钉住的 encoding="UTF-8"
+    # standalone="yes", 中文内容与独立文档属性一起丢）本用例照样绿。
+    # 变异验证: 弱化 XML_DECLARATION → 本用例 FAILED。
+    assert build_tvshow_nfo(SHOW).startswith(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    )
 
 
 def test_tvshow_is_indented():
