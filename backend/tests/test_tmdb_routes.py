@@ -186,7 +186,10 @@ def test_search_endpoint_maps_auth_error_to_400(client, monkeypatch):
 
 def test_test_endpoint_reports_not_configured(client, monkeypatch):
     # 未配置 Key 时不能 500，要给出一个可读的状态
+    # 同样接上打桩缝: 本条的密闭性原本靠两道守卫 (端点的早返回 + _client 的缺 Key 抛错),
+    # 两道都在才不出网 —— 不该让密闭性依赖任何一道还在。
     from app.config import settings
+    _stub_search(monkeypatch)
     monkeypatch.setattr(settings, "tmdb_api_key", "")
     res = client.get("/api/tmdb/test")
     assert res.status_code == 200, res.text
@@ -204,7 +207,12 @@ def test_search_endpoint_rejects_empty_query(client, monkeypatch):
 
 
 def test_search_endpoint_requires_key_when_not_configured(client, monkeypatch):
+    # 与空查询那条同因: 今天的密闭性靠 _client 在构造客户端**之前**抛 400。
+    # 这条的失效模式更隐蔽 —— 删掉缺 Key 守卫后它会真的出网, 而真 TMDB 回 401 →
+    # TmdbAuthError → detail 仍是「TMDB API Key 无效」, 下面这条 assert "TMDB" 照样满足:
+    # 既抓不到缺陷, 又打了一次外网。接上打桩缝, 密闭性才不依赖守卫还在。
     from app.config import settings
+    _stub_search(monkeypatch)
     monkeypatch.setattr(settings, "tmdb_api_key", "")
     res = client.get("/api/tmdb/search", params={"q": "绝命毒师"})
     assert res.status_code == 400, res.text

@@ -274,12 +274,15 @@ def test_unavailable_on_season_failure():
     assert matches[0].status == STATUS_UNAVAILABLE
 
 
-def test_search_not_found_is_show_not_found():
-    # search 路径曾是唯一没接 TmdbNotFoundError 的地方（detail / season 两条都接了）。
-    # 制造者与 R10 已接受的「代理回 HTML」同类: 拦截式代理 / DNS 屏蔽对被封主机回 404。
-    # 逃出 resolve_many 就是预览 500 —— 本仓库的约定是任何 Tmdb* 失败都不得逃过分级。
+def test_search_not_found_is_unavailable_not_show_not_found():
+    # search 路径的 404 与 detail 路径**语义不同**, 所以刻意不追求对称:
+    # /search/tv 对不存在的剧回 200 + 空结果, 它从不回 404 —— 因此 search 上的 404
+    # 只可能是基础设施 (拦截式代理 / DNS 屏蔽对被封主机回 404), 归 unavailable。
+    # 归成 show_not_found 会把网络故障显示成「剧集未找到」, 把用户推去核对一个
+    # 没问题的文件名 —— 正是本设计一直在修的那类误导性诊断。
+    # 别把它「修」回与 detail 路径对称, 那不是同一个 404。
     matches, _ = resolve([ResolveRequest("绝命毒师", 2, 5)], fail="search_not_found")
-    assert matches[0].status == STATUS_SHOW_NOT_FOUND
+    assert matches[0].status == STATUS_UNAVAILABLE
 
 
 def test_one_bad_group_does_not_poison_the_others():
