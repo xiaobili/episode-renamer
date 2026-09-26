@@ -3,7 +3,11 @@ import asyncio
 import pytest
 
 from app.core import tmdb_resolver
-from app.core.tmdb_client import TmdbNotFoundError, TmdbUnavailableError
+from app.core.tmdb_client import (
+    TmdbAuthError,
+    TmdbNotFoundError,
+    TmdbUnavailableError,
+)
 from app.core.tmdb_resolver import (
     STATUS_EPISODE_NOT_FOUND,
     STATUS_MATCHED,
@@ -52,11 +56,20 @@ def make_season(number=2, episodes=(5, 6)):
 class FakeClient:
     """计数器 + 固定响应的假客户端。断言请求次数靠它，不碰网络。
 
-    `search_tv` 与 `get_season` 开头各让出一次控制权。真实网络调用一定会挂起，
-    而 `asyncio.gather` 只在协程被 await 真正挂起时才会交错执行 —— 没有这个让出点，
-    test_concurrent_same_key_is_merged 里两个并发任务永远一前一后跑完，
-    把 TmdbCache 的锁整个删掉该用例照样通过（实测过）。守护「同键并发只打一次
-    外部请求」这个承诺的只有这一条用例，所以这个让出点不能删。
+    `search_tv`、`get_tv_detail`、`get_season` 三处开头各让出一次控制权，
+    忠实模拟「真实网络调用一定会挂起」。目前只有
+    test_concurrent_same_key_is_merged 用到了这个交错能力（它断言 search 次数），
+    另两处让出点不为任何断言服务 —— 保留它们是为了忠实：真实调用三者都会挂起。
+    不要以「没人断言」为由删掉。
+
+    该用例为什么依赖让出点：`asyncio.gather` 只在协程被 await 真正挂起时才会
+    交错执行 —— 没有让出点，两个并发任务永远一前一后跑完，把 TmdbCache 的锁
+    整个删掉该用例照样通过（实测过）。守护「同键并发只打一次外部请求」这个
+    承诺的只有这一条用例，所以这些让出点不能删。
+
+    `fail=` 可选值：`"search"` / `"season"` 抛 TmdbUnavailableError，
+    `"auth"` 在 search_tv 里抛 TmdbAuthError，`"value"` 在 search_tv 里抛
+    ValueError（模拟畸形 payload 在映射层炸出的未分类异常）。
     """
 
     def __init__(self, hits=None, show=SHOW, seasons=None, fail=None):
@@ -76,6 +89,11 @@ class FakeClient:
         self.calls["search"].append(query)
         if self._fail == "search":
             raise TmdbUnavailableError("boom")
+        if self._fail == "auth":
+            raise TmdbAuthError("TMDB API Key 无效")
+        if self._fail == "value":
+            # 畸形 payload 在映射层炸出的未分类异常，如 int(None)
+            raise ValueError("invalid literal for int() with base 10: None")
         return list(self._hits)
 
     async def get_tv_detail(self, tv_id):
@@ -288,6 +306,48 @@ def test_one_bad_group_does_not_poison_the_others():
 
     assert matches[0].status == STATUS_UNAVAILABLE
     assert matches[1].status == STATUS_MATCHED
+
+
+# --- 外部数据边界守卫：未分类异常必须降级，配置错误必须冒泡 ---
+
+def test_auth_error_propagates_out_of_resolve_many():
+    # 唯一的例外。Key 无效是配置错误，必须让用户看见 —— 吞成 unavailable 会让
+    # 「Key 填错了」伪装成「TMDB 挂了」，用户永远查不出来。
+    # 这条断言是唯一拦得住它的东西：把守卫改成 except TmdbAuthError 后返回
+    # unavailable（变异 C），只有本用例失败（DID NOT RAISE），其余 25 条全绿。
+    with pytest.raises(TmdbAuthError):
+        resolve([ResolveRequest("绝命毒师", 2, 5)], fail="auth")
+
+
+def test_unclassified_error_is_degraded_not_raised():
+    # 外部数据边界的兜底：畸形 payload 抛的 ValueError（如 int(number) 拿到 null）
+    # 不属于任何已分类异常。它若逃出 resolve_many，整个预览请求就 500 了 ——
+    # 与铁律「TMDB 故障绝不阻断重命名」冲突。必须降级成 unavailable。
+    matches, _ = resolve([ResolveRequest("绝命毒师", 2, 5)], fail="value")
+    assert matches[0].status == STATUS_UNAVAILABLE
+
+
+def test_failed_lookup_is_not_cached():
+    # 失败不缓存：第一次失败、第二次成功 —— 必须真的重试，而不是把失败存下来。
+    cache = TmdbCache(ttl=3600)
+    client = FakeClient()
+    original = client.search_tv
+    attempts = {"n": 0}
+
+    async def flaky(query, year=None):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise TmdbUnavailableError("boom")
+        return await original(query, year)
+
+    client.search_tv = flaky
+    resolver = TmdbResolver(client, cache=cache)
+    first = asyncio.run(resolver.resolve_many([ResolveRequest("绝命毒师", 2, 5)]))
+    second = asyncio.run(resolver.resolve_many([ResolveRequest("绝命毒师", 2, 5)]))
+
+    assert first[0].status == STATUS_UNAVAILABLE
+    assert attempts["n"] == 2, "失败不该被缓存，第二次必须重新请求"
+    assert second[0].status == STATUS_MATCHED
 
 
 # --- overrides ---

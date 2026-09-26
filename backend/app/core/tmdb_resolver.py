@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from ..models.tmdb import TmdbEpisode, TmdbSeason, TmdbShow
 from .tmdb_client import (
+    TmdbAuthError,
     TmdbNotFoundError,
     TmdbUnavailableError,
 )
@@ -125,6 +126,38 @@ class TmdbResolver:
         """缓存键的公共前缀。含 Key 指纹与语言 —— 换 Key、换语言都必须失效。"""
         return (self._client.cache_fingerprint(), self._client.language)
 
+    @staticmethod
+    async def _guarded(call: Callable):
+        """外部数据边界：把客户端调用里**未分类**的异常归为 unavailable。
+
+        这里用宽捕获是正确且惯用的做法, 因为这里是**外部数据边界**, 不是内部逻辑。
+        铁律「TMDB 故障绝不阻断重命名」的措辞是分类性的, 而不是枚举性的 —— 它要求
+        任何未预料的故障都不能冒到路由层, 而不是只兜住我们列得出的那几种。TMDB 的
+        响应是外部输入, 畸形 payload 会以枚举不完的方式炸出来: `int(number)` 的
+        ValueError、genres 数组里的 null、200 却回非对象……客户端在请求边界
+        (tmdb_client._get) 已经分类了它看得见的那些, 但**映射层**的异常它看不到,
+        逐个枚举必然漏, 漏一个就是整个预览请求 500。
+
+        两个例外, 顺序与语义都不能动:
+        - `TmdbAuthError` 必须原样冒泡: 那是配置错误, 是这条铁律唯一的例外。
+          吞成 unavailable 会让「Key 填错了」伪装成「TMDB 挂了」, 用户永远查不出来。
+        - `TmdbNotFoundError` 不能被压成 unavailable: 它是**已分类**的结果
+          (剧/季不存在), 六态降级要靠它把 season_not_found 与 unavailable 分开。
+          压掉它等于把「没这一季」误报成「TMDB 挂了」。
+
+        （不要为了「干净」删掉这个宽捕获或那两个 re-raise。）
+        """
+        try:
+            return await call()
+        except TmdbAuthError:
+            raise  # 配置错误: 绝不降级
+        except (TmdbNotFoundError, TmdbUnavailableError):
+            raise  # 已分类的降级语义: 原样保留, 不要压成 unavailable
+        except Exception as exc:  # 外部数据边界, 见上文 docstring
+            raise TmdbUnavailableError(
+                f"TMDB 响应无法解析: {type(exc).__name__}"
+            ) from exc
+
     async def resolve_many(self, requests: list[ResolveRequest]) -> list[EpisodeMatch]:
         results: list[Optional[EpisodeMatch]] = [None] * len(requests)
 
@@ -203,7 +236,7 @@ class TmdbResolver:
             key = ("search",) + scope + (normalized,)
 
             async def fetch_search():
-                return await self._client.search_tv(query)
+                return await self._guarded(lambda: self._client.search_tv(query))
 
             try:
                 hits = await self._cache.get_or_create(key, fetch_search)
@@ -217,7 +250,7 @@ class TmdbResolver:
         detail_key = ("show",) + scope + (tv_id,)
 
         async def fetch_detail():
-            return await self._client.get_tv_detail(tv_id)
+            return await self._guarded(lambda: self._client.get_tv_detail(tv_id))
 
         try:
             return await self._cache.get_or_create(detail_key, fetch_detail)
@@ -231,7 +264,9 @@ class TmdbResolver:
         key = ("season",) + self._scope() + (tv_id, season_number)
 
         async def fetch_season():
-            return await self._client.get_season(tv_id, season_number)
+            return await self._guarded(
+                lambda: self._client.get_season(tv_id, season_number)
+            )
 
         try:
             return await self._cache.get_or_create(key, fetch_season)
