@@ -140,12 +140,17 @@ const base = {
   createSeasonFolder: true,
   conflictStrategy: 'skip',
   overrides: { f1: { title: '我的标题' } },
+  // 补零位数与 NFO 两项**必须取不同的值**。取同值时「互换实现里这两个字段」
+  // 会让两条断言都拿到同一个数 → 双双通过，那对断言就成了零鉴别力的摆设。
+  // 而互换的后果是真损失：补零位数互换会让每个文件按错的位数改名，NFO 两项
+  // 互换会让用户勾了生成却不生成 —— 两处都静默。故 2/3 与 true/false 是
+  // **有意的**，不要「顺手统一」成同值。
   episodePadDigits: 2,
-  seasonPadDigits: 2,
+  seasonPadDigits: 3,
   tmdb: { apiKey: 'THE-KEY', language: 'zh-CN', enabled: true },
   tmdbOverrides: { 绝命毒师: 1396 },
   scraped: true,
-  generateNfo: false,
+  generateNfo: true,
   nfoOverwrite: false,
 }
 
@@ -178,8 +183,8 @@ assert('folder_template 透传', on.folder_template, 'Season {season_padded}')
 assert('create_season_folder 透传', on.create_season_folder, true)
 assert('overrides 透传', on.overrides, { f1: { title: '我的标题' } })
 assert('episode_pad_digits 透传', on.episode_pad_digits, 2)
-assert('season_pad_digits 透传', on.season_pad_digits, 2)
-assert('generate_nfo 透传', on.generate_nfo, false)
+assert('season_pad_digits 透传', on.season_pad_digits, 3)
+assert('generate_nfo 透传', on.generate_nfo, true)
 assert('nfo_overwrite 透传', on.nfo_overwrite, false)
 
 // --- conflict_strategy 只属于 execute（RenamePreviewRequest 没有这个字段）---
@@ -247,7 +252,7 @@ export function nfoBlockedByScrape({ generateNfo, scraped, tmdbDisabled }) {
 ```js
 // 预览 / 执行 / 干跑的请求载荷**只有这一处**构造。
 //
-// 为什么必须收敛到一处：这 17 个字段原先在 workspace.js 里有两份副本
+// 为什么必须收敛到一处：这 16 个字段原先在 workspace.js 里有两份副本
 // （buildPreview 一份、executeAction 一份），而「两处都要下发 TMDB 设置」
 // 正是本功能设计里的头号风险（ledger R46）—— 漏一处会让预览显示标题、执行却
 // 写出别的文件名，全程零报错（本仓库有前科）。两份副本还会各自漂移：新增字段时
@@ -324,7 +329,7 @@ Expected: 两个脚本都打印全部 PASS，末行「全部通过」，`exit=0`
 
 - [ ] **Step 6: 做变异验证（本步是本任务的鉴别力证明，不可省）**
 
-对以下**三种**变异各做一次「改坏 → 必须红 → 还原 → 必须绿」，并在报告里附上每次的失败输出：
+对以下**四种**变异各做一次「改坏 → 必须红 → 还原 → 必须绿」，并在报告里附上每次的失败输出：
 
 1. `renamePayload.js` 里把 `...(scraped ? {...} : { tmdb_enabled: false })` 改成 `...(scraped ? {...} : {})`
    → 必须红在 `未刮削时 tmdb_enabled 严格为布尔 false`（得到 `undefined`）。
@@ -332,6 +337,12 @@ Expected: 两个脚本都打印全部 PASS，末行「全部通过」，`exit=0`
    → 必须红在同一条（得到 `""`，与 `false` 严格不等）。
 3. `scrapeGate.js` 里把 `nfoBlockedByScrape` 的 `!scraped` 删掉
    → 必须红在 `已刮削 → 否`。
+4. `renamePayload.js` 里把 `episode_pad_digits: episodePadDigits, season_pad_digits: seasonPadDigits`
+   两个字段**互换**，以及 `generate_nfo: generateNfo, nfo_overwrite: nfoOverwrite` 两个字段**互换**
+   → 必须红在 `episode_pad_digits 透传` / `season_pad_digits 透传` 与
+   `generate_nfo 透传` / `nfo_overwrite 透传` 这四条。
+   （**这条是任务审查抓出来的**：fixture 原先把两对字段取成同值，互换后全绿 —— 那四条断言
+   当时是零鉴别力的。fixture 已改成 2/3 与 true/false，本变异就是它的证明。）
 
 Run（每轮）：`cd frontend && node scripts/check-scrape-gate.mjs; node scripts/check-rename-payload.mjs`
 Expected: 变异后**恰好**上述那一条（或那几条）FAIL、其余 PASS；还原后全部 PASS。
