@@ -1996,7 +1996,7 @@ git commit -m "test(backend): 补三条有鉴别力的用例（{title} 真来自
 **Interfaces:**
 - Consumes: `TmdbClient` / 三个异常类（Task 1）
 - Produces:
-  - `GET /api/tmdb/test` —— 请求头 `X-Tmdb-Key`、`X-Tmdb-Language`；返回 `{success, status, auth_mode, sample}`，`status` 取 `ok` / `invalid_key` / `unreachable` / `not_configured`
+  - `GET /api/tmdb/test` —— 请求头 `X-Tmdb-Key`、`X-Tmdb-Language`；返回 `{success, status, auth_mode, sample}`，`status` 取 **五个**值：`ok` / `invalid_key` / `unreachable` / `not_configured` / `disabled`（服务端 `tmdb_enabled=false` 时）。设置页的文案表（Task 6）已为 `disabled` 单列一条，不要把它当成多余状态删掉。
   - `GET /api/tmdb/search?q=&year=` —— 同上请求头；返回 `{success, data: [TmdbSearchItem]}`
   - `app.api.tmdb.router`（`prefix="/api/tmdb"`），已在 `main.py` 注册
 
@@ -2085,7 +2085,11 @@ def test_env_key_is_used_when_header_absent(client, monkeypatch):
 cd backend && python -m pytest tests/test_tmdb_routes.py -v
 ```
 
-预期：全部 FAIL，报 404（路由不存在）
+预期：全部 FAIL。
+
+**失败形态取决于 `frontend/dist` 是否存在**，别被绊住：`main.py` 在 `frontend_dist.exists()` 时注册了一条 SPA catch-all `@app.get("/{full_path:path}")`，它会把**任何未注册的 GET 路径**用 `200 + index.html` 兜住。所以在已构建过前端的检出上，未注册的 `/api/tmdb/*` 不是 404，而是 200 带着一段 HTML —— 断言 `status_code == 200` 的用例会「通过」而断言 JSON 字段的会炸在解析上。两种都算 RED，但**不要**据此以为路由已经存在。
+
+本机若 `frontend/dist` 不存在则得到干净的 404。两种形态都正常。
 
 - [ ] **Step 3: 实现路由**
 
