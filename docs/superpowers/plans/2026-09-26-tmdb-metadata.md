@@ -225,7 +225,12 @@ def test_500_raises_unavailable():
 
 def test_429_retries_once_then_raises_unavailable(monkeypatch):
     # 限流退避 1 秒。测试里把 sleep 换掉，否则这个用例会真的挂 1 秒。
-    monkeypatch.setattr(asyncio, "sleep", lambda _s: asyncio.sleep(0))
+    #
+    # 必须先捕获原函数：lambda 体内的 `asyncio.sleep` 是运行时按模块属性查找的，
+    # 一旦 patch 生效它就指向 lambda 自己 —— 直接写 lambda _s: asyncio.sleep(0)
+    # 会无限递归（RecursionError），且请求只发出 1 次，测试以错误的方式失败。
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda _s: real_sleep(0))
 
     captured = []
     client = TmdbClient("k", transport=_transport(captured, {}, 429))
@@ -236,7 +241,8 @@ def test_429_retries_once_then_raises_unavailable(monkeypatch):
 
 
 def test_429_then_success_returns_result(monkeypatch):
-    monkeypatch.setattr(asyncio, "sleep", lambda _s: asyncio.sleep(0))
+    real_sleep = asyncio.sleep  # 同上：先捕获，否则无限递归
+    monkeypatch.setattr(asyncio, "sleep", lambda _s: real_sleep(0))
 
     calls = {"n": 0}
 
