@@ -381,6 +381,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       showToast('操作失败: ' + (e.response?.data?.detail || e.message), 'error')
     } finally {
       executing.value = false
+      // 同时复位 executeDryRun：HomeView 用 `v-if="!executeDryRun"` 把遮罩整个卸掉，
+      // 若它停留在 true，后续的执行会在「已打开」的状态下第一次挂载遮罩，而
+      // <Transition> 在没有 appear 时不会为首挂播放进入过渡 —— spec §11 的
+      // 「模态进出 200ms」就静默失效了。
+      executeDryRun.value = false
     }
   }
 

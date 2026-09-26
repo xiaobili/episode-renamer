@@ -43,12 +43,16 @@ const overlayRef = ref(null)
 // 操作背后的界面 —— 破坏性操作需要明确阻断（spec §10）。
 // 没有用 AppModal：AppModal 支持 Esc 关闭，而这里**不能**被关闭。
 //
-// 两条路径分开处理，各自都落在「元素确定已在 DOM 里」的时刻：
-//  · 组件在遮罩已打开的状态下挂载 —— HomeView 的 v-if 会在试运行期间卸载它，
-//    执行时再挂载，那一刻 modelValue 已经是 true；onMounted 在元素插入之后跑
-//  · 组件已挂载、modelValue 随后翻成 true —— flush: 'post' 让回调等到 DOM 更新之后
-// 注意 watch 不能只靠 immediate 覆盖第一种情形：Vue 对带回调的 watch 会
-// 同步直调 job、绕过 scheduler，flush: 'post' 对那一次不生效。
+// 可达路径是 watch：HomeView 用 `v-if="!executeDryRun"` 只在试运行期间卸载本组件，
+// 试运行结束 executeDryRun 复位后它立刻以 modelValue=false 挂回来，所以执行时本组件
+// 总是**已挂载**、modelValue 随后翻成 true；flush: 'post' 让回调等到 DOM 更新之后
+// （元素此刻已在 DOM 里），focus 才落得到它身上。
+//
+// onMounted 里那道判断作为**防御性兜底**保留（勿删）：它覆盖的是「组件在遮罩已打开
+// 的状态下挂载」这条路径 —— 当前不可达（挂载/卸载已不再与 executing 同步），但代价
+// 极低，且一旦 HomeView 的条件改回依赖 executing，它就会重新变成必需。
+// 注意 watch 不能只靠 immediate 顶替它：Vue 对带回调的 watch 会同步直调 job、
+// 绕过 scheduler，flush: 'post' 对那一次不生效。
 watch(
   () => props.modelValue,
   (v) => {
