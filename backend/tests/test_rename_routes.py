@@ -90,8 +90,7 @@ def test_folder_template_honours_pad(client):
     assert row["new_path"] == "/media/Test Show/Season 001/Test Show - S001E02.mkv"
 
 
-def test_execute_route_accepts_pad_fields(client):
-    # 干跑, 不触盘; 只验证请求模型接受字段且不报 422
+def _write_payload(**extra):
     payload = {
         "file_ids": ["f1"],
         "template": TEMPLATE,
@@ -99,8 +98,28 @@ def test_execute_route_accepts_pad_fields(client):
         "path": "/media/Test Show",
         "overrides": OVERRIDES,
         "conflict_strategy": "skip",
-        "episode_pad_digits": 3,
-        "season_pad_digits": 3,
     }
-    res = client.post("/api/rename/dry-run", json=payload)
+    payload.update(extra)
+    return payload
+
+
+def test_dry_run_route_honours_pad_fields(client):
+    # 干跑, 不触盘。必须断言真实文件名而不是只断言 200 —— 路由丢掉 `pad=pad`
+    # 同样会返回 200 且测试全绿, 那正是计划为前端点名的失败模式
+    # （「只加 buildPreview 一处…写出的文件名与预览不一致」），只是搬到了路由层。
+    res = client.post("/api/rename/dry-run", json=_write_payload(
+        episode_pad_digits=3, season_pad_digits=3))
     assert res.status_code == 200, res.text
+    assert res.json()["results"][0]["new_filename"] == "Test Show - S001E002.mkv"
+
+
+def test_execute_route_honours_pad_fields(client):
+    # execute 会真写盘, 但 fixture 的源文件 /media/Test Show/... 并不存在于磁盘,
+    # 所以只会得到一个 success=False 的结果 —— 文件名与路径仍按 pad 算好了,
+    # 因此可以在不接触文件系统的前提下断言。
+    res = client.post("/api/rename/execute", json=_write_payload(
+        episode_pad_digits=3, season_pad_digits=3))
+    assert res.status_code == 200, res.text
+    row = res.json()["results"][0]
+    assert row["new_filename"] == "Test Show - S001E002.mkv"
+    assert row["new_path"] == "/media/Test Show/Test Show - S001E002.mkv"
