@@ -62,8 +62,16 @@
             </th>
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[220px]">原文件名</th>
             <th class="hidden w-[160px] px-4 py-3 text-left font-semibold md:table-cell">解析剧名</th>
-            <th class="w-[72px] px-4 py-3 text-left font-semibold md:w-[80px]">季</th>
-            <th class="w-[72px] px-4 py-3 text-left font-semibold md:w-[80px]">集</th>
+            <!-- 季 / 集：窄屏下这张表是「超约束」的（min-w-[560px] > 视口），浏览器会把
+                 各列压到最小内容宽 —— 此刻 w-* 只是提示、会被完全忽略（实测 375px 下把
+                 w 从 72 一路调到 128，列宽恒为 54 = 输入框最小内容宽 22 + td 的 32）。
+                 54px 的格子里，输入框内宽只剩 0（px-2.5 就吃掉 20px），两位数的集数
+                 因此渲染为空白。故这里必须用 min-w-* 立一条**下限**，md 上的 w-[96px]
+                 则是宽表里的宽度提示。96px 下输入框内宽 62、可用文字宽 42px，
+                 够放 3 位数（13px 字体下 "999" 的前进宽 23.13px、墨迹 21.5px），与
+                 :max="999" 相符。 -->
+            <th class="min-w-[96px] px-4 py-3 text-left font-semibold md:w-[96px]">季</th>
+            <th class="min-w-[96px] px-4 py-3 text-left font-semibold md:w-[96px]">集</th>
             <th class="w-[80px] px-4 py-3 text-left font-semibold md:w-[96px]">状态</th>
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[220px]">新文件名</th>
           </tr>
