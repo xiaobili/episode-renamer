@@ -27,7 +27,7 @@ class PadConfig:
 VARIABLE_PATTERN = re.compile(r'\{(\w+)\}')
 
 
-def _resolve_variable(var: str, info: ParsedInfo) -> str:
+def _resolve_variable(var: str, info: ParsedInfo, pad: PadConfig | None = None) -> str:
     var_lower = var.lower()
 
     if var_lower == "show":
@@ -38,12 +38,14 @@ def _resolve_variable(var: str, info: ParsedInfo) -> str:
         return str(info.season) if info.season is not None else str(settings.default_season)
     if var_lower == "season_padded":
         s = info.season if info.season is not None else settings.default_season
-        return pad_number(s, settings.season_pad_digits)
+        digits = pad.season if pad else settings.season_pad_digits
+        return pad_number(s, digits)
     if var_lower == "episode":
         return str(info.episode) if info.episode is not None else "1"
     if var_lower == "episode_padded":
         e = info.episode if info.episode is not None else 1
-        return pad_number(e, settings.episode_pad_digits)
+        digits = pad.episode if pad else settings.episode_pad_digits
+        return pad_number(e, digits)
     if var_lower == "title":
         return info.title or ""
     if var_lower == "quality":
@@ -63,9 +65,14 @@ def _template_has_extension(template: str) -> bool:
     return any(v.lower() == "extension" for v in vars_in_template)
 
 
-def apply_template(template: str, info: ParsedInfo, include_extension: bool = True) -> str:
+def apply_template(
+    template: str,
+    info: ParsedInfo,
+    include_extension: bool = True,
+    pad: PadConfig | None = None,
+) -> str:
     def replacer(match: re.Match) -> str:
-        return _resolve_variable(match.group(1), info)
+        return _resolve_variable(match.group(1), info, pad)
 
     result = VARIABLE_PATTERN.sub(replacer, template)
 
@@ -80,29 +87,14 @@ def apply_template(template: str, info: ParsedInfo, include_extension: bool = Tr
     return result
 
 
-def apply_folder_template(template: str, info: ParsedInfo) -> str:
-    if not template:
-        return ""
-    return apply_template(template, info, include_extension=False)
-
-
-def generate_full_path(
-    parent_dir: str,
+def apply_folder_template(
     template: str,
     info: ParsedInfo,
-    folder_template: str = "",
-    create_folder: bool = False,
+    pad: PadConfig | None = None,
 ) -> str:
-    from pathlib import Path
-
-    filename = apply_template(template, info)
-
-    if create_folder and folder_template:
-        folder_name = apply_folder_template(folder_template, info)
-        if folder_name:
-            return str(Path(parent_dir) / folder_name / filename)
-
-    return str(Path(parent_dir) / filename)
+    if not template:
+        return ""
+    return apply_template(template, info, include_extension=False, pad=pad)
 
 
 def validate_template(template: str) -> tuple[bool, list[str]]:

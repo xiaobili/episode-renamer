@@ -11,7 +11,7 @@ from ..models.file import (
 )
 from ..config import settings
 from .parser import parse_filename, _SEASON_DIR_PATTERNS
-from .template import apply_template, apply_folder_template, generate_full_path
+from .template import apply_template, apply_folder_template
 from .utils import generate_id
 
 
