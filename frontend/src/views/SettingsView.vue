@@ -80,13 +80,31 @@
 
       <AppPanel title="TMDB 设置">
         <div class="flex flex-col gap-4">
-          <AppInput
-            v-model="draft.tmdb.apiKey"
-            type="password"
-            label="API Key"
-            placeholder="v3 API Key 或 v4 Read Access Token"
-            hint="两种都支持：32 位 Key 走查询参数，eyJ 开头的 Token 走 Bearer 头。留空则用服务端 .env 的配置。"
-          />
+          <div class="flex flex-col gap-1">
+            <AppInput
+              v-model="draft.tmdb.apiKey"
+              :type="showApiKey ? 'text' : 'password'"
+              label="API Key"
+              placeholder="v3 API Key 或 v4 Read Access Token"
+              hint="两种都支持：32 位 Key 走查询参数，eyJ 开头的 Token 走 Bearer 头。留空则用服务端 .env 的配置。"
+            />
+            <!-- 显示切换（spec §12.1「type=password + 显示切换」）。
+                 type=password 下用户**无法核对**自己粘进去的是什么, 而「把 v4 Token
+                 粘成 v3 Key（或反过来）」正是 401 的头号成因 —— 看不见内容时, 用户
+                 连「我到底填了什么」都判断不了, 只能反复重试。
+                 AppInput 没有后缀插槽, 也不为这一次改动去动它（那会牵动所有调用点),
+                 所以做成同级的兄弟按钮。 -->
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 self-start rounded-[6px] px-1.5 py-0.5 text-[12px] text-ink-2 outline-none transition-colors duration-150 hover:bg-sunken hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/35"
+              :aria-pressed="showApiKey ? 'true' : 'false'"
+              @click="showApiKey = !showApiKey"
+            >
+              <EyeOff v-if="showApiKey" class="h-3.5 w-3.5" aria-hidden="true" />
+              <Eye v-else class="h-3.5 w-3.5" aria-hidden="true" />
+              {{ showApiKey ? '隐藏' : '显示' }}
+            </button>
+          </div>
           <AppSelect v-model="draft.tmdb.language" label="元数据语言">
             <option value="zh-CN">中文 (zh-CN)</option>
             <option value="zh-TW">繁體中文 (zh-TW)</option>
@@ -142,8 +160,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { Info, Plug, RotateCcw, Save } from 'lucide-vue-next'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { Eye, EyeOff, Info, Plug, RotateCcw, Save } from 'lucide-vue-next'
 
 import { getPresets } from '../api/template'
 import { testTmdb } from '../api/tmdb'
@@ -165,6 +183,29 @@ const saving = ref(false)
 const savedFlash = ref('')
 const testing = ref(false)
 const testResult = ref(null)
+// API Key 的显示切换（spec §12.1）。默认隐藏 —— 打开设置页不该把已保存的 Key
+// 明文摆在屏幕上。
+const showApiKey = ref(false)
+
+// 「连接正常」是**针对某一把 Key、某种语言**测出来的结论, 不是关于这个页面的一般
+// 事实。用户在它亮着的时候改掉任一项, 屏幕上那句结论就不再描述任何真实的东西 ——
+// 与本次修复关掉的那几个「告诉用户一件不成立的事」是同一个家族, 所以整条清掉,
+// 而不是留着等下一次点击「测试连接」。
+//
+// 重置走的是同一条路: reset() 改的就是这两个字段, 值一变下面这个 watch 就把它清掉
+// —— 不必再往 reset() 里抄一遍（抄一遍就多一个会忘的同步点）。
+//
+// 值没变就不清: 数组 getter 每次都会返回一个**新数组**, 而 watch 是按引用比较的,
+// 所以光靠它自己, 任何一次依赖变动都会触发。save() 里 `Object.assign(draft, ...)`
+// 会把 draft.tmdb 整个换成新对象（值可能一模一样）, 不挡一下, 「测试连接 → 保存」
+// 会把刚验过的「连接正常」也清掉。这里比一次值, 把「换了对象但没换内容」挡在外面。
+watch(
+  () => [draft.tmdb.apiKey, draft.tmdb.language],
+  (next, prev) => {
+    if (next[0] === prev[0] && next[1] === prev[1]) return
+    testResult.value = null
+  },
+)
 
 const dirty = computed(() => JSON.stringify(draft) !== JSON.stringify(settingsStore.toObject()))
 
