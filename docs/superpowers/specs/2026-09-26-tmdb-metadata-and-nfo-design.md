@@ -424,10 +424,17 @@ tmdb_overrides: dict[str, int] = {}   # 剧名 -> tv_id
 - `previewRows` 增加 `title`、`tmdb_status`、`tmdb_match`、`nfo`、`nfo_scope`
 - 新增 `rematchShow(row)` → 打开 `TmdbMatchDialog`
 - NFO 勾选框在 OpenList 源下置灰并注明，沿用事实 8 的既有处理方式
+- 新增 `scraped` 状态位（**每源一份**，随 `files` / `previewRows` 住在 `sourceStates[src]`）
+  与「刮削标题」按钮 —— 未置位时 preview / execute 的载荷发 `tmdb_enabled: false`，
+  扫描路径不再出网（**执行期追加，见 §17**）
+- 载荷构造抽成 `stores/renamePayload.js` 的纯函数，`buildPreview` 与 `executeAction` 共用
+  （原为两份 15 字段副本，见 §17.6）
 
 ### 12.4 预览表
 
 新增三列：「标题」（可编辑，写入 `OverrideInfo.title`）、「TMDB」（匹配状态 + 🔍）、「NFO」（每集 NFO 路径 + 该剧剧集级 NFO 落点）。
+
+工具条新增「刮削标题」按钮（与「预览」「清空」并列，见 §17.4）；未刮削时「TMDB」与「NFO」两列显示「未刮削」而非「未启用」（§17.5）。
 
 ## 13. 测试策略
 
@@ -442,7 +449,7 @@ tmdb_overrides: dict[str, int] = {}   # 剧名 -> tv_id
 | `test_rename_nfo_route.py` | dry-run 只列清单不落盘、execute 真落盘、OpenList 源下不写 NFO |
 | `test_template_title.py` | `{title}` 在 matched / 降级 / 手动覆盖三种情况下的渲染 |
 
-前端沿用项目惯例（无测试设施）：扩展 `frontend/scripts/check-settings-schema.mjs` 断言、`check-sfc-compile.mjs` 校验新组件可编译、构建产物 grep 确认新代码进入 bundle。
+前端沿用项目惯例（无测试设施）：扩展 `frontend/scripts/check-settings-schema.mjs` 断言、`check-sfc-compile.mjs` 校验新组件可编译、构建产物 grep 确认新代码进入 bundle。§17 另新增 `frontend/scripts/check-rename-payload.mjs`，为「预览与执行的载荷必须同源」这条承诺配上第一条机械判据。
 
 TMDB 真实调用**不进入自动化测试**（需要网络与有效 Key，且会引入不稳定）。`httpx.MockTransport` 已随 `httpx` 提供，无需新依赖。
 
@@ -455,6 +462,14 @@ TMDB 真实调用**不进入自动化测试**（需要网络与有效 Key，且�
 **TMDB 语言回落不补译。** 请求 `zh-CN` 而 TMDB 无中文数据时，返回的是原文标题。这是 TMDB 的数据现状，客户端如实呈现。
 
 **OpenList 源不写 NFO。** 见 §2。TMDB 查询与 `{title}` 变量在 OpenList 源下**照常生效**，仅 NFO 写入缺席。
+
+**未刮削时 NFO 零产出。** TMDB 的 `EpisodeMatch` 是 NFO 内容的唯一来源（§8.4），未刮削即无元数据，
+每集决策会报「TMDB 未匹配, 不写残缺 NFO」—— 勾了「生成 NFO」也不会写出任何文件。用户已明确接受这个代价
+（换取扫描路径不出网），但**它不能是静默的**：未刮削且勾了 NFO 时界面上有明确提示（§17.5）。
+（用户报告的原症状是「扫描被 TMDB 拖慢」，见 §17.1。）
+
+**每次扫描重置刮削状态。** 改递归开关或换目录后重扫需要重新刮削。理由：`file_id` 是每次扫描新生成的
+随机值（`utils.generate_id()`），旧标题本来就无法映射到新文件；且这条同时是「扫描路径绝不出网」的保证。
 
 **海报不下载。** 需要额外处理图片格式、体积、命名规范，本期不做。
 
@@ -492,3 +507,92 @@ nfo_writer + 路径推导与库根防护 + renamer 集成 + NFO 勾选 UI + **�
 | 12 | 「覆盖已存在」**默认关闭** | 降低对既有 NFO 的意外破坏 |
 | 13 | XML 用 ElementTree 生成，非字符串拼接 | 剧名含 `&` / `<` 时拼接必然产出非法 XML |
 | 14 | 番剧绝对集号**不换算** | 见 §14 |
+| 15 | **修订 #2**：自动匹配改为**用户显式触发**（「刮削标题」按钮） | 文件多时扫描后的首次刮削会把「新文件名 / 标题」列空白很久（用户报告的痛点）。代价：忘记点则无标题、NFO 零产出 —— 由 §17.5 的可见性提示兜住，不静默。详见 §17.9 |
+
+## 17. 刮削改为用户显式触发（执行期追加）
+
+### 17.1 背景与动机
+
+原设计（§12.3 / 裁定 #2）是**自动匹配**：扫描后立刻重建预览，而预览请求带 TMDB 设置，
+后端便为每个文件查一次 TMDB。文件多时「新文件名 / 标题」两列会空白很久 ——
+用户报告的痛点是**扫描被拖慢**。故改为**完全手动**：扫描路径绝不出网，刮削由一个独立按钮发起。
+
+### 17.2 门控机制：唯一手段是发 `tmdb_enabled: false`
+
+前端**每个源一个** `scraped` 状态位；未置位时 preview / execute 的载荷**显式发 `tmdb_enabled: false`**。
+后端链路（已逐行核实）：`_with_tmdb_titles` → `_tmdb_client_from_request` → `build_tmdb_client`
+→ `resolve_tmdb_client` 的**第一分支** `if enabled is False or not settings.tmdb_enabled` 返回 `None`
+→ `_with_tmdb_titles` 给每行填 `disabled` 后**直接返回**，`TmdbResolver` 根本不被构造 → 零出网。
+
+**为什么不能靠「省略字段」或「发空 Key」**：`resolve_tmdb_client` 里 `enabled=None` 与 `key=""` 都会落到
+`key = header_key or settings.tmdb_api_key` → **回退到 `.env` 的 Key → 仍然出网**。这正是 R49-1 修过的
+同一形态（Docker 只配 `.env`、不经界面填 Key 的部署会被它破坏）。三种写法里**只有显式 `false` 有效**。
+
+**后端零改动**：`/api/rename/preview` 与 `/api/rename/execute|dry-run` 都走同一个 `_tmdb_client_from_request`，
+故一个字段同时管住两条路径，不需要分别处理。
+
+### 17.3 状态生命周期
+
+- **每源一份**，与 `files` / `previewRows` / `scanResult` / `path` 同住在 `sourceStates[src]` 里。
+  理由：`switchSource` 会把文件列表换成**另一源**已扫过的那一份（`workspace.js:143-149`），
+  若标志是全局的，「本地刮削过 → 切到云盘」会让云盘那批**未经用户同意**地开始查 TMDB，
+  且一个从未刮削的源会显示出标题 —— 与「完全手动」的心智模型直接冲突。
+- 初始 `false`；`doScan` / `doOpenListScan` / `clearAll` **重置当前源那一份**（理由见 §14「每次扫描重置刮削状态」）。
+- 置位只有两个入口：点「刮削标题」按钮；`pickShow` 重选剧集成功前 —— 后者必须置位，否则重选会被后端
+  丢弃而界面毫无变化，正是 R32/`pickShow` 修过的那类「点了重选却没有任何变化」。
+- 被这一个门控覆盖的自动触发点（原共五处）：扫描后的预览回刷、模板 watch、补零位数 watch、
+  TMDB 设置 watch、重选后的回刷。所以「扫描路径绝不出网」是**结构上**成立的，不是靠改一处。
+
+### 17.4 UI
+
+- 位置：`FileTable` 工具条，`[刮削标题] [预览] [清空]`，`secondary` 变体（主操作是底栏的「执行重命名」）。
+- 刮削期间按钮进 loading —— 这是唯一会慢的动作，需要反馈。
+- 禁用条件：无文件 / 正在扫描。
+- `tmdbOff()`（设置页显式 `enabled === false`）时点击弹既有文案「TMDB 元数据已关闭，请在设置中启用」。
+- **不检查 Key 是否为空**：Key 可能在服务端 `.env`（§10.3），前端判不准；只有 `enabled === false` 可判。
+  新增一条 Key 存在性判断会与后端 `resolve_tmdb_client` 形成第二个真相源。
+
+### 17.5 未刮削时的呈现（可见性，不可静默）
+
+| 位置 | 显示 |
+|---|---|
+| 标题列 | 空（正确：它就是个空输入框） |
+| TMDB 列 | **「未刮削」** |
+| NFO 列 | **「未刮削」**；勾了「生成 NFO」时左栏另给一条提示：NFO 需要 TMDB 元数据，未刮削则不会写出 |
+| 结果对话框 | 未刮削而执行时，NFO 的跳过原因旁给一条前端提示，说明成因是「本次未刮削」 |
+
+后两行是必要的：后端在未刮削时返回的 `disabled` 与「TMDB 未匹配, 不写残缺 NFO」**在语义上都对**
+（它确实没被启用、确实没匹配到），但作为**给用户的诊断**它们会把人推错方向 ——
+去设置页翻一个本来就开着的开关，或去核对文件名。这与本设计一直在修的「让用户去改一个没问题的东西」
+是同一类，故界面必须说出真实成因。
+
+### 17.6 一致性：预览与执行必须同源
+
+`buildPreview` 与 `executeAction` 各有一份 15 字段载荷的**副本**，而「两处都要下发 TMDB 设置」
+是计划 1 的头号风险（R46）。本次要改两处、且加的是条件分支，故把载荷构造抽成纯函数
+`frontend/src/stores/renamePayload.js`，两处共用。这不是顺手重构：它正是本改动的落点，
+且两处漂移的后果（预览显示标题、执行写出另一个）在本仓库有前科（R29/R52/R54）。
+
+### 17.7 验证
+
+新增 `frontend/scripts/check-rename-payload.mjs`（node 断言，与 `check-settings-schema.mjs` 同规格）：
+
+- `scraped=false` → 载荷**不含** `tmdb_api_key` / `tmdb_language` / `tmdb_overrides`，且 `tmdb_enabled === false`
+- `scraped=true` → 三个字段都在，`tmdb_enabled` 取设置值
+
+**鉴别力要求**：三种真实的错误实现必须被打红 —— 条件翻过来、改成「省略字段」、改成「发空串」。
+后两种是本设计里最容易写错的形态（见 §17.2），断言若抓不到它们就等于没写。
+
+其余：后端 214 条不受影响（零改动，仍重跑确认）；既有三个前端机械检查照跑；构建产物 grep 确认
+`scraped` 相关的载荷分支进入 bundle；按钮位置、loading、三种「未刮削」文案与左栏 NFO 提示的观感
+列为 `deferred-to-human`（前端无常驻判据，是本项目已接受的缺口）。
+
+### 17.8 不在本期
+
+不做按剧 / 按行的部分刮削（YAGNI）；不做「强制刷新绕过缓存」（`TmdbCache` 的 TTL 默认 3600s 已使
+重复刮削命中缓存，`_DEFAULT_CACHE` 是进程级共享的）；不动后端。
+
+### 17.9 对既有决议的修订
+
+**修订裁定记录 #2**（「自动匹配 TMDB + 预览表可搜索重选」）：自动匹配改为用户显式触发，
+可搜索重选**保留不变**。理由与代价见 §17.1 与 §16 的 #15。
