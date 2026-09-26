@@ -16,6 +16,15 @@ import { useTemplateStore } from './template'
 import { useOpenListStore } from './openlist'
 import { useSettingsStore } from './settings'
 import { resolveOpenListServerUrl } from './settingsSchema'
+import {
+  isTmdbDisabled,
+  nfoBlockedByScrape,
+  // 必须**别名**：下面有一个同名的 computed（`tmdbPendingScrape`），而
+  // `const x = computed(() => x(...))` 里的 x 会被 const 遮蔽 —— 调用时拿到的是
+  // 那个 ref 而不是函数，运行期报「not a function」。别名让两者都保住好名字。
+  tmdbPendingScrape as isTmdbPendingScrape,
+} from './scrapeGate'
+import { buildRenamePayload } from './renamePayload'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const filesStore = useFilesStore()
@@ -26,13 +35,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeSource = ref('local')
 
   const sourceStates = reactive({
-    local: { files: [], scanResult: null, previewRows: [], scannedInfo: null, path: '' },
-    openlist: { files: [], scanResult: null, previewRows: [], scannedInfo: null, path: '' },
+    local: { files: [], scanResult: null, previewRows: [], scannedInfo: null, path: '', scraped: false },
+    openlist: { files: [], scanResult: null, previewRows: [], scannedInfo: null, path: '', scraped: false },
   })
 
   const recursive = ref(true)
   const includeSubs = ref(true)
   const scanning = ref(false)
+  // 「刮削标题」按钮的进行中状态。它是唯一会慢的动作（其余预览都是本地解析），
+  // 所以只有它需要 loading 反馈。
+  const scraping = ref(false)
   const executing = ref(false)
   const executeDryRun = ref(false)
   // NFO 选项是本次会话的工作参数, 不进设置页 —— 它跟「扫哪个目录」一样,
@@ -85,6 +97,35 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     get: () => sourceStates[activeSource.value].scannedInfo,
     set: (v) => { sourceStates[activeSource.value].scannedInfo = v },
   })
+
+  // 「本次扫描是否已刮削 TMDB 标题」（spec §17.3）。**每源一份** ——
+  // switchSource 会把文件列表换成另一源已扫过的那一份（见 switchSource 里的注释），
+  // 若它是全局的，「本地刮削过 → 切到云盘」会让一个从未刮削的源显示出标题，
+  // 并让云盘那批**未经用户同意**地开始查 TMDB。与 path / previewRows / scannedInfo
+  // 同住 sourceStates 正是为此。
+  const scraped = computed({
+    get: () => sourceStates[activeSource.value].scraped,
+    set: (v) => { sourceStates[activeSource.value].scraped = v },
+  })
+
+  // 设置页显式关闭了 TMDB。判据收敛在 scrapeGate.isTmdbDisabled 一处
+  // （与后端 resolve_tmdb_client 的 `enabled is False` 对齐）—— 前端另有四处
+  // 需要同一个判断，各写一份就会漂移。
+  const tmdbDisabled = computed(() => isTmdbDisabled(settingsStore.tmdb))
+
+  // 预览表 TMDB 列该说「未刮削」吗（设置页关着时不说，见 scrapeGate 的注释）。
+  const tmdbPendingScrape = computed(() => isTmdbPendingScrape({
+    scraped: scraped.value,
+    tmdbDisabled: tmdbDisabled.value,
+  }))
+
+  // 「勾了生成 NFO，但本次没刮削，所以一个 NFO 也写不出来」——
+  // 左栏提示与 NFO 列共用这一个判据（spec §17.5）。
+  const nfoNeedsScrape = computed(() => nfoBlockedByScrape({
+    generateNfo: generateNfo.value,
+    scraped: scraped.value,
+    tmdbDisabled: tmdbDisabled.value,
+  }))
 
   const allSelected = computed(() => {
     const selected = previewRows.value.filter(r => r.selected)
@@ -175,6 +216,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const data = res.data
       filesStore.source = 'local'
       filesStore.setFiles(data.files || [])
+      // 新扫描 = 新文件集（file_id 每次扫描都是全新随机值），旧标题本来就留不住；
+      // 这条同时保证「扫描路径绝不出网」—— 下面的预览回刷不会带 TMDB 设置。
+      scraped.value = false
       filesStore.scanResult = data
       scannedInfo.value = data
       showToast(`扫描完成，发现 ${data.total_files} 个文件`, 'success')
@@ -226,6 +270,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const data = res.data
       filesStore.source = 'openlist'
       filesStore.setFiles(data.files || [])
+      // 新扫描 = 新文件集（file_id 每次扫描都是全新随机值），旧标题本来就留不住；
+      // 这条同时保证「扫描路径绝不出网」—— 下面的预览回刷不会带 TMDB 设置。
+      scraped.value = false
       filesStore.scanResult = data
       scannedInfo.value = data
       showToast(`扫描完成，发现 ${data.total_files} 个文件`, 'success')
@@ -304,7 +351,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return true
     }
     try {
-      const ids = filesStore.files.map(f => f.id)
       // 逐行编辑必须随预览一起下发。行内那几个输入框（剧名/季/集/标题）改的只是
       // 前端这一行, 而「新文件名」列是**服务端**按模板渲染的 —— 不把 override 发上去,
       // 用户改完点「预览」看到的还是按原解析结果算出来的文件名, 改动一点作用都没有。
@@ -319,23 +365,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       previewRows.value.forEach(r => {
         if (r.override) overrides[r.id] = r.override
       })
-      const res = await previewRename({
-        file_ids: ids,
-        source: filesStore.source,
+      const res = await previewRename(buildRenamePayload({
+        mode: 'preview',
+        fileIds: filesStore.files.map(f => f.id),
+        // 与改动前逐字一致：从**扫描到的**首行推出父目录（不是预览行）。
         path: filesStore.files[0].path.replace(filesStore.files[0].filename, ''),
+        source: filesStore.source,
         template: tplStore.currentTemplate,
-        folder_template: tplStore.folderTemplate,
-        create_season_folder: tplStore.createSeasonFolder,
+        folderTemplate: tplStore.folderTemplate,
+        createSeasonFolder: tplStore.createSeasonFolder,
         overrides,
-        episode_pad_digits: settingsStore.episodePadDigits,
-        season_pad_digits: settingsStore.seasonPadDigits,
-        tmdb_api_key: settingsStore.tmdb.apiKey,
-        tmdb_language: settingsStore.tmdb.language,
-        tmdb_enabled: settingsStore.tmdb.enabled,
-        tmdb_overrides: { ...tmdbOverrides },
-        generate_nfo: generateNfo.value,
-        nfo_overwrite: nfoOverwrite.value,
-      })
+        episodePadDigits: settingsStore.episodePadDigits,
+        seasonPadDigits: settingsStore.seasonPadDigits,
+        tmdb: settingsStore.tmdb,
+        tmdbOverrides,
+        scraped: scraped.value,
+        generateNfo: generateNfo.value,
+        nfoOverwrite: nfoOverwrite.value,
+      }))
       const previews = res.data.results || []
       previewRows.value = filesStore.files.map(f => {
         const pv = previews.find(p => p.original_path === f.path) || {}
@@ -420,6 +467,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       filesStore.clear()
       previewRows.value = []
       scannedInfo.value = null
+      scraped.value = false
       sourceStates[activeSource.value].files = []
       sourceStates[activeSource.value].scanResult = null
     })
@@ -465,29 +513,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       })
       const ids = selected.map(r => r.id)
       const fn = dryRun ? dryRunRename : executeRename
-      const res = await fn({
-        file_ids: ids,
-        source: filesStore.source,
+      const res = await fn(buildRenamePayload({
+        mode: 'execute',
+        fileIds: ids,
         path: selected[0].path.replace(selected[0].filename, ''),
+        source: filesStore.source,
         template: tplStore.currentTemplate,
-        folder_template: tplStore.folderTemplate,
-        create_season_folder: tplStore.createSeasonFolder,
-        conflict_strategy: conflictStrategy.value,
+        folderTemplate: tplStore.folderTemplate,
+        createSeasonFolder: tplStore.createSeasonFolder,
+        conflictStrategy: conflictStrategy.value,
         overrides,
-        episode_pad_digits: settingsStore.episodePadDigits,
-        season_pad_digits: settingsStore.seasonPadDigits,
-        tmdb_api_key: settingsStore.tmdb.apiKey,
-        tmdb_language: settingsStore.tmdb.language,
-        tmdb_enabled: settingsStore.tmdb.enabled,
-        tmdb_overrides: { ...tmdbOverrides },
-        generate_nfo: generateNfo.value,
-        nfo_overwrite: nfoOverwrite.value,
-      })
+        episodePadDigits: settingsStore.episodePadDigits,
+        seasonPadDigits: settingsStore.seasonPadDigits,
+        tmdb: settingsStore.tmdb,
+        tmdbOverrides,
+        scraped: scraped.value,
+        generateNfo: generateNfo.value,
+        nfoOverwrite: nfoOverwrite.value,
+      }))
       // dry_run 记在结果上: BatchRenameResult 的 nfo_written / nfo_skipped 在干跑时
       // 描述的是「将写入 / 将跳过」的计划（后端的字段注释写明了这点），而载荷里
       // 没有标记能区分。不带上这个标记, 结果对话框只能把计划报成既成事实 ——
       // 那正是「告诉用户一件没发生的事」。
-      lastResult.value = { ...res.data, dry_run: dryRun }
+      lastResult.value = {
+        ...res.data,
+        dry_run: dryRun,
+        // NFO 的跳过原因由后端给（「TMDB 未匹配, 不写残缺 NFO」），但那条文案在
+        // 「本次没刮削」时会把成因说成「没匹配到」。这个标志在**执行那一刻**算好
+        // 记在结果上（与 dry_run 同样的做法：载荷里没有能区分的东西），
+        // 结果对话框据此把真实成因补上（spec §17.5）。
+        nfo_blocked_by_scrape: nfoNeedsScrape.value,
+      }
       resultDialog.value = true
       if (!dryRun) {
         await buildPreview()
@@ -513,10 +569,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // 只有**显式关闭**才算关, 未表态不等于关 —— 否则一个被手工改坏的 localStorage
   // 会让前端拒绝搜索, 而同时发出去的 tmdb_enabled 并没让后端禁用, 两边不一致。
   function tmdbOff() {
-    return settingsStore.tmdb.enabled === false
+    return tmdbDisabled.value
   }
 
   const TMDB_OFF_TOAST = 'TMDB 元数据已关闭，请在设置中启用'
+
+  // 「刮削标题」按钮 —— 唯一的显式刮削入口（另一个置位点是 pickShow，见那里）。
+  //
+  // 置位后本次扫描的**后续所有**预览/执行都会带上 TMDB 设置（见 buildRenamePayload），
+  // 所以改模板、改补零位数都不会把已刮到的标题弄丢。
+  //
+  // 关着开关时不置位、也不发请求 —— 与 rematchShow 同一道守卫、同一句文案，
+  // 免得出现「点了按钮什么都没发生」。**不检查 Key 是否为空**：Key 可能在服务端
+  // .env 里，前端判不准（spec §17.4）。
+  async function scrapeTitles() {
+    if (tmdbOff()) {
+      showToast(TMDB_OFF_TOAST, 'warning')
+      return
+    }
+    scraped.value = true
+    scraping.value = true
+    try {
+      await refreshPreviewReportingFailure()
+    } finally {
+      scraping.value = false
+    }
+  }
 
   function rematchShow(row) {
     // 关着的时候不打开一个注定查不出东西的搜索框 —— 打开它等于给用户一个
@@ -581,6 +659,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     tmdbOverrides[showName] = item.tv_id
     tmdbDialog.open = false
+    // 重选**就是**一次刮削意图：不置位的话这次刷新不会带 TMDB 设置，用户的选择
+    // 会被后端丢弃而界面毫无变化 —— 正是 R32 / pickShow 修过的那类缺陷。
+    scraped.value = true
     // 选择**确实**记下了才报成功。刷新失败时不能报「已选用」——那是同一类
     // 「告诉用户一件没发生的事」的缺陷（见 refreshPreviewReportingFailure）。
     if (await refreshPreviewReportingFailure()) {
@@ -631,6 +712,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     askConfirm, resolveConfirm, showToast,
     tmdbOverrides, tmdbDialog, rematchShow, searchShow, pickShow,
     generateNfo, nfoOverwrite,
+    scraped, scraping, tmdbDisabled, tmdbPendingScrape, nfoNeedsScrape, scrapeTitles,
     doDryRun, doExecute, executeAction,
   }
 })
