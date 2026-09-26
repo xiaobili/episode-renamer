@@ -33,15 +33,13 @@ def test_writes_all_three_kinds(tmp_path):
     written, skipped = write_nfo_files(decisions)
 
     assert skipped == []
-    # 简报此处期望 `tmp_path / "绝命毒师" / "tvshow.nfo"`（季目录上溯一层）。
-    # HEAD 的 Task 2（已审查）取「公共父目录」字面语义：只有一个季目录时公共父
-    # 就是该季目录，故 tvshow.nfo 落在 Season 02/ 下 —— 两者不可兼得，见
-    # task-3-report.md 的「待裁定」第 1 条。本用例的目标是 write_nfo_files，
-    # 故按 HEAD 现有的 Task 2 契约断言，不在此隐式要求改 Task 2。
+    # tvshow.nfo 在剧集根（季目录上溯一层）—— 见 nfo_writer._show_root。
+    # 这一条曾是「简报期望 vs HEAD 的 Task 2」的冲突点，审查裁定为 Task 2 错、
+    # 已在本轮修好，故此处恢复简报字面。
     assert sorted(written) == sorted([
         str(video.with_suffix(".nfo")),
         str(tmp_path / "绝命毒师" / "Season 02" / "season.nfo"),
-        str(tmp_path / "绝命毒师" / "Season 02" / "tvshow.nfo"),
+        str(tmp_path / "绝命毒师" / "tvshow.nfo"),
     ])
     for path in written:
         assert os.path.isfile(path)
@@ -107,6 +105,17 @@ def test_duplicate_paths_are_written_once(tmp_path):
 
 
 def test_written_content_is_utf8_with_chinese(tmp_path):
+    # 本用例的鉴别力是**有条件的**, 别当它比实际更强:
+    # 在 UTF-8 locale（本机与多数开发机）下, write_text 带不带 encoding="utf-8"
+    # 写出**相同字节**, 没有任何字节级断言能区分二者 —— 删掉那行参数本用例仍绿。
+    # 它证明的是「中文内容确实按 UTF-8 写成、读得回来」, **不是**「那行参数存在」。
+    # 「参数必需」由一次冻结 locale 的隔离脚本证明（见 task-3-report.md §5 M1）:
+    # LC_ALL=C PYTHONCOERCECLOCALE=0 PYTHONUTF8=0 下默认编码退化成 ascii, 缺参数时
+    # 中文内容抛 UnicodeEncodeError —— 它是 ValueError 的子类, write_nfo_files 的
+    # except OSError 接不住, 会炸掉整批重命名。注意**整份套件在那个 locale 下跑
+    # 不起来**（用例自己的中文目录名都建不了, os.mkdir 就抛), 所以证据是那次隔离
+    # 脚本而不是跑套件。CI 与 Docker 常用 LANG=C/POSIX（PEP 538 会coerce 成
+    # C.UTF-8, 见本机 LC_ALL=C 全绿）, 真出事的只有强制 ASCII 的环境。
     target = tmp_path / "剧 - S02E05.nfo"
     decisions = [NfoDecision(file_id="f1", kind="episode", path=str(target),
                              content="<episodedetails><title>绝命毒师</title></episodedetails>")]
@@ -224,6 +233,9 @@ def test_batch_rename_nfo_follows_the_post_rename_path(tmp_path):
     assert result.results[0].nfo_path == str(new_dir / "绝命毒师 - S02E05.nfo")
     assert (new_dir / "绝命毒师 - S02E05.nfo").is_file()
     assert (new_dir / "season.nfo").is_file()
+    # 剧集级在**剧集根**（季目录上溯一层）, 不在季文件夹里 —— 见 _show_root
+    assert (show_dir / "tvshow.nfo").is_file()
+    assert not (new_dir / "tvshow.nfo").exists()
     # 旧目录不得留下任何 NFO
     assert not (show_dir / "绝命毒师 - S02E05.nfo").exists()
     assert not (show_dir / "season.nfo").exists()

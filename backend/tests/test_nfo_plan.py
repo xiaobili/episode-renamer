@@ -331,6 +331,11 @@ def test_nested_show_under_a_mixed_root_is_refused():
     # 只查「恰好等于 root 的那个目录」时, A 的 root（/m/未分类）下没有别的剧的
     # 文件直接躺着 → tvshow.nfo 会被写出去, Emby 就把整个 /m/未分类 当成 A 剧。
     # 判定必须覆盖 root 的整棵子树。
+    #
+    # 剧B 的公共父目录是 /m/未分类/剧B/S01 —— 一个季目录 —— 故剧集根要再上溯一层
+    # 到 /m/未分类/剧B（见 nfo_writer._show_root）。校验用的就是这个上溯后的根,
+    # 拿季目录去查会漏掉别的剧。**这条期望是审查裁定后改的**, 原为
+    # /m/未分类/剧B/S01/tvshow.nfo。
     decisions = build_nfo_decisions([
         entry("/m/未分类/A.mkv", show_name="剧A", season_no=1, episode_no=1),
         entry("/m/未分类/剧B/S01/B.mkv", show_name="剧B", season_no=1, episode_no=1),
@@ -339,7 +344,7 @@ def test_nested_show_under_a_mixed_root_is_refused():
     tvshow = by_kind(decisions, "tvshow")
     assert [d.path for d in tvshow] == [
         "/m/未分类/tvshow.nfo",           # 剧A：root 之下嵌套着剧B → 不写
-        "/m/未分类/剧B/S01/tvshow.nfo",   # 剧B：自己的目录干净 → 照写
+        "/m/未分类/剧B/tvshow.nfo",       # 剧B：S01 是季目录, 剧集根上溯到剧B → 照写
     ]
     assert tvshow[0].content is None
     assert "多部剧" in tvshow[0].reason
@@ -399,3 +404,35 @@ def test_entry_without_season_number_gets_no_season_nfo():
     assert len(episodes) == 3
     assert all(d.content is not None for d in episodes), "季号缺失不影响每集 NFO"
     assert all("<season>" not in d.content for d in episodes)
+
+
+# --- 审查裁定补的用例：单季布局下的剧集根 ---------------------------------------
+# spec §9.3 的「剧集根 = 公共父目录」只举了多季布局（Season 02 + Season 03、
+# S01 + S02）, 于是**单季**时公共父退化成季目录本身, tvshow.nfo 落进季文件夹 ——
+# 而 Emby / Jellyfin 只在剧集根找它, 等于没写。下面两条钉住 _show_root 的上溯。
+
+def test_single_season_folder_still_puts_tvshow_at_the_show_root():
+    # 三种季目录写法（Season 02 / S02 / 第2季）都必须能上溯: 判定复用
+    # parser._SEASON_DIR_PATTERNS, 换了写法就漏判等于没修。
+    for season_dir in ("Season 02", "S02", "第2季"):
+        decisions = build_nfo_decisions([
+            entry(f"/m/绝命毒师/{season_dir}/绝命毒师 - S02E05.mkv", episode_no=5),
+        ], OPTIONS)
+
+        assert [d.path for d in by_kind(decisions, "tvshow")] == [
+            "/m/绝命毒师/tvshow.nfo",
+        ], f"{season_dir}: 季文件夹按构造不是剧集根, tvshow.nfo 要上溯一层"
+        # season.nfo 不受影响: 它本来就该落在季目录里
+        assert [d.path for d in by_kind(decisions, "season")] == [
+            f"/m/绝命毒师/{season_dir}/season.nfo",
+        ]
+
+
+def test_show_root_does_not_ascend_past_the_filesystem_root():
+    # 上溯的兜底：季目录已经在最外层时保持原样。把 tvshow.nfo 写到 / 下比不写
+    # 更糟; 相对路径上溯则得到空串, 还会破坏路径形状（绝对/相对）的一致性。
+    at_root = build_nfo_decisions([entry("/Season 02/x.mkv")], OPTIONS)
+    assert [d.path for d in by_kind(at_root, "tvshow")] == ["/Season 02/tvshow.nfo"]
+
+    relative = build_nfo_decisions([entry("Season 02/x.mkv")], OPTIONS)
+    assert [d.path for d in by_kind(relative, "tvshow")] == ["Season 02/tvshow.nfo"]

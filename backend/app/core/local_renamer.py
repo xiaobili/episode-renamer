@@ -14,6 +14,7 @@ from ..config import settings
 from .nfo_writer import build_nfo_decisions, write_nfo_files
 from .parser import apply_override, parse_filename, _SEASON_DIR_PATTERNS
 from .template import PadConfig, apply_template, apply_folder_template
+from .tmdb_resolver import EpisodeMatch
 from .utils import generate_id
 
 
@@ -171,7 +172,7 @@ def batch_rename(
     conflict_strategy: str = "skip",
     pad: PadConfig | None = None,
     nfo_options: NfoOptions | None = None,
-    nfo_matches: dict | None = None,
+    nfo_matches: Optional[dict[str, EpisodeMatch]] = None,
 ) -> BatchRenameResult:
     plans: list[RenamePlan] = []
     overrides = overrides or {}

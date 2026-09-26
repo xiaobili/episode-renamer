@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
 from ..models.tmdb import TmdbEpisode, TmdbSeason, TmdbShow
+from .parser import _SEASON_DIR_PATTERNS
 
 
 XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -107,6 +108,37 @@ def common_parent(paths: list[str]) -> str:
     return os.path.commonpath(directories)
 
 
+def _show_root(paths: list[str]) -> str:
+    """剧集根 = 公共父目录, 但**季文件夹按构造不是剧集根 —— 命中季目录时再上溯一层**。
+
+    为什么非要这一步: Emby / Jellyfin 只在**剧集根**找 `tvshow.nfo`, 写进
+    `Season 02/` 等于没写。单季布局（该剧只有一个季文件夹, 或用户只勾选了一季）
+    下公共父目录恰好就是那个季文件夹本身; 多季布局（`Season 02/` + `Season 03/`）
+    才会自然上溯到剧名目录 —— 所以这条缺口只在单季时暴露。
+
+    这一层不是「多余的防御」: spec §9.3 的「剧集根 = 该剧所有选中视频新路径的公共
+    父目录」只举了多季的例子（`Season 02` + `Season 03`、`S01` + `S02`）, 单季布局
+    是它没覆盖的缺口, 审查裁定后在此补齐。删掉它, 单季布局的 `tvshow.nfo` 又会
+    落回季目录。
+
+    季目录判定复用 `parser._SEASON_DIR_PATTERNS`（`local_renamer` 用的是同一套）,
+    不再新写一套正则。**只影响剧集根**: `season.nfo` 的落点仍是该季视频的公共父
+    目录（那本来就该是季目录）。
+    """
+    root = common_parent(paths)
+    if not root:
+        return root
+    if not any(p.match(os.path.basename(root.rstrip(os.sep))) for p in _SEASON_DIR_PATTERNS):
+        return root
+
+    parent = os.path.dirname(root.rstrip(os.sep))
+    # 上溯到空串或文件系统根时保持原样: 把 tvshow.nfo 写到 / 下比不写更糟,
+    # 且路径形状（绝对/相对）必须与入参保持一致 —— common_parent 不吃混用。
+    if not parent or os.path.dirname(parent) == parent:
+        return root
+    return parent
+
+
 def _folder_belongs_to_single_show(root: str, show_name: str, all_entries: list[NfoEntry]) -> bool:
     """公共父目录（及其下任意层级）不得混有别的剧。
 
@@ -178,7 +210,9 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
 
     for show_name in sorted(by_show):
         group = by_show[show_name]
-        show_root = common_parent([e.new_path for e in group])
+        # 用**上溯后**的剧集根: 混放校验判定的是「真正的剧集根及其子树」,
+        # 拿季目录去查会漏掉同剧根下的别的剧（startswith 前缀检查仍能覆盖子树）。
+        show_root = _show_root([e.new_path for e in group])
 
         if not _folder_belongs_to_single_show(show_root, show_name, entries):
             for item in group:
