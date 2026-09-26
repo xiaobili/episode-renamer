@@ -247,6 +247,65 @@ def test_preview_reports_episode_only_when_the_show_level_nfo_is_refused(tmp_pat
         assert set(row["nfo"]) == {"episode"}
 
 
+def test_preview_scope_is_episode_only_when_only_some_shows_are_refused(tmp_path, monkeypatch):
+    """**中间态**: 剧甲干净且命中（tvshow 算得出来）, 剧乙被混放守卫拒绝。
+
+    上面两条只钉住两个**端点**（「所有剧的剧集级都写得出」→ full、「一部都写不出」
+    → episode_only）, 中间态此前无人管: 把判据换成「任一部剧有 tvshow 就报 full」,
+    那两个端点照样全绿 —— 实测该变异下全套 192 passed、零转红（本条补上后 1 红）。
+
+    断言两件不同粒度的事, 别把它们混为一谈:
+    - `nfo_scope` 是**批次级**的一个值, 复制到每一行 —— 只要有一部剧的剧集级写不全,
+      整批就是 episode_only;
+    - `nfo` 是**每行**的自己的落点 —— 剧甲那一行的 nfo.tvshow 仍然在。
+    混放目录里那两部剧只剩每集落点。
+    """
+    from app.api import renamer as renamer_api
+
+    clean_dir = tmp_path / "剧甲目录"
+    mixed_dir = tmp_path / "未分类"
+    clean_dir.mkdir(parents=True)
+    mixed_dir.mkdir(parents=True)
+
+    videos = [clean_dir / "A.S01E02.mkv", mixed_dir / "B.S01E02.mkv",
+              mixed_dir / "C.S01E02.mkv"]
+    for video in videos:
+        video.write_bytes(b"")
+
+    # 剧乙必须与**另一部剧**同处一个目录才会被守卫拒绝, 所以批次里还得有剧丙 ——
+    # 守卫判的是「该剧根目录及其子树里有没有别的剧」, 只有一部剧的目录永远是干净的。
+    cache_files([_file(f"f{i}", video) for i, video in enumerate(videos, start=1)])
+    monkeypatch.setattr(
+        renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
+    )
+    client = TestClient(app)
+
+    res = client.post("/api/rename/preview", json={
+        "file_ids": ["f1", "f2", "f3"],
+        "template": TEMPLATE,
+        "source": "local",
+        "path": "",
+        "overrides": {
+            "f1": {"show_name": "剧甲", "season": 1, "episode": 2},
+            "f2": {"show_name": "剧乙", "season": 1, "episode": 2},
+            "f3": {"show_name": "剧丙", "season": 1, "episode": 2},
+        },
+        "generate_nfo": True,
+    })
+    assert res.status_code == 200, res.text
+    rows = res.json()["results"]
+
+    assert [row["nfo_scope"] for row in rows] == ["episode_only"] * 3
+    # 剧甲自己那一行: 三份落点俱全 —— 批次报 episode_only 不等于把它的 tvshow 抹掉
+    assert rows[0]["nfo"] == {
+        "episode": str(clean_dir / "剧甲 - S01E02.nfo"),
+        "tvshow": str(clean_dir / "tvshow.nfo"),
+        "season": str(clean_dir / "season.nfo"),
+    }
+    for row in rows[1:]:
+        assert set(row["nfo"]) == {"episode"}
+
+
 def test_dry_run_with_tmdb_lists_the_plan_but_writes_nothing(matched_client, tmp_path):
     """干跑在**有内容可写**时也必须一字节不落 —— 这才是「dry_run 真的传下去了」。
 
