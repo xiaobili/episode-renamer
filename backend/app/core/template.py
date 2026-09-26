@@ -1,9 +1,27 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+
 from ..config import settings
 from ..models.file import ParsedInfo
 from .utils import safe_filename, pad_number, get_extension
+
+
+PAD_MIN = 1
+PAD_MAX = 6
+
+
+@dataclass(frozen=True)
+class PadConfig:
+    """请求级补零位数。构造时钳制到 [PAD_MIN, PAD_MAX]。"""
+
+    episode: int
+    season: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "episode", max(PAD_MIN, min(PAD_MAX, self.episode)))
+        object.__setattr__(self, "season", max(PAD_MIN, min(PAD_MAX, self.season)))
 
 
 VARIABLE_PATTERN = re.compile(r'\{(\w+)\}')
