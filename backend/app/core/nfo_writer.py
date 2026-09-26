@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Optional
 
 from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
@@ -237,3 +238,42 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
                 ))
 
     return episode_decisions + tvshow_decisions + season_decisions
+
+
+def write_nfo_files(
+    decisions: list[NfoDecision],
+    overwrite: bool = False,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """把决策落盘。返回 (写入的路径, [(跳过的路径, 原因)])。
+
+    这是本模块唯一的副作用。刻意做得薄: 决策已被 build_nfo_decisions 全部
+    算好, 这里只负责 mkdir / write / 报错。
+    """
+    written: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for decision in decisions:
+        if decision.content is None:
+            skipped.append((decision.path, decision.reason or "无内容"))
+            continue
+
+        # 多剧混放分支会为组内每个条目生成同路径的决策, 这里去重
+        if decision.path in seen:
+            continue
+        seen.add(decision.path)
+
+        target = Path(decision.path)
+        if target.exists() and not overwrite:
+            skipped.append((decision.path, "已存在"))
+            continue
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(decision.content, encoding="utf-8")
+            written.append(decision.path)
+        except OSError as exc:
+            # 写 NFO 失败不能让整批重命名崩掉 —— 重命名那个时候已经成功了
+            skipped.append((decision.path, f"写入失败: {exc}"))
+
+    return written, skipped

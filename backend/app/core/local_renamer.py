@@ -9,7 +9,9 @@ from typing import Optional
 from ..models.file import (
     FileInfo, RenamePlan, RenameResult, BatchRenameResult, OverrideInfo,
 )
+from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
 from ..config import settings
+from .nfo_writer import build_nfo_decisions, write_nfo_files
 from .parser import apply_override, parse_filename, _SEASON_DIR_PATTERNS
 from .template import PadConfig, apply_template, apply_folder_template
 from .utils import generate_id
@@ -168,9 +170,12 @@ def batch_rename(
     dry_run: bool = False,
     conflict_strategy: str = "skip",
     pad: PadConfig | None = None,
+    nfo_options: NfoOptions | None = None,
+    nfo_matches: dict | None = None,
 ) -> BatchRenameResult:
     plans: list[RenamePlan] = []
     overrides = overrides or {}
+    nfo_matches = nfo_matches or {}
 
     for f in files:
         ov = overrides.get(f.id)
@@ -184,6 +189,34 @@ def batch_rename(
 
     results: list[RenameResult] = []
     executed = skipped = failed = 0
+
+    # NFO 条目用**重命名之后**的路径 —— 每集 NFO 靠与视频同名配对,
+    # 用原路径推导会让 NFO 与视频对不上。
+    nfo_decisions: list[NfoDecision] = []
+    nfo_path_by_file: dict[str, str] = {}
+    if nfo_options and nfo_options.enabled:
+        nfo_decisions = build_nfo_decisions(
+            [
+                NfoEntry(
+                    file_id=plan.file_id,
+                    new_path=plan.new_path,
+                    show_name=plan.parsed.show_name if plan.parsed else "",
+                    season=plan.parsed.season if plan.parsed else None,
+                    episode=plan.parsed.episode if plan.parsed else None,
+                    # nfo_matches 里没有对应项时 .get() 返回 None,
+                    # getattr(None, "show", None) 也是 None —— 三者同时为 None,
+                    # NfoEntry.has_metadata 即为 False, 于是不写残缺 NFO。
+                    show=getattr(nfo_matches.get(plan.file_id), "show", None),
+                    season_data=getattr(nfo_matches.get(plan.file_id), "season", None),
+                    episode_data=getattr(nfo_matches.get(plan.file_id), "episode", None),
+                )
+                for plan in plans
+            ],
+            nfo_options,
+        )
+        for decision in nfo_decisions:
+            if decision.kind == "episode":
+                nfo_path_by_file[decision.file_id] = decision.path
 
     for plan in plans:
         if plan.conflicts and conflict_strategy == "abort":
@@ -202,6 +235,7 @@ def batch_rename(
             continue
 
         result = execute_rename_plan(plan, dry_run=dry_run, conflict_strategy=conflict_strategy)
+        result.nfo_path = nfo_path_by_file.get(plan.file_id)
         results.append(result)
 
         if result.success and result.status not in ("skipped_conflict", "skipped_same"):
@@ -211,6 +245,24 @@ def batch_rename(
         else:
             failed += 1
 
+    nfo_written: list[str] = []
+    nfo_skipped: list[dict] = []
+
+    if nfo_options and nfo_options.enabled and nfo_decisions:
+        if dry_run:
+            # 干跑绝不落盘, 但仍要给出完整清单。exists() 是只读检查, 允许。
+            for decision in nfo_decisions:
+                if decision.content is None:
+                    nfo_skipped.append({"path": decision.path, "reason": decision.reason or "无内容"})
+                elif Path(decision.path).exists() and not nfo_options.overwrite:
+                    nfo_skipped.append({"path": decision.path, "reason": "已存在"})
+                elif decision.path not in nfo_written:
+                    nfo_written.append(decision.path)
+        else:
+            written_paths, skipped_pairs = write_nfo_files(nfo_decisions, overwrite=nfo_options.overwrite)
+            nfo_written = written_paths
+            nfo_skipped = [{"path": p, "reason": r} for p, r in skipped_pairs]
+
     return BatchRenameResult(
         success=failed == 0,
         source="local",
@@ -219,4 +271,6 @@ def batch_rename(
         failed=failed,
         total=len(plans),
         results=results,
+        nfo_written=nfo_written,
+        nfo_skipped=nfo_skipped,
     )

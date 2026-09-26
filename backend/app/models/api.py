@@ -47,6 +47,8 @@ class RenamePreviewRequest(BaseModel):
     # False = 用户显式关闭, 优先级最高(见 api/tmdb.py 的 build_tmdb_client)。
     tmdb_enabled: Optional[bool] = None
     tmdb_overrides: dict[str, int] = Field(default_factory=dict)
+    generate_nfo: bool = False
+    nfo_overwrite: bool = False
 
 
 class RenameExecuteRequest(BaseModel):
@@ -66,6 +68,8 @@ class RenameExecuteRequest(BaseModel):
     # False = 用户显式关闭, 优先级最高(见 api/tmdb.py 的 build_tmdb_client)。
     tmdb_enabled: Optional[bool] = None
     tmdb_overrides: dict[str, int] = Field(default_factory=dict)
+    generate_nfo: bool = False
+    nfo_overwrite: bool = False
 
 
 class OpenListLoginRequest(BaseModel):

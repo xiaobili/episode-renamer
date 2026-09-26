@@ -67,6 +67,9 @@ class RenameResult(BaseModel):
     success: bool = False
     error: Optional[str] = None
     status: str = "pending"
+    # 该文件的每集 NFO 落点。剧集级（tvshow / season）不属于单个文件,
+    # 汇总在 BatchRenameResult 上, 不在这里重复 N 遍。
+    nfo_path: Optional[str] = None
 
 
 class BatchRenameResult(BaseModel):
@@ -79,3 +82,6 @@ class BatchRenameResult(BaseModel):
     conflicts: list[dict] = Field(default_factory=list)
     results: list[RenameResult] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    # NFO 汇总。dry_run 时这两项描述的是「将写入 / 将跳过」的计划, 不落盘。
+    nfo_written: list[str] = Field(default_factory=list)
+    nfo_skipped: list[dict] = Field(default_factory=list)
