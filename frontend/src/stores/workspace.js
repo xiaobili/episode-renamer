@@ -401,10 +401,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  // 模板变更后立即重建预览。原来这个 watch 在 HomeView 的 setup 里，
+  // 模板或补零位数变更后立即重建预览。原来这个 watch 在 HomeView 的 setup 里，
   // 状态搬进 store 后它必须一起搬，否则改模板不再刷新「新文件名」列。
+  //
+  // 补零位数两项是修复「设置不生效」时补上的：它们与模板同为渲染的输入，
+  // 漏掉它们会让用户保存设置后回到工作区**仍看到旧位数** —— 与修复前那种
+  // 「设置不生效」的观感一模一样，而 spec §15.3 要求的是「预览列立即显示」。
+  // 设置 store 只在点「保存设置」时写入（草稿语义，见 SettingsView），所以
+  // 把这两项放进依赖数组不会让未保存的草稿影响工作区（Review Focus 5）。
   watch(
-    () => [tplStore.currentTemplate, tplStore.folderTemplate, tplStore.createSeasonFolder],
+    () => [
+      tplStore.currentTemplate, tplStore.folderTemplate, tplStore.createSeasonFolder,
+      settingsStore.episodePadDigits, settingsStore.seasonPadDigits,
+    ],
     () => { if (filesStore.files.length) buildPreview() },
     { deep: true },
   )
