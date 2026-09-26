@@ -25,7 +25,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -43,18 +43,23 @@ const overlayRef = ref(null)
 // 操作背后的界面 —— 破坏性操作需要明确阻断（spec §10）。
 // 没有用 AppModal：AppModal 支持 Esc 关闭，而这里**不能**被关闭。
 //
-// 用 watch 而不是 onMounted：本组件在 HomeView 里是常驻的（非惰性 v-if），
-// 挂载那一刻 modelValue 还是 false，内部 v-if 尚未渲染，overlayRef 为 null，
-// onMounted 里取焦点会静默落空；真正需要收焦点的时刻是 modelValue 翻成
-// true 的那一次。flush: 'post' 让回调等到 DOM 更新之后再跑，因此即便某天
-// 组件以 modelValue 已为 true 的状态挂载，immediate 的那次也会拿到元素。
+// 两条路径分开处理，各自都落在「元素确定已在 DOM 里」的时刻：
+//  · 组件在遮罩已打开的状态下挂载 —— HomeView 的 v-if 会在试运行期间卸载它，
+//    执行时再挂载，那一刻 modelValue 已经是 true；onMounted 在元素插入之后跑
+//  · 组件已挂载、modelValue 随后翻成 true —— flush: 'post' 让回调等到 DOM 更新之后
+// 注意 watch 不能只靠 immediate 覆盖第一种情形：Vue 对带回调的 watch 会
+// 同步直调 job、绕过 scheduler，flush: 'post' 对那一次不生效。
 watch(
   () => props.modelValue,
   (v) => {
     if (v) overlayRef.value?.focus()
   },
-  { immediate: true, flush: 'post' },
+  { flush: 'post' },
 )
+
+onMounted(() => {
+  if (props.modelValue) overlayRef.value?.focus()
+})
 </script>
 
 <style scoped>
