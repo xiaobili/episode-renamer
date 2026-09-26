@@ -346,6 +346,42 @@ def test_rename_dup_keeps_the_episode_nfo_paired_with_the_video(tmp_path):
     assert clash_nfo.read_text(encoding="utf-8") == "冲突那一集的既有 NFO"
 
 
+def test_rename_dup_does_not_attach_an_nfo_landing_spot_to_the_subtitle(tmp_path):
+    """`rename_dup` 下字幕也不得被挂上落点。
+
+    与上一条同形, 但字幕的目标名也被占用 —— 字幕同样满足 `new_path != plan.new_path`,
+    所以不过滤的话它会把自己的 `…_1.nfo` 写进 nfo_path_by_file。而那个路径**与视频的
+    完全相同**（两者都取 episode_nfo_path(…_1.*) 的形式）, 于是预览/结果里两行报出
+    同一个 NFO 落点 —— 其中字幕那一行报的是根本不会写的文件。
+
+    变异验证: 去掉 local_renamer 里那处 `and not _is_subtitle_file(plan.file_info)`
+    → 本用例 FAILED（results[1].nfo_path 变成 str(…_1.nfo)）。
+    注: 这道过滤目前**只有这条用例**钉着 —— 去掉它时其余 36 条用例全绿。
+    """
+    video = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    subtitle = make_subtitle(video)
+    show_dir = tmp_path / SHOW_DIR
+    # 把视频与字幕的**目标名**都占住, 让两者都走 rename_dup
+    (show_dir / "绝命毒师 - S02E05.mkv").write_bytes(b"existing video")
+    (show_dir / "绝命毒师 - S02E05.srt").write_bytes(b"existing subtitle")
+
+    result = batch_rename(
+        [make_file(video, "f1"), subtitle], TEMPLATE,
+        conflict_strategy="rename_dup",
+        nfo_options=named_options(overwrite=True),
+        nfo_matches={"f1": make_match(), "f2": make_match()},
+    )
+
+    renamed_nfo = show_dir / "绝命毒师 - S02E05_1.nfo"
+    assert result.results[0].new_path == str(show_dir / "绝命毒师 - S02E05_1.mkv")
+    assert result.results[0].nfo_path == str(renamed_nfo), "视频的 NFO 仍跟着改名后的视频"
+    # 字幕照常被改名, 但一个落点都不报
+    assert result.results[1].new_path == str(show_dir / "绝命毒师 - S02E05_1.srt")
+    assert result.results[1].nfo_path is None
+    assert result.nfo_written == [str(renamed_nfo), str(show_dir / "tvshow.nfo"),
+                                  str(show_dir / "season.nfo")]
+
+
 def test_dry_run_reports_unmatched_entries_with_the_real_reason(tmp_path):
     video = make_video(tmp_path)
 

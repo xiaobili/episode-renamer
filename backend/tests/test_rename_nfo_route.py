@@ -424,3 +424,85 @@ def test_subtitle_is_excluded_from_both_preview_and_execute(tmp_path, monkeypatc
     assert by_name[subtitle.name]["success"] is True
     assert by_name[subtitle.name]["nfo_path"] is None
     assert by_name[video.name]["nfo_path"] == str(show_dir / "Test Show - S01E02.nfo")
+
+
+SUB_LANG_TEMPLATE = "{show} - S{season_padded}E{episode_padded}{sub_lang}{extension}"
+
+
+def test_subtitle_sorted_before_the_video_does_not_take_the_show_level_row(tmp_path, monkeypatch):
+    """字幕的新路径排在视频**之前**时, 剧集级决策仍必须落在视频行上。
+
+    上一条用例的模板不含 {sub_lang}: 字幕的新名 "….srt" 排在 "….mkv" **之后**,
+    所以「不过滤」在那种排序下也能蒙对 —— 鉴别力不足。这里用含 {sub_lang} 的模板
+    把字幕排到前面（".chs" 使分岔点是 '.'='.' 后 'c'(99) < 'm'(109)）,
+    这正是错挂真正会发生的那个形态, 也正是 R3-4 报告的排序证据。
+
+    另: 第三个文件用**视频扩展名** .mkv 但 is_subtitle=True, 钉住「判据是
+    FileInfo.is_subtitle 而不是嗅扩展名」—— 嗅扩展名的实现会在这里给它写出
+    Test Show - S01E03.nfo。
+
+    变异验证: 去掉 api/renamer.py 的过滤 → 预览断言 FAILED;
+    去掉 local_renamer 的过滤 → 盘上多出 .chs.nfo → 执行断言 FAILED。
+    """
+    from app.api import renamer as renamer_api
+
+    show_dir = tmp_path / "Test Show"
+    show_dir.mkdir(parents=True)
+    video = show_dir / "Test.Show.S01E02.mkv"
+    video.write_bytes(b"")
+    subtitle = show_dir / "Test.Show.S01E02.chs.srt"
+    subtitle.write_bytes(b"")
+    # 视频扩展名 + is_subtitle=True: 只有扫描器的判定能区分它
+    mislabeled = show_dir / "Test.Show.S01E03.mkv"
+    mislabeled.write_bytes(b"")
+
+    sub_info = _file("f2", subtitle).model_copy(
+        update={"is_subtitle": True, "extension": ".srt"}
+    )
+    mislabeled_info = _file("f3", mislabeled).model_copy(update={"is_subtitle": True})
+
+    cache_files([_file("f1", video), sub_info, mislabeled_info])
+    monkeypatch.setattr(
+        renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
+    )
+    client = TestClient(app)
+
+    payload = {
+        "file_ids": ["f1", "f2", "f3"],
+        "template": SUB_LANG_TEMPLATE,
+        "source": "local",
+        "path": "",
+        "overrides": {
+            "f1": {"show_name": "Test Show", "season": 1, "episode": 2},
+            "f2": {"show_name": "Test Show", "season": 1, "episode": 2},
+            "f3": {"show_name": "Test Show", "season": 1, "episode": 3},
+        },
+        "generate_nfo": True,
+    }
+
+    # 前提本身也要钉住: 字幕的新路径必须排在视频之前, 否则这条用例测的是别的排序
+    # （这正是「检查可能因为前提不成立而永远绿灯」的那类风险）。
+    assert str(show_dir / "Test Show - S01E02.chs.srt") < str(show_dir / "Test Show - S01E02.mkv")
+
+    res = client.post("/api/rename/preview", json=payload)
+    assert res.status_code == 200, res.text
+    rows = {row["original_filename"]: row for row in res.json()["results"]}
+
+    # 排序把字幕放在前面, 但剧集级/季级三个键必须落在**视频**行上
+    assert rows[video.name]["nfo"] == {
+        "episode": str(show_dir / "Test Show - S01E02.nfo"),
+        "tvshow": str(show_dir / "tvshow.nfo"),
+        "season": str(show_dir / "season.nfo"),
+    }
+    assert rows[subtitle.name]["nfo"] is None
+    # 视频扩展名 + is_subtitle=True: 一个落点都没有（判据不是扩展名）
+    assert rows[mislabeled.name]["nfo"] is None
+
+    res = client.post("/api/rename/execute", json=payload)
+    assert res.status_code == 200, res.text
+    assert sorted(p.name for p in show_dir.glob("*.nfo")) == [
+        "Test Show - S01E02.nfo", "season.nfo", "tvshow.nfo",
+    ], "字幕旁 0 个、伪字幕（.mkv + is_subtitle）也 0 个"
+    # 两者都照常重命名（过滤只作用于 NFO）
+    assert sorted(p.name for p in show_dir.glob("*.srt")) == ["Test Show - S01E02.chs.srt"]
+    assert (show_dir / "Test Show - S01E03.mkv").is_file()

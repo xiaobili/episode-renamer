@@ -230,18 +230,20 @@
                   <span v-if="row.nfo.tvshow" class="truncate text-ink-3" :title="row.nfo.tvshow">
                     + tvshow.nfo
                   </span>
-                  <!-- 这条的判据必须是**批次级**的 nfo_scope, 不能是「本行 nfo 里没有
-                       tvshow 键」: 剧集级决策按契约只挂在组内第一条 file_id 上
-                       （nfo_writer.build_nfo_decisions 的 group[0]）, 所以一个 10 集的
-                       剧目录里有 9 行的 nfo 都没有 tvshow 键 —— 逐行判会给这 9 行打出
-                       假警告, 而 tvshow.nfo 明明在计划里。后端把 nfo_scope 从「按文件」
-                       改成「按剧」判定, 正是同一个根因的修法。
-                       真正的 episode_only（多剧混放）批次里剧集级决策的 content 均为
-                       None → 被过滤 → 每行都没有 tvshow 键, 故这个条件恰好打在正确的
-                       那一批行上; 而 full 批次的非代表行不再有第二行 —— 信息无损,
-                       落点已由代表行显示。 -->
+                  <!-- 这条要**两个**条件, 缺任何一个都会打出假警告:
+                       ① 不能用「本行 nfo 里没有 tvshow 键」作判据 —— 剧集级决策按契约
+                       只挂在组内第一条 file_id 上（build_nfo_decisions 的 group[0]）,
+                       所以一个 10 集的剧目录里有 9 行都没有 tvshow 键, 逐行判会给这 9 行
+                       打假警告, 而 tvshow.nfo 明明在计划里（nfo_scope 由「按文件」改成
+                       「按剧」判定, 修的正是这个根因）;
+                       ② 也不能只用批次级的 nfo_scope === 'episode_only' —— 判定按**批**,
+                       所以「干净剧 A + 混放 B/C」这样一批里, A 的第二集也会被牵连报
+                       「多剧混放」, 而 A 的 tvshow.nfo 就在计划里、还显示在 A 的第一行上。
+                       加上 showsWithShowLevelNfo 才落到正确的行: 该集合是「本批里真有
+                       剧集级落点的剧名」, full 批次里它含每一部剧 → 全部静默; 同目录混放
+                       时它是空集 → 每行都警告; 多目录混放时它只含 A → 只警告 B/C。 -->
                   <span
-                    v-else-if="row.nfo_scope === 'episode_only'"
+                    v-else-if="row.nfo_scope === 'episode_only' && !showsWithShowLevelNfo.has(row.show_name)"
                     class="text-warn"
                     :title="nfoScopeHint(row.nfo_scope)"
                   >
@@ -324,14 +326,24 @@ function nfoScopeHint(scope) {
 // 只有这两个 scope 是**批次级**事实: 整批都不写 NFO, 所以按行重复报批次原因是对的。
 const BATCH_NFO_SCOPES = new Set(['disabled', 'unsupported_source'])
 
-// `nfo` 为 null 的行：本行没有任何落点。两种成因必须分开说 ——
+// `nfo` 为 null 的行：本行没有任何落点。三种成因必须分开说 ——
+//   · **字幕**：NFO 管线只处理视频（后端 _is_subtitle_file / video_ids 那两处过滤）。
+//     字幕行**必然**是 null, 这是正常状态, 不是警告。字幕默认被勾选
+//     （workspace 的 includeSubs）, 所以漏掉这一支就是给默认人群的每一行都刷一条
+//     橙色假警告, 而它的 title 还会说「TMDB 未匹配到本集」—— 该行自己的 tmdb_status
+//     其实是 matched。**文字为真、title 为假、警示色误导**, 三者叠加。
 //   · disabled / unsupported_source：整批都不写, 照实报批次原因;
 //   · full / episode_only：批次里确实有东西要写, 只是不在本行（本行的 episode 决策
 //     content 为 None, 即 TMDB 没匹配到这一集）—— 那是**本行自己的**状态, 说
 //     「本集无 NFO」。若这里改报批次原因（如「多剧混放，仅每集 NFO」）, 同一文件状态
 //     就会因为「这一行是不是组代表」而渲染成两种不同的字, 读起来像两回事。
-// 与非空分支的第一行用同一句话, 正是为了让这两种归属的渲染一致。
+// 后两支与非空分支的第一行用同一句话, 正是为了让这两种归属的渲染一致。
 function nfoNullHint(row) {
+  // is_subtitle 由扫描器给（local_scanner 的 _build_file_info）, 经扫描响应的
+  // model_dump 与 workspace 的 `...f` 原样到达行上 —— 不需要在这里再嗅扩展名。
+  if (row.is_subtitle) {
+    return { text: '字幕不写 NFO', warn: false, title: undefined }
+  }
   if (BATCH_NFO_SCOPES.has(row.nfo_scope)) {
     return { text: nfoScopeHint(row.nfo_scope), warn: false, title: undefined }
   }
@@ -349,6 +361,16 @@ const props = defineProps({
 defineEmits([
   'preview-all', 'clear-all', 'toggle-all', 'select-row', 'update-row', 'quick-scan', 'rematch',
 ])
+
+// 「本批里真的有剧集级落点的剧名」—— 用来把「仅每集 NFO」的警告钉到正确的行上。
+//
+// 来源是**行上的 nfo**（哪一行拿到了 tvshow 键）, 而不是 nfo_scope: 后者是批次级的,
+// 一个干净的剧会因为同批**别的**剧被混放守卫拒绝而一起被标成 episode_only ——
+// 那样它每一集都会报「多剧混放」, 而它的 tvshow.nfo 正在计划里。
+// 判据必须落在「这一行的剧」上, 这正是 R3-1 那次修的同一个形态（行级信号 vs 批次级事实）。
+const showsWithShowLevelNfo = computed(() =>
+  new Set(props.previewRows.filter(r => r.nfo?.tvshow).map(r => r.show_name)),
+)
 
 // 空态文案随数据源变化：本地源可以直接去扫描，云盘源得先连上才有目录可选。
 const emptyState = computed(() => {

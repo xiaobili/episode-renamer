@@ -261,7 +261,15 @@ def batch_rename(
             continue
 
         result = execute_rename_plan(plan, dry_run=dry_run, conflict_strategy=conflict_strategy)
-        if nfo_options and nfo_options.enabled and result.new_path != plan.new_path:
+        if (
+            nfo_options and nfo_options.enabled
+            # 字幕不进 NFO, 所以也不该在这里被重新挂上落点: 字幕的目标名被占用时
+            # （rename_dup 的 X_1 那条路径）它同样满足 new_path != plan.new_path,
+            # 不过滤就会把自己的 X_1.nfo 写进 nfo_path_by_file —— 预览/结果里
+            # 字幕行于是报出一个根本不会写的 NFO 落点。
+            and not _is_subtitle_file(plan.file_info)
+            and result.new_path != plan.new_path
+        ):
             # rename_dup（「自动编号」）下 execute_rename_plan 把真实目标解析成了
             # X_1.mkv, 而每集决策是按 plan.new_path 算的 —— 不跟着改指向的话,
             # 改名后的视频拿不到与它同名的 X_1.nfo（Emby 靠同名配对）, 而 NFO 会
@@ -297,8 +305,10 @@ def batch_rename(
                 elif Path(decision.path).exists() and not nfo_options.overwrite:
                     # "已存在" 是**前端 ResultDialog 的判据串**: 出现它才追加那行可行动
                     # 提示「如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行」。
-                    # 前端没有测试、后端也不断言这个串与前端消费者的关系, 所以改字
-                    # 不会让任何检查变红, 只会让提示静默消失。改这里要同步前端。
+                    # 后端测试钉着这个字面值（tests/test_nfo_write.py:295 断言干跑分支
+                    # 的 nfo_skipped 里有 reason == "已存在"）, 但**没有任何检查**钉住
+                    # 前端消费者那一侧 —— 前端没有测试, 改字后后端照样绿, 那行提示
+                    # 却会静默消失。改这里要同步前端。
                     # 另一半在 nfo_writer.write_nfo_files（真实写盘那条路径）。
                     nfo_skipped.append({"path": decision.path, "reason": "已存在"})
                 elif decision.path not in nfo_written:

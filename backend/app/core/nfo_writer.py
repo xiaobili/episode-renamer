@@ -324,9 +324,11 @@ def write_nfo_files(
         target = Path(decision.path)
         if target.exists() and not overwrite:
             # "已存在" 是**前端 ResultDialog 的判据串**: 出现它才追加那行可行动提示
-            # 「如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行」。前端没有
-            # 测试、后端也不断言这个串与前端消费者的关系, 所以改字不会让任何检查
-            # 变红, 只会让提示静默消失。改这里要同步前端。
+            # 「如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行」。
+            # 后端测试钉着这个字面值（tests/test_nfo_write.py:69 直接断言
+            # write_nfo_files 的返回值, 278 断言 batch_rename 的 nfo_skipped），
+            # 但**没有任何检查**钉住前端消费者那一侧: 前端没有测试, 改字后后端
+            # 照样绿, 那行提示却会静默消失。改这里要同步前端。
             # 另一半在 local_renamer.py 的干跑分支（同名串, 同一判据）。
             skipped.append((decision.path, "已存在"))
             continue
