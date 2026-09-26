@@ -28,9 +28,27 @@
       </div>
     </div>
 
+    <!-- 空态：图标 + 标题 + 说明 + 主操作，垂直居中于表格区 -->
+    <div
+      v-if="!scanning && !previewRows.length"
+      class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
+    >
+      <FileQuestion class="h-10 w-10 text-ink-3" aria-hidden="true" />
+      <div class="text-[14px] font-medium text-ink">{{ emptyState.title }}</div>
+      <p class="max-w-[420px] text-[13px] leading-relaxed text-ink-2">{{ emptyState.description }}</p>
+      <AppButton
+        v-if="emptyState.action"
+        variant="primary"
+        class="mt-1"
+        @click="$emit(emptyState.action.event)"
+      >
+        {{ emptyState.action.label }}
+      </AppButton>
+    </div>
+
     <!-- 滚动容器。flex-1 + min-h-0 让它吃掉父容器剩余高度并在内部滚动，
          而不是把页面撑高（spec §7.2）。 -->
-    <div class="min-h-0 flex-1 overflow-auto">
+    <div v-else class="min-h-0 flex-1 overflow-auto">
       <table class="w-full min-w-[560px] text-[13px]">
         <thead class="sticky top-0 z-[1] bg-sunken">
           <tr class="text-ink-2">
@@ -93,7 +111,7 @@
             </tr>
           </template>
 
-          <template v-else-if="previewRows.length">
+          <template v-else>
             <tr
               v-for="(row, idx) in previewRows"
               :key="row.id"
@@ -157,22 +175,6 @@
               </td>
             </tr>
           </template>
-          <tr v-else>
-            <td colspan="8" class="px-4 py-16 text-center">
-              <div class="flex flex-col items-center gap-2 text-ink-2">
-                <FileQuestion class="h-10 w-10 text-ink-3" aria-hidden="true" />
-                <div class="text-[13px]">扫描目录以加载文件</div>
-                <AppButton
-                  v-if="activeSource === 'local'"
-                  variant="primary"
-                  class="mt-2"
-                  @click="$emit('quick-scan')"
-                >
-                  开始扫描
-                </AppButton>
-              </div>
-            </td>
-          </tr>
         </tbody>
       </table>
     </div>
@@ -180,6 +182,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { AlertTriangle, Check, FileQuestion } from 'lucide-vue-next'
 
 import AppBadge from './ui/AppBadge.vue'
@@ -191,7 +194,7 @@ import AppInput from './ui/AppInput.vue'
 // 骨架的职责是「占住版面、表达正在加载」，不是「预告有多少行」。
 const SKELETON_ROWS = 8
 
-defineProps({
+const props = defineProps({
   filesStore: { type: Object, required: true },
   previewRows: { type: Array, default: () => [] },
   scannedInfo: Object,
@@ -202,4 +205,20 @@ defineProps({
 defineEmits([
   'preview-all', 'clear-all', 'toggle-all', 'select-row', 'update-row', 'quick-scan',
 ])
+
+// 空态文案随数据源变化：本地源可以直接去扫描，云盘源得先连上才有目录可选。
+const emptyState = computed(() => {
+  if (props.activeSource === 'openlist') {
+    return {
+      title: '尚未加载文件',
+      description: '在左侧「扫描源」里连接 OpenList、选择挂载点与目录，然后点扫描。',
+      action: null,
+    }
+  }
+  return {
+    title: '尚未加载文件',
+    description: '在左侧「扫描源」里选择目录并点击扫描，文件会在这里列出并自动生成新文件名预览。',
+    action: { label: '开始扫描', event: 'quick-scan' },
+  }
+})
 </script>
