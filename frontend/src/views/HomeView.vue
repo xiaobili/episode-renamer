@@ -46,6 +46,7 @@
             @update:folderTemplate="v => tplStore.folderTemplate = v"
             :generate-nfo="ws.generateNfo"
             :nfo-overwrite="ws.nfoOverwrite"
+            :nfo-needs-scrape="ws.nfoNeedsScrape"
             @update:generateNfo="v => ws.generateNfo = v"
             @update:nfoOverwrite="v => ws.nfoOverwrite = v"
           />

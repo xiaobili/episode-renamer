@@ -51,6 +51,14 @@
       <p v-if="generateNfo && source !== 'openlist'" class="text-[11px] leading-relaxed text-ink-3">
         生成 tvshow.nfo、season.nfo 与每集 .nfo。剧集级文件需要该目录下只有一部剧，否则只写每集 NFO。
       </p>
+      <!-- 未刮削 + 勾了 NFO = 一个文件都不会写。用 warn 色而不是次要文字色：
+           它是一个「你现在这样做会得到零产出」的警告，不是背景说明。 -->
+      <p
+        v-if="nfoNeedsScrape && source !== 'openlist'"
+        class="text-[11px] leading-relaxed text-warn"
+      >
+        尚未刮削标题：NFO 的内容全部来自 TMDB，点文件列表上方的「刮削标题」后才会写出。
+      </p>
     </div>
 
     <div class="flex flex-col gap-2">
@@ -101,6 +109,8 @@ const props = defineProps({
   source: { type: String, required: true },
   generateNfo: { type: Boolean, default: false },
   nfoOverwrite: { type: Boolean, default: false },
+  // 「勾了生成 NFO，但本次没刮削」—— 由 workspace 的同一个谓词给出（spec §17.5）。
+  nfoNeedsScrape: { type: Boolean, default: false },
 })
 defineEmits([
   'preset-change', 'template-edit',

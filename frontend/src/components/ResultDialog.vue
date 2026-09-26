@@ -76,6 +76,12 @@
             <p v-if="nfoStats.hint" class="mt-1 text-[11px] leading-relaxed text-warn">
               {{ nfoStats.hint }}
             </p>
+            <!-- 未刮削而执行：后端给的跳过原因（「TMDB 未匹配, 不写残缺 NFO」）在这一次
+                 会把成因说成「没匹配到」。不点明的话用户会去核对文件名或怀疑 TMDB 配置，
+                 而真实成因是本次根本没刮削（spec §17.5）。 -->
+            <p v-if="nfoStats.scrapeNote" class="mt-1 text-[11px] leading-relaxed text-warn">
+              {{ nfoStats.scrapeNote }}
+            </p>
             <!-- 落点清单: spec §9.4 的可见性要求「显式列出」落点路径。
                  计数与原因分组回答的是「为什么跳过」, 「要写到哪里」只有路径能回答
                  —— 上溯过头时 tvshow.nfo 会落到**库根**而不是剧目录, 而本对话框
@@ -194,6 +200,11 @@ const nfoStats = computed(() => {
     reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 项`).join('；'),
     hint: byReason.has('已存在')
       ? '如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行'
+      : '',
+    // 标志由 workspace.executeAction 在**执行那一刻**算好记在结果上（与 dry_run
+    // 同样的做法）—— 不在这里重算，因为对话框打开时 scraped 可能已经变了。
+    scrapeNote: props.result?.nfo_blocked_by_scrape
+      ? '本次未刮削标题，NFO 没有元数据可写：点文件列表上方的「刮削标题」后重新执行即可。'
       : '',
   }
 })
