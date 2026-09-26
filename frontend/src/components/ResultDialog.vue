@@ -58,6 +58,12 @@
               <span v-if="nfoStats.skippedCount" class="tabular-nums text-ink-2">
                 {{ nfoStats.dryRun ? '将跳过' : '跳过' }} {{ nfoStats.skippedCount }} 个
               </span>
+              <!-- 跟随移动单独一行: 这些文件**不是本程序生成的**, 是重命名时一并
+                   搬走的既有 NFO（spec §9.1.1）。算进「写入 N 个」会把用户自己的
+                   元数据谎报成生成结果。 -->
+              <span v-if="nfoStats.carriedCount" class="tabular-nums text-ink-2">
+                {{ nfoStats.dryRun ? '将跟随移动' : '跟随移动' }} {{ nfoStats.carriedCount }} 个
+              </span>
             </div>
             <p v-if="nfoStats.reasonText" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
               跳过原因：{{ nfoStats.reasonText }}
@@ -80,6 +86,23 @@
               </li>
               <li
                 v-for="path in nfoStats.writtenPaths"
+                :key="path"
+                class="break-all font-mono text-[11px] leading-relaxed text-ink-2"
+              >
+                {{ path }}
+              </li>
+            </ul>
+            <!-- 跟随移动的落点也要列出来（§9.4 的可见性同样适用）: 「跟随移动 2 个」
+                 说不出搬到了哪里, 而搬到哪里正是用户要核对的事 -->
+            <ul
+              v-if="nfoStats.carriedPaths.length"
+              class="mt-1.5 max-h-[132px] space-y-0.5 overflow-y-auto rounded-[6px] border border-line px-2 py-1.5"
+            >
+              <li class="text-[11px] text-ink-3">
+                {{ nfoStats.dryRun ? '计划跟随移动的既有 NFO' : '已跟随移动的既有 NFO' }}
+              </li>
+              <li
+                v-for="path in nfoStats.carriedPaths"
                 :key="path"
                 class="break-all font-mono text-[11px] leading-relaxed text-ink-2"
               >
@@ -143,7 +166,10 @@ defineEmits(['update:modelValue'])
 const nfoStats = computed(() => {
   const written = props.result?.nfo_written || []
   const skipped = props.result?.nfo_skipped || []
-  if (!written.length && !skipped.length) return null
+  // 跟随移动的既有 NFO（spec §9.1.1）既不是「写入」也不是「跳过」, 单列一项:
+  // 没开 NFO 生成时它就只出现在这里, 漏掉这一项等于这件事彻底不可见。
+  const carried = props.result?.nfo_carried || []
+  if (!written.length && !skipped.length && !carried.length) return null
 
   const byReason = new Map()
   for (const item of skipped) {
@@ -157,6 +183,8 @@ const nfoStats = computed(() => {
     writtenCount: written.length,
     // 计数之外还要**路径本身**（§9.4）—— 数字说不出 tvshow.nfo 落到哪个目录。
     writtenPaths: written,
+    carriedCount: carried.length,
+    carriedPaths: carried,
     skippedCount: skipped.length,
     reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 个`).join('；'),
     hint: byReason.has('已存在')

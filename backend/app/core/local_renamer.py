@@ -50,6 +50,60 @@ _NO_LANDING_STATUSES = frozenset({"skipped_conflict", "conflict", "failed"})
 # 没改名的行在 nfo_skipped 里的原因串。
 _NOT_RENAMED_NFO_REASON = "该文件未改名, 不写 NFO"
 
+# 组级决策（tvshow / season）被丢弃时的原因串。它的落点由该组全部 new_path 推出,
+# 一条都没落地时那就是凭空推出来的 —— 不写, 但要**报出来**（留白等于静默）。
+_DROPPED_GROUP_NFO_REASON = "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
+
+# 同前缀 NFO 跟随移动时的原因串（spec §9.1.1 的失败处理之一）。
+# 不写成同一类里的例外: 目标是**别人已存在的元数据**, 宁可留下可见的孤儿,
+# 也不静默改写它。
+_CARRIED_NFO_TARGET_EXISTS_REASON = "同名 NFO 未跟随移动: 目标 NFO 已存在, 不覆盖"
+
+# 「视频真的动了」的状态集合 —— 只有这些行的同前缀 NFO 才跟随移动。
+# dry_run 也算: 那一行**将会**真的动, 干跑要为它列出计划。
+# skipped_same 不算: 原路径与目标路径是同一个文件, NFO 的名字本来就没变。
+# 没落地的三种状态（_NO_LANDING_STATUSES）不算: 视频没动, 它旁边的 NFO 名字没错。
+_CARRY_STATUSES = frozenset({"renamed", "moved", "dry_run"})
+
+
+def carry_same_stem_nfo(
+    original_video_path: str, new_video_path: str, dry_run: bool = False
+) -> tuple[Optional[str], Optional[str]]:
+    """把与视频同名前缀的 .nfo 一并搬到新前缀（spec §9.1.1）。返回 (落点, 未跟随的原因)。
+
+    为什么需要这条: `.nfo` 既不在 video_extensions 也不在 subtitle_extensions,
+    从不进入扫描、不在批次里, 重命名路径上没有任何东西碰它 —— 视频改名后
+    `旧名 S01E01.nfo` 必然留下, 成为与新文件名不符的孤儿。字幕没有这个问题
+    （字幕在扫描里, 被当独立文件重命名）。
+
+    四条边界: 只对视频（调用点用 _is_subtitle_file 过滤）; 只跟随**同前缀**的那一个
+    （tvshow.nfo / season.nfo 隶属剧/季, 这里按路径推导, 永远推不出它们）;
+    与「是否生成 NFO」无关（本函数不碰 nfo_options）; 调用点在生成**之前**。
+
+    dry_run 不移动, 只把落点算出来给调用方列清单 —— 与 §9.4 的可见性一致。
+
+    返回 (None, None) 表示「这里没有该跟随的 NFO」, 不是失败: 绝大多数批次如此。
+
+    **不在本期**: OpenList 源。本期云盘不写 NFO（§2）, 跟随在那里同样缺席 ——
+    已知限制, 不是遗漏（openlist_renamer 从不调用本函数, 本函数只被本地那条
+    batch_rename 调用）。
+    """
+    src = episode_nfo_path(original_video_path)
+    dst = episode_nfo_path(new_video_path)
+    if src == dst or not Path(src).exists():
+        return None, None
+    if Path(dst).exists():
+        return None, _CARRIED_NFO_TARGET_EXISTS_REASON
+    if dry_run:
+        return dst, None
+    try:
+        # 跨设备也能搬（与 execute_rename_plan 的 errno 18 回退同一考虑）,
+        # 失败抛 OSError —— 由调用点报成跳过, 不冒到 batch_rename 外面。
+        shutil.move(src, dst)
+    except OSError as exc:
+        return None, f"同名 NFO 跟随移动失败: {exc}"
+    return dst, None
+
 
 def _keep_decision(
     decision: NfoDecision, dead_file_ids: set[str], landed_paths: list[str]
@@ -291,6 +345,12 @@ def batch_rename(
     # 没落地那一行的每集落点。它不写, 但必须**报出来**（nfo_skipped）——
     # 静默地少写一个 NFO 与静默地写错一个一样不可见, 而后者正是本次修复的对象。
     dead_episode_paths: list[str] = []
+    # 跟着视频搬走的既有同前缀 NFO 的**落点**（spec §9.1.1）。与 nfo_written 分开:
+    # 它不是生成出来的, 算进「生成 N 个」就是在骗人。
+    nfo_carried: list[str] = []
+    # 想跟随却没成功的（目标已存在 / 移动失败）。它与生成侧的跳过汇总在
+    # nfo_skipped 里, 但原因串各成一类, 用户分得清是「没生成」还是「没搬走」。
+    carry_skipped: list[tuple[str, str]] = []
 
     for plan in plans:
         # 冲突行走 abort 时 result 是合成的, 但**不能再 continue**: 下面那段
@@ -325,6 +385,25 @@ def batch_rename(
                 # 落到 X.nfo: 那是**冲突那一集**的位置, 覆盖模式下还会把它改写掉。
                 nfo_path_by_file[plan.file_id] = episode_nfo_path(result.new_path)
 
+        # spec §9.1.1: 同前缀的既有 .nfo 跟着视频一起搬。位置在**这里**是有意的 ——
+        # 生成在本函数末尾, 所以「先移动、后生成」这个顺序由代码位置兑现:
+        # 「生成开 + 覆盖关」时搬过去的旧 NFO 占住新位置, 生成报「已存在」,
+        # 用户原有的内容得以保留。反过来（先生成再搬）会让生成先写、搬动再撞上
+        # 「目标已存在」而放弃 —— 用户的内容被生成结果替掉, 旧文件还在原处当孤儿。
+        # 视频用 result.new_path（rename_dup 下真实落点是 X_1.mkv, 与每集 NFO 同一判据）。
+        if (
+            not aborted
+            and not _is_subtitle_file(plan.file_info)
+            and result.status in _CARRY_STATUSES
+        ):
+            carried_path, carry_reason = carry_same_stem_nfo(
+                plan.original_path, result.new_path, dry_run=dry_run
+            )
+            if carried_path is not None:
+                nfo_carried.append(carried_path)
+            elif carry_reason is not None:
+                carry_skipped.append((episode_nfo_path(result.new_path), carry_reason))
+
         if result.status in _NO_LANDING_STATUSES:
             dead_file_ids.add(plan.file_id)
             dead_path = nfo_path_by_file.pop(plan.file_id, None)
@@ -350,19 +429,35 @@ def batch_rename(
     nfo_written: list[str] = []
     nfo_skipped: list[dict] = []
 
+    # 所有「没发生的事」先汇总成 (路径, 原因) 对, 最后**统一按路径去重**。
+    # 三处来源都可能对同一个路径发多条: 同一集的两个来源（模板不含清晰度,
+    # 都算出同一个落点）、多剧混放为组内每个条目各发一条组级决策、以及
+    # 生成侧与跟随侧的跳过撞在同一个目标 NFO 上。不去重就会让对话框把 1 个
+    # 路径读成 N 个 —— 数字本身撒谎, 与混放那处同一类。
+    # 保留首次出现的顺序; 撞车时**先生成的先赢**（生成侧的「已存在」带着可行动
+    # 提示, 比跟随侧的说明更有用, 见下面 extend 的顺序）。
+    skipped_pairs: list[tuple[str, str]] = []
+
     # 没落地的行: 它们的每集决策一律不写（理由见 _keep_decision）。组级决策由
     # landed_paths 另行判定 —— 那是「整组」的落点, 不能因为组代表那一行没落地
     # 就把整部剧的 tvshow.nfo 丢掉。
     if nfo_decisions and dead_file_ids:
-        nfo_decisions = [
-            d for d in nfo_decisions
-            if _keep_decision(d, dead_file_ids, landed_paths)
-        ]
+        kept: list[NfoDecision] = []
+        for decision in nfo_decisions:
+            if _keep_decision(decision, dead_file_ids, landed_paths):
+                kept.append(decision)
+            elif decision.kind != "episode":
+                # 组级决策被丢弃 = 那份剧集级/季级 NFO 不会写。**丢弃要报出来**:
+                # 此前它被静默扔掉, 结果里既没有落点也没有跳过记录, 用户无从知道
+                # 这部剧本该有的 tvshow.nfo 为什么一个都没写。
+                # （每集决策的丢弃另有 dead_episode_paths 那条更具体的原因。）
+                skipped_pairs.append((decision.path, _DROPPED_GROUP_NFO_REASON))
+        nfo_decisions = kept
 
     # 不写要**报出来**: 留白等于静默, 而用户需要知道「这一行没改名, 所以 NFO 也
     # 没写」—— 否则那一行的 nfo_path 是 None、清单里也找不到它。
-    nfo_skipped.extend(
-        {"path": path, "reason": _NOT_RENAMED_NFO_REASON} for path in dead_episode_paths
+    skipped_pairs.extend(
+        (path, _NOT_RENAMED_NFO_REASON) for path in dead_episode_paths
     )
 
     # 真实目标被改过名的那几条（X.mkv → X_1.mkv）, 每集决策改指向改名后的落点。
@@ -376,12 +471,16 @@ def batch_rename(
     if nfo_options and nfo_options.enabled and nfo_decisions:
         if dry_run:
             # 干跑绝不落盘, 但仍要给出完整清单。exists() 是只读检查, 允许。
+            # 跟随移动也算「那一刻那里会有文件」: 移动在生成之前发生, 所以干跑里
+            # 被搬走的落点同样要让生成报「已存在」—— 否则干跑报「将写入」、真跑报
+            # 「已存在」, 执行前唯一的那点可见性就成了假话。
+            planned_carried = set(nfo_carried)
             planned_written: list[str] = []
-            planned_skipped: list[tuple[str, str]] = []
             for decision in nfo_decisions:
                 if decision.content is None:
-                    planned_skipped.append((decision.path, decision.reason or "无内容"))
-                elif Path(decision.path).exists() and not nfo_options.overwrite:
+                    skipped_pairs.append((decision.path, decision.reason or "无内容"))
+                elif (Path(decision.path).exists() or decision.path in planned_carried) \
+                        and not nfo_options.overwrite:
                     # "已存在" 是**前端 ResultDialog 的判据串**: 出现它才追加那行可行动
                     # 提示「如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行」。
                     # 后端测试钉着这个字面值（tests/test_nfo_write.py:295 断言干跑分支
@@ -389,20 +488,27 @@ def batch_rename(
                     # 前端消费者那一侧 —— 前端没有测试, 改字后后端照样绿, 那行提示
                     # 却会静默消失。改这里要同步前端。
                     # 另一半在 nfo_writer.write_nfo_files（真实写盘那条路径）。
-                    planned_skipped.append((decision.path, "已存在"))
+                    skipped_pairs.append((decision.path, "已存在"))
                 elif decision.path not in planned_written:
                     planned_written.append(decision.path)
             nfo_written = planned_written
-            # 与真实写盘共用同一个去重实现（多剧混放会为组内每个条目各发一条
-            # 同路径的决策）—— 两处各写一遍必然漂移: 干跑报 6 个、真跑报 2 个。
-            nfo_skipped.extend(
-                {"path": p, "reason": r}
-                for p, r in dedupe_skipped_by_path(planned_skipped)
-            )
         else:
-            written_paths, skipped_pairs = write_nfo_files(nfo_decisions, overwrite=nfo_options.overwrite)
+            written_paths, write_skipped = write_nfo_files(
+                nfo_decisions, overwrite=nfo_options.overwrite
+            )
             nfo_written = written_paths
-            nfo_skipped.extend({"path": p, "reason": r} for p, r in skipped_pairs)
+            skipped_pairs.extend(write_skipped)
+
+    # 跟随侧报的跳过放在**最后**: 撞车时先生成的先赢（见上面 skipped_pairs 的注释）。
+    skipped_pairs.extend(carry_skipped)
+
+    # 统一去重（复用写盘/干跑共用的那个实现）: 同一路径可能被多处报过 ——
+    # 同一集的两个来源、混放为每个条目各发一条的组级决策、生成与跟随撞在同一个
+    # 目标 NFO 上。不去重, 对话框就会把 1 个路径读成 N 个。
+    nfo_skipped = [
+        {"path": path, "reason": reason}
+        for path, reason in dedupe_skipped_by_path(skipped_pairs)
+    ]
 
     return BatchRenameResult(
         success=failed == 0,
@@ -414,4 +520,5 @@ def batch_rename(
         results=results,
         nfo_written=nfo_written,
         nfo_skipped=nfo_skipped,
+        nfo_carried=nfo_carried,
     )

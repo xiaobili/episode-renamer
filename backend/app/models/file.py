@@ -85,3 +85,7 @@ class BatchRenameResult(BaseModel):
     # NFO 汇总。dry_run 时这两项描述的是「将写入 / 将跳过」的计划, 不落盘。
     nfo_written: list[str] = Field(default_factory=list)
     nfo_skipped: list[dict] = Field(default_factory=list)
+    # 跟着视频一起搬走的**既有**同前缀 NFO 的落点（spec §9.1.1）。它与
+    # nfo_written 分开, 因为被搬走的那个文件不是本程序**生成**的: 混在一起会让
+    # 「生成 3 个」把用户自己（或别的工具）写的元数据算进去。
+    nfo_carried: list[str] = Field(default_factory=list)

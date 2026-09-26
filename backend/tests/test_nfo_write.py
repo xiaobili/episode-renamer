@@ -1,6 +1,8 @@
 import os
+import shutil
 from pathlib import Path
 
+from app.core import local_renamer
 from app.core.local_renamer import batch_rename
 from app.core.nfo_writer import build_nfo_decisions, write_nfo_files
 from app.core.tmdb_resolver import EpisodeMatch
@@ -599,8 +601,16 @@ def test_file_that_was_not_renamed_writes_no_nfo(tmp_path):
     assert result.nfo_written == []
     assert not (show_dir / "tvshow.nfo").exists()
     assert not (show_dir / "season.nfo").exists()
-    # 不写要报出来（留白等于静默）: 这一行的 NFO 被跳过, 原因是它没改名
+    # 不写要报出来（留白等于静默）: 这一行的 NFO 被跳过, 原因是它没改名。
+    # 另外两条是组级决策（tvshow / season）: 整批没落地, 它们的落点同样是凭空
+    # 推出来的, 一并不写 —— 此前它们被静默丢掉, 清单里查无此物（收尾项 3）。
     assert result.nfo_skipped == [{
+        "path": str(show_dir / "tvshow.nfo"),
+        "reason": "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO",
+    }, {
+        "path": str(show_dir / "season.nfo"),
+        "reason": "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO",
+    }, {
         "path": str(show_dir / "绝命毒师 - S02E05.nfo"),
         "reason": "该文件未改名, 不写 NFO",
     }]
@@ -638,7 +648,10 @@ def test_abort_strategy_writes_no_nfo_for_the_conflicted_row(tmp_path):
     assert result.nfo_written == []
     assert not (show_dir / "绝命毒师 - S02E05.nfo").exists()
     assert not (show_dir / "tvshow.nfo").exists()
+    # 三条: 两组级决策（收尾项 3, 整批没落地不写但报出来）+ 这一行的每集落点
     assert [item["path"] for item in result.nfo_skipped] == [
+        str(show_dir / "tvshow.nfo"),
+        str(show_dir / "season.nfo"),
         str(show_dir / "绝命毒师 - S02E05.nfo"),
     ]
 
@@ -681,3 +694,297 @@ def test_a_conflicted_first_episode_does_not_drop_the_show_level_nfo(tmp_path):
         "path": str(show_dir / "绝命毒师 - S02E05.nfo"),
         "reason": "该文件未改名, 不写 NFO",
     }]
+
+
+# --- 既有的同前缀 NFO 跟随视频改名（spec §9.1.1）-------------------------------
+# 旧的 绝命毒师.S02E05.nfo 既不在 video_extensions 也不在 subtitle_extensions,
+# 从不进入扫描、不在批次里, 重命名路径上原先没有任何东西碰它 —— 视频改名后它
+# 必然留下, 成为与新文件名不符的孤儿。这一节钉住「同前缀的那一个 .nfo 跟着走」。
+
+CARRY_TARGET_EXISTS_REASON = "同名 NFO 未跟随移动: 目标 NFO 已存在, 不覆盖"
+DROPPED_GROUP_REASON = "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
+
+
+def make_existing_nfo(video, content="别的工具写的元数据"):
+    """与视频**同前缀**的既有 NFO —— 主用例: 用户没开生成, 这文件是别的工具写的。"""
+    nfo = video.with_suffix(".nfo")
+    nfo.write_text(content, encoding="utf-8")
+    return nfo
+
+
+def test_existing_same_stem_nfo_follows_the_video_when_generation_is_off(tmp_path):
+    """边界 3: 跟随是**重命名**的一部分, 与「是否生成 NFO」无关。
+
+    主用例恰恰是这一条: 用户没开生成（NfoOptions 未启用）, 旁边的 NFO 是别的
+    工具写的 —— 视频改名后它必须跟着走, 否则留下一个与视频名不符的孤儿。
+
+    变异验证: 去掉 batch_rename 里的 carry 调用 → 本用例 FAILED（nfo_carried
+    为空, 且 绝命毒师.S02E05.nfo 仍在原处）。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video)
+
+    result = batch_rename([make_file(video)], TEMPLATE, nfo_options=NfoOptions())
+
+    show_dir = tmp_path / SHOW_DIR
+    new_nfo = show_dir / "绝命毒师 - S02E05.nfo"
+    assert (show_dir / "绝命毒师 - S02E05.mkv").is_file()
+    assert result.nfo_carried == [str(new_nfo)]
+    assert new_nfo.read_text(encoding="utf-8") == "别的工具写的元数据"
+    assert not old_nfo.exists(), "旧前缀的 NFO 不得留下"
+    # 跟随不是生成: 没开生成就既没有写入清单也没有跳过清单
+    assert result.nfo_written == [] and result.nfo_skipped == []
+
+
+def test_carried_nfo_occupies_the_target_before_generation_so_the_original_survives(tmp_path):
+    """边界 4（顺序是关键）: 先跟随移动、后生成。
+
+    移过去的旧 NFO 占住新位置 → 「生成开 + 覆盖关」时生成报「已存在」→ 用户原有
+    的内容得以保留。反过来（先生成再移动）会让生成先写入 绝命毒师 - S02E05.nfo,
+    移动再撞上「目标已存在」而放弃 —— 用户的内容被生成结果替掉, 旧文件还留在原处。
+
+    变异验证: 把 carry 挪到函数末尾的写盘之后 → 本用例 FAILED（新 NFO 的内容变成
+    生成的 XML, 而不是「用户原有的内容」, 且 nfo_carried 为空）。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video, "用户原有的内容")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        nfo_options=named_options(overwrite=False),
+        nfo_matches={"f1": make_match()},
+    )
+
+    show_dir = tmp_path / SHOW_DIR
+    new_nfo = show_dir / "绝命毒师 - S02E05.nfo"
+    assert new_nfo.read_text(encoding="utf-8") == "用户原有的内容", "既有的 NFO 内容必须活下来"
+    assert not old_nfo.exists()
+    # 跟随 ≠ 生成: 落点报在 nfo_carried 里, 不进 nfo_written
+    assert result.nfo_carried == [str(new_nfo)]
+    assert str(new_nfo) not in result.nfo_written
+    # 它占住位置这件事对用户可见: 生成报「已存在」, 对话框据此给出可行动提示
+    assert {"path": str(new_nfo), "reason": "已存在"} in result.nfo_skipped
+
+
+def test_dry_run_lists_the_carried_nfo_without_moving_it(tmp_path):
+    """干跑不移动, 但必须列出将跟随的 NFO（与 §9.4 的可见性一致）。
+
+    并且干跑必须与真跑报同一个「已存在」: 移动在**生成之前**发生, 所以生成那一刻
+    新位置上已经有这个文件了 —— 干跑若把新 NFO 列进「将写入」, 就是把执行前唯一
+    的可见性变成假话。
+
+    变异验证: ①去掉 dry_run 分支里的 carry → nfo_carried 为空, FAILED;
+    ②去掉干跑「已存在」判据里的 carried 项 → 新 NFO 落进 nfo_written, FAILED。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video, "用户原有的内容")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE, dry_run=True,
+        nfo_options=named_options(overwrite=False),
+        nfo_matches={"f1": make_match()},
+    )
+
+    show_dir = tmp_path / SHOW_DIR
+    new_nfo = show_dir / "绝命毒师 - S02E05.nfo"
+    assert result.nfo_carried == [str(new_nfo)]
+    assert {"path": str(new_nfo), "reason": "已存在"} in result.nfo_skipped
+    assert str(new_nfo) not in result.nfo_written
+    # 干跑绝不落盘: 视频与 NFO 都还在原处, 新位置什么都没有
+    assert video.is_file()
+    assert old_nfo.read_text(encoding="utf-8") == "用户原有的内容"
+    assert not new_nfo.exists()
+
+
+def test_carry_does_not_overwrite_an_existing_target_nfo(tmp_path):
+    """失败处理之一: 目标已存在 → 不覆盖, 两个文件都不动（报跳过）。
+
+    宁可留下可见的孤儿, 也不静默改写别人的元数据。视频照常改名 —— 跟随失败不许
+    牵连已经成功的重命名。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video, "旧的")
+    show_dir = tmp_path / SHOW_DIR
+    target = show_dir / "绝命毒师 - S02E05.nfo"
+    target.write_text("已经在那儿的", encoding="utf-8")
+
+    result = batch_rename([make_file(video)], TEMPLATE, nfo_options=NfoOptions())
+
+    assert result.nfo_carried == []
+    assert {"path": str(target), "reason": CARRY_TARGET_EXISTS_REASON} in result.nfo_skipped
+    assert target.read_text(encoding="utf-8") == "已经在那儿的"
+    assert old_nfo.read_text(encoding="utf-8") == "旧的", "源文件也不许动"
+    assert result.executed == 1 and result.failed == 0
+    assert (show_dir / "绝命毒师 - S02E05.mkv").is_file()
+
+
+def test_a_failed_carry_move_does_not_abort_the_batch(tmp_path, monkeypatch):
+    """失败处理之二: 跟随移动失败不阻断批量（重命名那时已经成功了）。
+
+    变异验证: 去掉 carry 里的 try/except → 本用例 ERROR（OSError 冒到 batch_rename
+    外面, 整批重命名跟着崩）。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video, "用户原有的内容")
+
+    real_move = shutil.move
+
+    def flaky_move(src, dst, *args, **kwargs):
+        if str(dst).endswith(".nfo"):
+            raise OSError(13, "Permission denied")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(local_renamer.shutil, "move", flaky_move)
+
+    result = batch_rename([make_file(video)], TEMPLATE, nfo_options=NfoOptions())
+
+    show_dir = tmp_path / SHOW_DIR
+    assert result.executed == 1 and result.failed == 0, "重命名本身不受影响"
+    assert (show_dir / "绝命毒师 - S02E05.mkv").is_file()
+    assert old_nfo.read_text(encoding="utf-8") == "用户原有的内容"
+    assert result.nfo_carried == []
+    failures = [item for item in result.nfo_skipped if item["reason"].startswith("同名 NFO 跟随移动失败")]
+    assert [item["path"] for item in failures] == [str(show_dir / "绝命毒师 - S02E05.nfo")]
+
+
+def test_carry_never_touches_tvshow_or_season_nfo(tmp_path):
+    """边界 2: 只跟随**同前缀**的那一个 —— tvshow.nfo / season.nfo 隶属剧/季, 不隶属某个视频。
+
+    变异验证: 把 carry 写成「把原目录里所有 .nfo 都搬走」→ 本用例 FAILED
+    （tvshow.nfo / season.nfo 被改名或消失）。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video)
+    show_dir = tmp_path / SHOW_DIR
+    show_nfo = show_dir / "tvshow.nfo"
+    season_nfo = show_dir / "season.nfo"
+    show_nfo.write_text("<tvshow/>", encoding="utf-8")
+    season_nfo.write_text("<season/>", encoding="utf-8")
+
+    result = batch_rename([make_file(video)], TEMPLATE, nfo_options=NfoOptions())
+
+    assert result.nfo_carried == [str(show_dir / "绝命毒师 - S02E05.nfo")]
+    assert show_nfo.read_text(encoding="utf-8") == "<tvshow/>"
+    assert season_nfo.read_text(encoding="utf-8") == "<season/>"
+    assert not old_nfo.exists()
+    assert sorted(p.name for p in show_dir.glob("*.nfo")) == [
+        "season.nfo", "tvshow.nfo", "绝命毒师 - S02E05.nfo",
+    ]
+
+
+def test_carry_does_not_apply_to_subtitles(tmp_path):
+    """边界 1: 只对视频生效, 不对字幕 —— 字幕本就不该有 .nfo。
+
+    字幕旁边那个 绝命毒师.S02E06.chs.nfo 是「NFO 只跟随视频」要防的垃圾, 不是
+    「同前缀的那一个」: 它必须留在原处。
+
+    **字幕刻意取**另一集（E06）而不是与本例视频同集（E05）: 同集时字幕算出的
+    落点 绝命毒师 - S02E05.nfo 与视频算出的**是同一个路径**, 视频先搬过去之后
+    字幕那一步就只会报「目标已存在」—— 去掉过滤的变异照样全绿, 这条用例就成了
+    零鉴别力的空断言（实测如此, 故改成另一集: 两个落点必须互不相干）。
+
+    变异验证: 去掉 carry 调用处的 _is_subtitle_file 判断 → 本用例 FAILED
+    （字幕的 .nfo 被搬成 绝命毒师 - S02E06.nfo, nfo_carried 多一条）。
+    """
+    video = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    video_nfo = make_existing_nfo(video)
+    show_dir = tmp_path / SHOW_DIR
+    sub = show_dir / "绝命毒师.S02E06.chs.srt"
+    sub.write_bytes(b"fake subtitle")
+    subtitle = FileInfo(
+        id="f2", path=str(sub), filename=sub.name, extension=".srt",
+        parent_dir=str(sub.parent), is_subtitle=True,
+    )
+    sub_nfo = sub.with_suffix(".nfo")
+    sub_nfo.write_text("垃圾", encoding="utf-8")
+
+    result = batch_rename([make_file(video, "f1"), subtitle], TEMPLATE, nfo_options=NfoOptions())
+
+    assert result.nfo_carried == [str(show_dir / "绝命毒师 - S02E05.nfo")]
+    assert sub_nfo.is_file() and sub_nfo.read_text(encoding="utf-8") == "垃圾"
+    assert not video_nfo.exists()
+    assert not (show_dir / "绝命毒师 - S02E06.nfo").exists()
+    # 字幕本身照常重命名（既有的那道过滤只作用于 NFO）
+    assert (show_dir / "绝命毒师 - S02E06.srt").is_file()
+
+
+# --- 上一阶段留下的三处收尾（同一文件、同一类）--------------------------------
+
+def test_dead_episode_nfo_paths_are_reported_once(tmp_path):
+    """同一集的两个来源都没落地时, 那条落点路径只许出现一次。
+
+    nfo_path_by_file 以 file_id 为键, 两个来源各占一个键却指向**同一个**
+    episode_nfo_path（模板里没有清晰度, 两个来源算出同一个新路径）; 两行都 failed
+    时各自 pop 一次, 于是同一条路径被 append 两次 —— 对话框会把「1 个路径」读成
+    「跳过 2 个」。数字本身撒谎, 与混放那处是同一类, 用的是同一个去重实现。
+
+    变异验证: 把 dead_episode_paths 的收集恢复成不去重的 list 直接展开 →
+    本用例 FAILED（该路径出现 2 次）。
+    """
+    show_dir = tmp_path / SHOW_DIR
+    show_dir.mkdir(parents=True, exist_ok=True)
+    # 两个来源都不在盘上 → 两行都 failed → 都没有落点
+    first = show_dir / "绝命毒师.S02E05.1080p.mkv"
+    second = show_dir / "绝命毒师.S02E05.720p.mkv"
+    files = [
+        FileInfo(id="f1", path=str(first), filename=first.name, parent_dir=str(show_dir)),
+        FileInfo(id="f2", path=str(second), filename=second.name, parent_dir=str(show_dir)),
+    ]
+
+    result = batch_rename(files, TEMPLATE, nfo_options=named_options())
+
+    dead = str(show_dir / "绝命毒师 - S02E05.nfo")
+    assert [r.status for r in result.results] == ["failed", "failed"]
+    assert [item["path"] for item in result.nfo_skipped].count(dead) == 1
+
+
+def test_already_correctly_named_video_still_gets_an_nfo(tmp_path):
+    """skipped_same（名字本来就是对的那一行）也必须照写 NFO。
+
+    这是「给已经整理好的库补 NFO」的流程: 名字不用改, 但 NFO 要写。判据是
+    _NO_LANDING_STATUSES —— 往里加 skipped_same 就会静默地退掉这条流程, 而它的
+    症状（一个 NFO 都没写）与「TMDB 没匹配上」长得一样, 用户无从分辨。
+
+    变异验证: 把 "skipped_same" 加进 _NO_LANDING_STATUSES → 本用例 FAILED
+    （nfo_written 为空）。
+    """
+    video = make_video(tmp_path, filename="绝命毒师 - S02E05.mkv")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        nfo_options=named_options(),
+        nfo_matches={"f1": make_match()},
+    )
+
+    show_dir = tmp_path / SHOW_DIR
+    assert result.results[0].status == "skipped_same"
+    assert result.skipped == 1 and result.failed == 0
+    assert str(show_dir / "绝命毒师 - S02E05.nfo") in result.nfo_written
+    assert (show_dir / "绝命毒师 - S02E05.nfo").is_file()
+    assert video.is_file(), "名字本来就对, 视频不该被动过"
+
+
+def test_dropped_group_nfo_is_reported_as_skipped(tmp_path):
+    """整批没落地时组级决策被丢弃 —— 丢弃必须**报出来**（留白等于静默）。
+
+    组级决策（tvshow / season）的落点由该组全部 new_path 推出, 一条都没落地时
+    它同样是凭空推出来的, 一并不写。此前它是被静默丢掉的: 结果里既没有落点也没有
+    跳过记录, 用户无法知道「这部剧本该有的 tvshow.nfo 为什么没写」。
+
+    变异验证: 去掉 _keep_decision 分支里那条 skipped_pairs.append → 本用例 FAILED
+    （两条断言都查不到这个路径）。
+    """
+    video = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    show_dir = tmp_path / SHOW_DIR
+    (show_dir / "绝命毒师 - S02E05.mkv").write_bytes(b"occupying video")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        conflict_strategy="skip",
+        nfo_options=named_options(),
+        nfo_matches={"f1": make_match()},
+    )
+
+    reasons = {item["path"]: item["reason"] for item in result.nfo_skipped}
+    assert reasons[str(show_dir / "tvshow.nfo")] == DROPPED_GROUP_REASON
+    assert reasons[str(show_dir / "season.nfo")] == DROPPED_GROUP_REASON
