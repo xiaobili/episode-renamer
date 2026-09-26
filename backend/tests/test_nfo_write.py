@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from app.core.local_renamer import batch_rename
 from app.core.nfo_writer import build_nfo_decisions, write_nfo_files
@@ -429,3 +430,58 @@ def test_mixed_shows_in_one_directory_write_episode_nfo_only(tmp_path):
     assert all("多部剧混放" in item["reason"] for item in result.nfo_skipped)
     assert not (show_dir / "tvshow.nfo").exists()
     assert not (show_dir / "season.nfo").exists()
+
+
+def make_subtitle(video, file_id="f2"):
+    """与视频同集的字幕。除扩展名与 is_subtitle 外, 其余字段与那个视频一字不差 ——
+    这正是它会与视频抢 group[0] 的原因。"""
+    sub = video.with_suffix(".chs.srt")
+    sub.write_bytes(b"fake subtitle")
+    return FileInfo(
+        id=file_id, path=str(sub), filename=sub.name, extension=".srt",
+        parent_dir=str(sub.parent), is_subtitle=True,
+    )
+
+
+def test_subtitle_gets_no_nfo_and_show_level_files_land_on_the_video(tmp_path):
+    """字幕不进 NFO 管线, 且剧集级决策不能挂到字幕行上。
+
+    判据用的是扫描器判定好的 FileInfo.is_subtitle。字幕一旦进了管线会有两个后果:
+    (1) 每个字幕旁多一个无意义的 绝命毒师 - S02E05.chs.nfo（解析器给字幕与视频
+        **完全相同**的结果, 而 episode_nfo_path 只换扩展名）;
+    (2) 决策按 (show_name, season, episode, new_path) 排序, '….chs.srt' < '….mkv',
+        字幕抢到 group[0] —— tvshow.nfo / season.nfo 的落点会显示在字幕行上。
+
+    这里给字幕也配了**完整的 TMDB 匹配**（现实中它确实会有: 解析结果与视频相同,
+    走的是同一次解析）, 否则过滤掉的是「一个本来就写不出内容的字幕」, 过滤与否
+    都看不出来 —— 那样这条用例就是零鉴别力的。
+
+    变异验证: 去掉 local_renamer 里的过滤 → 本用例 FAILED（字幕旁出现 .chs.nfo,
+    且 nfo_written 多一条）。
+    """
+    video = make_video(tmp_path, filename="绝命毒师.S02E05.mkv")
+    subtitle = make_subtitle(video)
+
+    result = batch_rename(
+        [make_file(video, "f1"), subtitle], TEMPLATE,
+        nfo_options=named_options(),
+        nfo_matches={"f1": make_match(), "f2": make_match()},
+    )
+
+    show_dir = tmp_path / SHOW_DIR
+    # 字幕旁 0 个 .nfo —— 整个目录里恰好只有该有的三个
+    assert sorted(p.name for p in show_dir.glob("*.nfo")) == [
+        "season.nfo", "tvshow.nfo", "绝命毒师 - S02E05.nfo",
+    ]
+    assert result.nfo_written == [
+        str(show_dir / "绝命毒师 - S02E05.nfo"),
+        str(show_dir / "tvshow.nfo"),
+        str(show_dir / "season.nfo"),
+    ]
+    # 剧集级/季级决策挂在**视频**那一行（f1）, 不是字幕（f2）
+    assert result.results[0].nfo_path == str(show_dir / "绝命毒师 - S02E05.nfo")
+    assert result.results[1].nfo_path is None
+    # 过滤只作用于 NFO: 字幕照常重命名（那是既有功能, 不能被这道过滤碰坏）
+    assert result.results[1].success is True
+    assert not Path(subtitle.path).is_file(), "字幕原文件应已被重命名"
+    assert (show_dir / "绝命毒师 - S02E05.srt").is_file()

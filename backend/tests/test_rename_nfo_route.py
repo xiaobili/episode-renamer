@@ -343,3 +343,84 @@ def test_execute_with_tmdb_writes_all_three_kinds(matched_client, tmp_path):
 
     # 每集 NFO 跟着**改名后**的视频路径走
     assert body["results"][0]["nfo_path"] == str(show_dir / "Test Show - S01E02.nfo")
+
+
+def test_subtitle_is_excluded_from_both_preview_and_execute(tmp_path, monkeypatch):
+    """字幕不得进 NFO 管线 —— 预览与执行**两条路都要滤掉**。
+
+    解析器给字幕与视频**完全相同**的结果（实测 Test.Show.S01E02.chs.srt 与
+    Test.Show.S01E02.mkv 的 show/season/episode 一字不差）, 而 episode_nfo_path
+    只换扩展名; 且决策按 (show_name, season, episode, new_path) 排序,
+    '….chs.srt' < '….mkv' —— 不滤掉的话字幕会抢到 group[0], tvshow.nfo 的落点
+    会显示在字幕行上, 而视频行只有一个 episode 键（前端据此把「+ tvshow.nfo」
+    显示在错误的那一行）。字幕那条还会各写一个无意义的 .chs.nfo。
+
+    字幕也配了完整的 TMDB 匹配: 它现实中确实会有（解析结果与视频相同, 走同一次
+    解析）。否则这条用例只在「一个本来就写不出内容的字幕」上有鉴别力。
+
+    变异验证: 去掉 api/renamer.py 预览处的过滤 → 预览断言 FAILED;
+    去掉 local_renamer 的过滤 → 盘上多出 .chs.nfo, 执行断言 FAILED。
+    """
+    from app.api import renamer as renamer_api
+
+    show_dir = tmp_path / "Test Show"
+    show_dir.mkdir(parents=True)
+    video = show_dir / "Test.Show.S01E02.mkv"
+    video.write_bytes(b"")
+    subtitle = show_dir / "Test.Show.S01E02.chs.srt"
+    subtitle.write_bytes(b"")
+    # 扫描器会给字幕打上 is_subtitle=True（local_scanner 的 _build_file_info）
+    sub_info = _file("f2", subtitle).model_copy(
+        update={"is_subtitle": True, "extension": ".srt"}
+    )
+
+    cache_files([_file("f1", video), sub_info])
+    monkeypatch.setattr(
+        renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
+    )
+    client = TestClient(app)
+
+    payload = {
+        "file_ids": ["f1", "f2"],
+        "template": TEMPLATE,
+        "source": "local",
+        "path": "",
+        "overrides": {
+            "f1": {"show_name": "Test Show", "season": 1, "episode": 2},
+            "f2": {"show_name": "Test Show", "season": 1, "episode": 2},
+        },
+        "generate_nfo": True,
+    }
+
+    res = client.post("/api/rename/preview", json=payload)
+    assert res.status_code == 200, res.text
+    rows = {row["original_filename"]: row for row in res.json()["results"]}
+
+    # 字幕行: 一个落点都没有
+    assert rows[subtitle.name]["nfo"] is None
+    # 视频行: 三个键俱全 —— 剧集级/季级挂在**视频**上（排序本来会判给字幕）
+    assert rows[video.name]["nfo"] == {
+        "episode": str(show_dir / "Test Show - S01E02.nfo"),
+        "tvshow": str(show_dir / "tvshow.nfo"),
+        "season": str(show_dir / "season.nfo"),
+    }
+    # nfo_scope 是批次级的, 不受这道过滤影响（视频那行有 tvshow 计划 → full）
+    assert rows[video.name]["nfo_scope"] == "full"
+    assert rows[subtitle.name]["nfo_scope"] == "full"
+
+    res = client.post("/api/rename/execute", json=payload)
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # 字幕旁 0 个 .nfo: 目录里恰好只有该有的三个
+    # （sorted 按码位: 'T'(84) < 's'(115), 故 "Test Show - …" 排在最前）
+    assert sorted(p.name for p in show_dir.glob("*.nfo")) == [
+        "Test Show - S01E02.nfo", "season.nfo", "tvshow.nfo",
+    ]
+    assert str(show_dir / "Test Show - S01E02.chs.nfo") not in body["nfo_written"]
+    # 过滤只作用于 NFO: 字幕照常重命名
+    assert sorted(p.name for p in show_dir.glob("*.srt")) == ["Test Show - S01E02.srt"]
+    by_name = {row["original_filename"]: row for row in body["results"]}
+    assert by_name[subtitle.name]["success"] is True
+    assert by_name[subtitle.name]["nfo_path"] is None
+    assert by_name[video.name]["nfo_path"] == str(show_dir / "Test Show - S01E02.nfo")

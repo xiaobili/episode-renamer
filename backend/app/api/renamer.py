@@ -205,6 +205,12 @@ async def preview_rename(req: RenamePreviewRequest):
     nfo_options = _nfo_options_from_request(req)
     nfo_paths_by_file: dict[str, dict] = {}
     nfo_scope = "disabled"
+    # NFO 只处理视频。判据用扫描器判定好的 FileInfo.is_subtitle（不是在这里再嗅一次
+    # 扩展名）。不滤掉的后果与 local_renamer._is_subtitle_file 里写的是同一件事:
+    # 字幕的解析结果与视频一字不差 → 字幕旁多写一个无意义的 .chs.nfo, 且排序会让
+    # '….chs.srt' 抢到 group[0], 剧集级决策挂到字幕行上。
+    # **预览与执行两处必须同时过滤**, 否则预览显示的落点与实际写出的会不一致。
+    video_ids = {f.id for f in files if not f.is_subtitle}
 
     if nfo_options.enabled:
         if not _nfo_supported(source):
@@ -227,6 +233,7 @@ async def preview_rename(req: RenamePreviewRequest):
                         episode_data=getattr(matches_by_file.get(plan.file_id), "episode", None),
                     )
                     for plan in plans
+                    if plan.file_id in video_ids
                 ],
                 nfo_options,
             )

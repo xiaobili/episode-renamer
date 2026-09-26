@@ -18,6 +18,28 @@ from .tmdb_resolver import EpisodeMatch
 from .utils import generate_id
 
 
+def _is_subtitle_file(file_info: Optional[FileInfo]) -> bool:
+    """该 plan 是不是字幕 —— NFO 管线只处理视频。
+
+    判据用**扫描器已经判定好的** `FileInfo.is_subtitle`（local_scanner /
+    openlist_scanner 与 parser 都会设它），而不是在 NFO 层再嗅一次扩展名:
+    那是同一件事的第二次判断, 会与 settings.subtitle_extensions 漂移。
+
+    为什么必须滤掉字幕: 解析器对字幕与视频给出**完全相同**的结果（实测
+    Show.S01E01.chs.srt 与 Show.S01E01.1080p.WEB-DL.mkv 都是
+    show='Show' s=1 e=1 conf=0.97）, 而 episode_nfo_path 只换扩展名 ——
+    于是每个字幕旁会多写一个无意义的 Show.S01E01.chs.nfo（媒体服务器靠与视频
+    同名配对, 这种文件对它们毫无意义, 是纯库污染）。更糟的是决策按
+    (show_name, season, episode, new_path) 排序, '….chs.srt' < '….mkv',
+    字幕会抢到 group[0] —— 剧集级/季级决策就挂到**字幕行**上, 预览里
+    tvshow.nfo 的落点会显示在字幕那一行旁边。
+
+    file_info 缺失时按视频处理: 与引入这道过滤之前的行为一致, 宁可多算不可少算
+    （少算会让一个本该有 NFO 的视频静默地没有）。
+    """
+    return bool(file_info is not None and file_info.is_subtitle)
+
+
 def _parent_is_season_dir(parent_dir: str, season_val: Optional[int]) -> bool:
     if not parent_dir:
         return False
@@ -211,7 +233,10 @@ def batch_rename(
                     season_data=getattr(nfo_matches.get(plan.file_id), "season", None),
                     episode_data=getattr(nfo_matches.get(plan.file_id), "episode", None),
                 )
+                # 字幕不进 NFO（理由见 _is_subtitle_file）。这个过滤只作用于 NFO 的
+                # 构造 —— 字幕照常参与下面的重命名。
                 for plan in plans
+                if not _is_subtitle_file(plan.file_info)
             ],
             nfo_options,
         )
