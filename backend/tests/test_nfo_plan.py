@@ -215,24 +215,40 @@ def test_show_level_files_skipped_without_show_metadata():
         entry("/m/绝命毒师/a.mkv", with_meta=False),
     ], OPTIONS)
 
-    assert all(d.content is None for d in by_kind(decisions, "tvshow"))
-    assert all(d.content is None for d in by_kind(decisions, "season"))
-    assert all(d.reason for d in by_kind(decisions, "tvshow"))
+    tvshow = by_kind(decisions, "tvshow")
+    season_decisions = by_kind(decisions, "season")
+
+    # 先钉基数, 再断言内容: 三条 all() 都建立在可能为空的列表上, 空列表恒真。
+    # 少了这两行, 「show_data is None 时干脆不发决策」这个变异能让本用例全绿。
+    assert len(tvshow) == 1, "剧集级决策必须存在（内容是「不写」），不能直接省略"
+    assert len(season_decisions) == 1
+
+    assert all(d.content is None for d in tvshow)
+    assert all(d.content is None for d in season_decisions)
+    assert all(d.reason for d in tvshow)
 
 
 # --- 顺序契约 ---
 
 def test_decisions_are_deterministic():
+    # 剧A 有两个文件（同一季、不同集, 一个在子目录）, 这样剧A 的组与季组都不止
+    # 一个条目 —— 否则 group[0] 无歧义, 归属漂移根本测不出来。
     entries = [
         entry("/m/剧B/E02.mkv", show_name="剧B", episode_no=2),
         entry("/m/剧A/E01.mkv", show_name="剧A", episode_no=1),
+        entry("/m/剧A/S02/E03.mkv", show_name="剧A", season_no=2, episode_no=3),
     ]
     decisions = build_nfo_decisions(entries, OPTIONS)
-    assert [d.kind for d in decisions] == ["episode", "episode", "tvshow", "tvshow", "season", "season"]
+    assert [d.kind for d in decisions] == [
+        "episode", "episode", "episode", "tvshow", "tvshow", "season", "season",
+    ]
 
-    # 同一入参集合换个顺序, 结果必须逐项一致
+    # 同一入参集合换个顺序, 结果必须**逐项**一致 —— 不只是路径: 剧集级/季级决策
+    # 的 file_id（它挂在预览表的哪一行）也不能随输入顺序漂移。
     decisions_reversed = build_nfo_decisions(list(reversed(entries)), OPTIONS)
-    assert [d.path for d in decisions] == [d.path for d in decisions_reversed]
+    assert [(d.kind, d.path, d.file_id) for d in decisions] == [
+        (d.kind, d.path, d.file_id) for d in decisions_reversed
+    ]
 
 
 # --- 执行 Task 2 时补的两条用例 -------------------------------------------------
@@ -281,3 +297,105 @@ def test_written_season_decisions_carry_content():
     assert all(s.content is not None for s in seasons)
     assert "<seasonnumber>2</seasonnumber>" in seasons[0].content
     assert "<seasonnumber>3</seasonnumber>" in seasons[1].content
+
+
+# --- 审查轮补的四条用例 ---------------------------------------------------------
+# 审查者把上面两轮补的用例当线索, 又在同一批「all() 建立在可能为空的列表上」和
+# 「取任一非 None vs 取第一条」上各找到一处活下来的洞, 外加两处可达但无覆盖的分支。
+
+def test_show_level_files_written_on_partial_metadata():
+    # 同一目录里只有部分文件匹配到 TMDB: 剧集级与季级文件仍要写 —— 取「组内任一
+    # 非 None 的 show / season_data」, 而不是「第一条」。
+    # 排序后第一条恰好是**未匹配**的那个文件（episode 1 < episode 2）, 所以把取值
+    # 改成 group[0] / season_group[0] 就会误判为「没元数据」→ 本用例变红。
+    decisions = build_nfo_decisions([
+        entry("/m/绝命毒师/a.mkv", episode_no=1, with_meta=False),
+        entry("/m/绝命毒师/b.mkv", episode_no=2),
+    ], OPTIONS)
+
+    tvshow = by_kind(decisions, "tvshow")
+    assert len(tvshow) == 1
+    assert tvshow[0].content is not None, "有一条匹配上就该写剧集级 NFO"
+
+    seasons = by_kind(decisions, "season")
+    assert len(seasons) == 1
+    assert seasons[0].content is not None, "季级同理: 取组内任一非 None 的 season_data"
+
+    episodes = by_kind(decisions, "episode")
+    assert len(episodes) == 2
+    assert [d.content is not None for d in episodes] == [False, True], "未匹配的那条单独「不写」"
+
+
+def test_nested_show_under_a_mixed_root_is_refused():
+    # 非对称布局：A 剧的文件直接躺在 /m/未分类 下, B 剧的在它**子目录**里。
+    # 只查「恰好等于 root 的那个目录」时, A 的 root（/m/未分类）下没有别的剧的
+    # 文件直接躺着 → tvshow.nfo 会被写出去, Emby 就把整个 /m/未分类 当成 A 剧。
+    # 判定必须覆盖 root 的整棵子树。
+    decisions = build_nfo_decisions([
+        entry("/m/未分类/A.mkv", show_name="剧A", season_no=1, episode_no=1),
+        entry("/m/未分类/剧B/S01/B.mkv", show_name="剧B", season_no=1, episode_no=1),
+    ], OPTIONS)
+
+    tvshow = by_kind(decisions, "tvshow")
+    assert [d.path for d in tvshow] == [
+        "/m/未分类/tvshow.nfo",           # 剧A：root 之下嵌套着剧B → 不写
+        "/m/未分类/剧B/S01/tvshow.nfo",   # 剧B：自己的目录干净 → 照写
+    ]
+    assert tvshow[0].content is None
+    assert "多部剧" in tvshow[0].reason
+    assert tvshow[1].content is not None
+
+    seasons = by_kind(decisions, "season")
+    assert [d.path for d in seasons] == [
+        "/m/未分类/season.nfo",
+        "/m/未分类/剧B/S01/season.nfo",
+    ]
+    assert seasons[0].content is None
+    assert "多部剧" in seasons[0].reason
+    assert seasons[1].content is not None
+
+    # 每集 NFO 照写 —— 它落在视频旁边, 与目录是否混放无关
+    assert all(d.content is not None for d in by_kind(decisions, "episode"))
+
+
+def test_sibling_show_directories_are_not_mistaken_for_nesting():
+    # 上面那条扩展判定范围的用例的反向保险。这里刻意用**同级目录**而不是
+    # root/S01/：/m/未分类/剧 与 /m/未分类/剧B 只是兄弟, 谁也不在谁之下,
+    # 但前者的路径是后者的**字符串前缀** —— 判嵌套时若只做
+    # `startswith(root)` 而不带上分隔符, 剧B 会被误判成在 剧 之下 → 误拒。
+    decisions = build_nfo_decisions([
+        entry("/m/未分类/剧/a.mkv", show_name="剧", season_no=1, episode_no=1),
+        entry("/m/未分类/剧B/b.mkv", show_name="剧B", season_no=1, episode_no=1),
+    ], OPTIONS)
+
+    assert [d.path for d in by_kind(decisions, "tvshow")] == [
+        "/m/未分类/剧/tvshow.nfo", "/m/未分类/剧B/tvshow.nfo",
+    ]
+    assert all(d.content is not None for d in by_kind(decisions, "tvshow"))
+    assert all(d.content is not None for d in by_kind(decisions, "season"))
+
+
+def test_entry_without_season_number_gets_no_season_nfo():
+    # season is None 在生产中可达: Task 3 会传 plan.parsed.season or None, 任何
+    # 解析不出季号的文件都走这里 —— 不产出 season.nfo, 每集与剧集级 NFO 照常,
+    # 且每集 NFO 里的 <season> 标签省略（None 不进 XML）。
+    decisions = build_nfo_decisions([
+        entry("/m/绝命毒师/a.mkv", season_no=None, episode_no=5),
+        entry("/m/未分类/a.mkv", show_name="剧A", season_no=None, episode_no=1),
+        entry("/m/未分类/b.mkv", show_name="剧B", season_no=None, episode_no=1),
+    ], OPTIONS)
+
+    # 一条 season 决策都不该有: 绝命毒师 那条是「不进 seasons 字典」,
+    # 未分类 那两条走的是混放分支里的 `item.season is None: continue`。
+    assert by_kind(decisions, "season") == []
+
+    tvshow = by_kind(decisions, "tvshow")
+    assert len(tvshow) == 3
+    assert tvshow[2].path == "/m/绝命毒师/tvshow.nfo"
+    assert tvshow[2].content is not None, "季号缺失不影响剧集级 NFO"
+    assert all(d.content is None and "多部剧" in d.reason for d in tvshow[:2])
+
+    episodes = by_kind(decisions, "episode")
+    assert len(episodes) == 3
+    assert all(d.content is not None for d in episodes), "季号缺失不影响每集 NFO"
+    assert all("<season>" not in d.content for d in episodes)

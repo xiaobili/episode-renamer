@@ -107,13 +107,26 @@ def common_parent(paths: list[str]) -> str:
 
 
 def _folder_belongs_to_single_show(root: str, show_name: str, all_entries: list[NfoEntry]) -> bool:
-    """公共父目录下, 本批次的所有视频必须同属一部剧。
+    """公共父目录（及其下任意层级）不得混有别的剧。
 
     不满足时说明这是「多部剧混放」的目录（如 /media/未分类/）。把 tvshow.nfo
     写进去会让 Emby 把整个目录识别成一部剧 —— 不可逆的数据污染。
+
+    **判定范围是「root 及其子树」, 不只是「恰好等于 root 的那个目录」**：
+    非对称布局（A 剧的文件直接躺在 root 下, B 剧的在 root/B/S01/）下, 只查同目录
+    会把 tvshow.nfo 写进 root —— 那正是本设计要防的那件事。反过来, 判宽了最多是
+    某个古怪布局下少写一个剧集级 NFO: 预览的 NFO 列会显示「仅每集 NFO」,
+    可见而非静默, 与不可逆的媒体库污染不是一个量级。**拒绝是安全方向。**
+
+    合法的分剧布局不会被误伤: 各剧各占 /media/ShowA/、/media/ShowB/ 时互不嵌套;
+    同一部剧的文件分处 root/ 与 root/S01/ 时 show_name 相同, 不触发。
     """
+    root_prefix = root.rstrip(os.sep) + os.sep
     for other in all_entries:
-        if os.path.dirname(other.new_path) == root and other.show_name != show_name:
+        if other.show_name == show_name:
+            continue
+        other_dir = os.path.dirname(other.new_path)
+        if other_dir == root or other_dir.startswith(root_prefix):
             return False
     return True
 
@@ -127,6 +140,9 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
     **顺序契约**: 返回值先是每集决策（按 show_name, season, episode, new_path 排序）,
     然后是剧集级、再是季级（分别按剧名 / (剧名, 季号) 排序）。下游的预览与测试
     依赖这个顺序, 不要改成「每部剧的剧集级与季级相邻」那种交错顺序。
+
+    剧集级/季级决策每项只发一条, 它的 file_id 取组内按上述键排序的**第一条**
+    （即 group[0] / season_group[0], 分组用的是同一套排序, 与入参顺序无关）。
     """
     if not options.enabled or not entries:
         return []
@@ -152,8 +168,11 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
         ))
 
     # --- 剧集级与季级：按剧分组 ---
+    # 分组时沿用已排好序的 ordered: 剧集级/季级决策只发一条, 它挂在哪个 file_id 上
+    # （预览表的哪一行）不能随入参顺序变化。按 entries 的原始顺序分组会让
+    # group[0] / season_group[0] 随输入顺序漂移 —— 路径虽然不变, 归属会变。
     by_show: dict[str, list[NfoEntry]] = {}
-    for item in entries:
+    for item in ordered:
         by_show.setdefault(item.show_name, []).append(item)
 
     for show_name in sorted(by_show):
