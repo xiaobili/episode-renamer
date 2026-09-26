@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -243,6 +245,66 @@ def test_tmdb_title_does_not_override_a_manual_title(client, fake_tmdb):
                                     "episode": 2, "title": "手工标题"}})
     assert row["tmdb_status"] == "matched"
     assert row["new_filename"] == "Test Show - S01E02 - 手工标题.mkv"
+
+
+@pytest.fixture
+def disk_client(tmp_path):
+    """execute 会真的动盘, 源文件必须真实存在 —— 不能用 client 夹具里那个假路径。"""
+    src = tmp_path / "Test.Show.S01E02.mkv"
+    src.write_bytes(b"")
+    cache_files([
+        FileInfo(
+            id="f1",
+            source="local",
+            path=str(src),
+            filename=src.name,
+            extension=".mkv",
+            parent_dir=str(tmp_path),
+        )
+    ])
+    return TestClient(app)
+
+
+def _tmdb_write_payload(**extra):
+    payload = {
+        "file_ids": ["f1"],
+        "template": TITLE_TEMPLATE,
+        "source": "local",
+        "path": "",
+        "overrides": OVERRIDES,
+    }
+    payload.update(extra)
+    return payload
+
+
+def test_execute_route_merges_the_tmdb_title(disk_client, fake_tmdb, tmp_path):
+    # 本仓库有前科的缺陷形态（见 2026-09-25-backend-pad-digits 的注释:
+    # 「只加 buildPreview 一处…写出的文件名与预览不一致」）—— 预览显示一套、
+    # 执行写另一套, 且全程无报错。execute 路径的合并若被删掉或漏传
+    # overrides=effective_overrides, 预览里仍有标题而写出的文件名没有,
+    # 上面所有用例照样全绿。本条钉住它: TMDB 标题必须真的进入被执行的文件名,
+    # 而不只是进入预览响应。
+    res = disk_client.post("/api/rename/execute", json=_tmdb_write_payload())
+    assert res.status_code == 200, res.text
+    row = res.json()["results"][0]
+    assert row["new_filename"] == "Test Show - S01E02 - Breakage.mkv"
+    assert row["new_path"] == str(tmp_path / "Test Show - S01E02 - Breakage.mkv")
+    # 真的落到盘上, 不只是算出了一个字符串
+    assert row["success"] is True
+    assert os.path.isfile(str(tmp_path / "Test Show - S01E02 - Breakage.mkv"))
+    assert not os.path.isfile(str(tmp_path / "Test.Show.S01E02.mkv"))
+
+
+def test_dry_run_route_merges_the_tmdb_title(disk_client, fake_tmdb, tmp_path):
+    # 干跑与预览/执行走同一个合并调用点, 也正是「预览与执行不一致」的高发处。
+    res = disk_client.post("/api/rename/dry-run", json=_tmdb_write_payload())
+    assert res.status_code == 200, res.text
+    row = res.json()["results"][0]
+    assert row["new_filename"] == "Test Show - S01E02 - Breakage.mkv"
+    assert row["new_path"] == str(tmp_path / "Test Show - S01E02 - Breakage.mkv")
+    # 干跑绝不落盘
+    assert os.path.isfile(str(tmp_path / "Test.Show.S01E02.mkv"))
+    assert not os.path.isfile(str(tmp_path / "Test Show - S01E02 - Breakage.mkv"))
 
 
 def test_tmdb_status_literals_are_the_wire_contract():
