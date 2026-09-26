@@ -479,7 +479,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         generate_nfo: generateNfo.value,
         nfo_overwrite: nfoOverwrite.value,
       })
-      lastResult.value = res.data
+      // dry_run 记在结果上: BatchRenameResult 的 nfo_written / nfo_skipped 在干跑时
+      // 描述的是「将写入 / 将跳过」的计划（后端的字段注释写明了这点），而载荷里
+      // 没有标记能区分。不带上这个标记, 结果对话框只能把计划报成既成事实 ——
+      // 那正是「告诉用户一件没发生的事」。
+      lastResult.value = { ...res.data, dry_run: dryRun }
       resultDialog.value = true
       if (!dryRun) {
         await buildPreview()
@@ -592,11 +596,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // 工作区看到的仍是旧语种的标题 —— 与「设置不生效」是同一个观感。
   // 设置 store 只在点「保存设置」时写入（草稿语义，见 SettingsView），所以
   // 把这些放进依赖数组不会让未保存的草稿影响工作区（Review Focus 5）。
+  //
+  // NFO 两项同因：它们决定 NFO 列的内容（每行显示落点，还是「未启用」的提示），
+  // 也确实随每次请求下发了。漏掉它们，勾上「同时生成 NFO 文件」之后表里仍是上
+  // 一次的「未启用」—— 用户看到的是「勾了没有用」，得再点一下「预览」才会动,
+  // 与上面 TMDB 三项漏掉时的观感是同一个。它们不是设置 store 的草稿, 而是本会话
+  // 的工作参数（见 generateNfo 的定义处），所以更不存在草稿泄漏问题。
   watch(
     () => [
       tplStore.currentTemplate, tplStore.folderTemplate, tplStore.createSeasonFolder,
       settingsStore.episodePadDigits, settingsStore.seasonPadDigits,
       settingsStore.tmdb.apiKey, settingsStore.tmdb.language, settingsStore.tmdb.enabled,
+      generateNfo.value, nfoOverwrite.value,
     ],
     () => { if (filesStore.files.length) buildPreview() },
     { deep: true },

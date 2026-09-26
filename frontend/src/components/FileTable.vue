@@ -215,13 +215,22 @@
               </td>
               <td class="hidden px-4 py-2.5 lg:table-cell">
                 <div v-if="row.nfo" class="flex flex-col gap-0.5 text-[11px]">
-                  <span class="truncate text-ink-2" :title="row.nfo.episode">
+                  <!-- 本行的 nfo 非空, 只说明「这一行有东西要写」（剧情级 / 季级）,
+                       不保证**本集**有。show 匹配上而这一集 TMDB 里没有时
+                       （NfoEntry.has_metadata 要求 show 与 episode_data 同时存在）,
+                       不会有 episode 键 —— 此前这里渲染成一条空白行, 从不说
+                       「本集没有 NFO」。这是行级状态, 与批次级的 nfo_scope
+                       （disabled / unsupported_source）不是一回事, 故不复用它的文案。 -->
+                  <span v-if="row.nfo.episode" class="truncate text-ink-2" :title="row.nfo.episode">
                     {{ nfoBaseName(row.nfo.episode) }}
+                  </span>
+                  <span v-else class="text-warn" title="TMDB 未匹配到本集，不写本集 NFO">
+                    本集无 NFO
                   </span>
                   <span v-if="row.nfo.tvshow" class="truncate text-ink-3" :title="row.nfo.tvshow">
                     + tvshow.nfo
                   </span>
-                  <span v-else class="text-warn" :title="nfoScopeHint(row.nfo_scope)">
+                  <span v-else-if="row.nfo.episode" class="text-warn" :title="nfoScopeHint(row.nfo_scope)">
                     仅每集 NFO
                   </span>
                 </div>

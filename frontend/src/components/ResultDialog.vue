@@ -45,6 +45,28 @@
             </div>
           </div>
 
+          <!-- NFO 汇总。只在真有 NFO 动作时出现：覆盖默认关闭, 所以「跳过」是
+               常态而非异常 —— 只报「成功 N 个」会让用户以为 NFO 写了, 其实可能
+               一个都没写。原因必须跟着数字一起给, 否则用户看到「跳过 50 个」
+               也不知道该去勾「覆盖已存在的 NFO」。 -->
+          <div v-if="nfoStats" class="mb-4 rounded-[8px] bg-sunken px-3 py-2.5 text-[12px]">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span class="font-semibold text-ink">NFO</span>
+              <span v-if="nfoStats.writtenCount" class="tabular-nums text-ink-2">
+                {{ nfoStats.dryRun ? '将写入' : '写入' }} {{ nfoStats.writtenCount }} 个
+              </span>
+              <span v-if="nfoStats.skippedCount" class="tabular-nums text-ink-2">
+                {{ nfoStats.dryRun ? '将跳过' : '跳过' }} {{ nfoStats.skippedCount }} 个
+              </span>
+            </div>
+            <p v-if="nfoStats.reasonText" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+              跳过原因：{{ nfoStats.reasonText }}
+            </p>
+            <p v-if="nfoStats.hint" class="mt-1 text-[11px] leading-relaxed text-warn">
+              {{ nfoStats.hint }}
+            </p>
+          </div>
+
           <table v-if="result.results?.length" class="w-full text-[12px]">
             <thead class="bg-sunken">
               <tr class="text-ink-2">
@@ -80,15 +102,43 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { AlertTriangle, Check, X } from 'lucide-vue-next'
 
 import AppModal from './ui/AppModal.vue'
 import AppButton from './ui/AppButton.vue'
 import AppBadge from './ui/AppBadge.vue'
 
-defineProps({
+const props = defineProps({
   modelValue: Boolean,
   result: { type: Object, default: null },
 })
 defineEmits(['update:modelValue'])
+
+// 跳过的原因是用户唯一能据以行动的线索: 「已存在」→ 去勾「覆盖已存在的 NFO」,
+// 「TMDB 未匹配」→ 去补 TMDB 设置, 「多剧混放」→ 去把目录拆开。所以按原因归并
+// 计数, 而不是列 N 条同因的路径。两个数组都空时整段不显示 —— 「生成 NFO：0 个」
+// 对没勾 NFO 的用户纯属噪音。
+const nfoStats = computed(() => {
+  const written = props.result?.nfo_written || []
+  const skipped = props.result?.nfo_skipped || []
+  if (!written.length && !skipped.length) return null
+
+  const byReason = new Map()
+  for (const item of skipped) {
+    const reason = item?.reason || '未说明原因'
+    byReason.set(reason, (byReason.get(reason) || 0) + 1)
+  }
+
+  return {
+    // 干跑时这两个数字是计划而非事实, 由 workspace.executeAction 记在结果上。
+    dryRun: props.result?.dry_run === true,
+    writtenCount: written.length,
+    skippedCount: skipped.length,
+    reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 个`).join('；'),
+    hint: byReason.has('已存在')
+      ? '如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行'
+      : '',
+  }
+})
 </script>
