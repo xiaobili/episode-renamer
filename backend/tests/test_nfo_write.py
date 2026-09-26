@@ -796,6 +796,30 @@ def test_dry_run_lists_the_carried_nfo_without_moving_it(tmp_path):
     assert not new_nfo.exists()
 
 
+def test_carry_follows_the_video_into_a_new_season_folder(tmp_path):
+    """开了季文件夹时落点是**新目录**: 同前缀 NFO 必须跟着过去, 不能留在旧目录。
+
+    落点与每集 NFO 同一判据（result.new_path → episode_nfo_path）, 目录由视频那一步
+    先 mkdir 出来 —— 顺序上跟随在重命名之后, 所以目标目录那时已经存在。
+    """
+    video = make_video(tmp_path)
+    old_nfo = make_existing_nfo(video)
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        folder_template="Season {season_padded}", create_season_folder=True,
+        nfo_options=NfoOptions(),
+    )
+
+    show_dir = tmp_path / SHOW_DIR
+    new_nfo = show_dir / "Season 02" / "绝命毒师 - S02E05.nfo"
+    assert result.nfo_carried == [str(new_nfo)]
+    assert new_nfo.read_text(encoding="utf-8") == "别的工具写的元数据"
+    assert not old_nfo.exists()
+    assert not (show_dir / "绝命毒师 - S02E05.nfo").exists()
+    assert sorted(p.name for p in show_dir.rglob("*.nfo")) == ["绝命毒师 - S02E05.nfo"]
+
+
 def test_carry_does_not_overwrite_an_existing_target_nfo(tmp_path):
     """失败处理之一: 目标已存在 → 不覆盖, 两个文件都不动（报跳过）。
 
