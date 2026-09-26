@@ -145,6 +145,15 @@ class TmdbResolver:
           (剧/季不存在), 六态降级要靠它把 season_not_found 与 unavailable 分开。
           压掉它等于把「没这一季」误报成「TMDB 挂了」。
 
+          但注意: 上面这条只约束**守卫自己** —— 守卫的职责是不吞掉它、让它原样
+          抵达调用点, **分级是各调用点的事**。两个调用点刻意不同:
+          detail 路径 (_resolve_show 里 get_tv_detail 那个 `except`) 归
+          show_not_found; 而 search 路径 (_resolve_show 里 get_or_create 那个
+          `except TmdbNotFoundError`) **刻意**归 unavailable —— 因为 `/search/tv`
+          对不存在的剧回 200 + 空结果、从不回 404, 它上面的 404 只可能来自基础
+          设施 (代理 / DNS 屏蔽)。别拿本条去把那处「修」回与 detail 对称: 两者
+          说的不是同一个 404。
+
         （不要为了「干净」删掉这个宽捕获或那两个 re-raise。）
         """
         try:
