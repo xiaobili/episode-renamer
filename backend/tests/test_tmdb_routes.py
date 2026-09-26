@@ -9,6 +9,156 @@ def client():
     return TestClient(app)
 
 
+def _item(tv_id, name, original_name="", year=None):
+    from app.models.tmdb import TmdbSearchItem
+    return TmdbSearchItem(tv_id=tv_id, name=name, original_name=original_name, year=year)
+
+
+def _stub_search(monkeypatch, *, hits=None, error=None, captured=None):
+    """把 TmdbClient.search_tv 换成假实现 —— 这些用例一律不出网。"""
+    from app.api import tmdb as tmdb_api
+
+    async def fake_search(self, query, year=None):
+        if captured is not None:
+            captured["query"] = query
+            captured["year"] = year
+        if error is not None:
+            raise error
+        return list(hits or [])
+
+    monkeypatch.setattr(tmdb_api.TmdbClient, "search_tv", fake_search)
+
+
+def test_test_endpoint_reports_ok_with_v3_key(client, monkeypatch):
+    # sample 取首条, 所以给两条不同名字的结果
+    _stub_search(monkeypatch, hits=[
+        _item(1396, "绝命毒师", "Breaking Bad", 2008),
+        _item(60059, "风骚律师", "Better Call Saul", 2015),
+    ])
+    res = client.get("/api/tmdb/test", headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is True
+    assert body["status"] == "ok"
+    assert body["auth_mode"] == "v3_api_key"
+    assert body["sample"] == "绝命毒师"
+
+
+def test_test_endpoint_reports_bearer_auth_for_v4_token(client, monkeypatch):
+    # eyJ 开头 = v4 Read Access Token, 走 Authorization 头而非 api_key 参数
+    _stub_search(monkeypatch, hits=[_item(1, "Breaking Bad", "Breaking Bad", 2008)])
+    res = client.get("/api/tmdb/test", headers={"X-Tmdb-Key": "eyJhbGciOiJIUzI1NiJ9"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is True
+    assert body["status"] == "ok"
+    assert body["auth_mode"] == "v4_bearer"
+
+
+def test_test_endpoint_reports_ok_with_no_hits(client, monkeypatch):
+    # 探针搜到 0 条也要算连通 —— Key 能用, 只是没结果。sample 不能 IndexError。
+    _stub_search(monkeypatch, hits=[])
+    res = client.get("/api/tmdb/test", headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is True
+    assert body["status"] == "ok"
+    assert body["sample"] == ""
+
+
+def test_test_endpoint_reports_invalid_key(client, monkeypatch):
+    from app.core.tmdb_client import TmdbAuthError
+
+    _stub_search(monkeypatch, error=TmdbAuthError("TMDB API Key 无效"))
+    res = client.get("/api/tmdb/test", headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is False
+    assert body["status"] == "invalid_key"
+
+
+def test_test_endpoint_reports_unreachable(client, monkeypatch):
+    from app.core.tmdb_client import TmdbUnavailableError
+
+    _stub_search(monkeypatch, error=TmdbUnavailableError("TMDB 请求失败: boom"))
+    res = client.get("/api/tmdb/test", headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is False
+    assert body["status"] == "unreachable"
+
+
+def test_test_endpoint_reports_disabled_even_with_key(client, monkeypatch):
+    # 服务端总开关优先于用户填的 Key —— 否则「禁用」形同虚设
+    from app.config import settings
+
+    _stub_search(monkeypatch, hits=[_item(1, "Breaking Bad")])
+    monkeypatch.setattr(settings, "tmdb_enabled", False)
+    res = client.get("/api/tmdb/test", headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is False
+    assert body["status"] == "disabled"
+
+
+def test_search_endpoint_returns_item_shape(client, monkeypatch):
+    captured = {}
+    _stub_search(monkeypatch, captured=captured, hits=[
+        _item(1396, "绝命毒师", "Breaking Bad", 2008),
+    ])
+    res = client.get("/api/tmdb/search", params={"q": "  绝命毒师  "},
+                     headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    assert res.json() == {
+        "success": True,
+        "data": [{"tv_id": 1396, "name": "绝命毒师",
+                  "original_name": "Breaking Bad", "year": 2008}],
+    }
+    # 首尾空白在路由层就去掉, 不能带着空格去打 TMDB
+    assert captured["query"] == "绝命毒师"
+
+
+def test_search_endpoint_passes_year_through(client, monkeypatch):
+    # year 下不下传, 响应长得一模一样 —— 所以假客户端既记实参, 也按 year 分叉返回,
+    # 两头都钉住, 单独看响应是分不出来的。
+    captured = {}
+
+    async def fake_search(self, query, year=None):
+        captured["year"] = year
+        label = f"with-year-{year}" if year is not None else "no-year"
+        return [_item(1, label, label, year)]
+
+    from app.api import tmdb as tmdb_api
+    monkeypatch.setattr(tmdb_api.TmdbClient, "search_tv", fake_search)
+
+    res = client.get("/api/tmdb/search", params={"q": "x", "year": 2008},
+                     headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    assert captured["year"] == 2008
+    assert res.json()["data"][0]["name"] == "with-year-2008"
+
+
+def test_search_endpoint_maps_unavailable_to_502(client, monkeypatch):
+    from app.core.tmdb_client import TmdbUnavailableError
+
+    _stub_search(monkeypatch, error=TmdbUnavailableError("TMDB 请求失败: boom"))
+    res = client.get("/api/tmdb/search", params={"q": "x"},
+                     headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 502, res.text
+    assert res.json()["detail"] == "TMDB 请求失败: boom"
+
+
+def test_search_endpoint_maps_auth_error_to_400(client, monkeypatch):
+    from app.core.tmdb_client import TmdbAuthError
+
+    _stub_search(monkeypatch, error=TmdbAuthError("TMDB API Key 无效"))
+    res = client.get("/api/tmdb/search", params={"q": "x"},
+                     headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 400, res.text
+    # 不要再拼前缀, 否则是「TMDB API Key 无效: TMDB API Key 无效」
+    assert res.json()["detail"] == "TMDB API Key 无效"
+
+
 def test_test_endpoint_reports_not_configured(client, monkeypatch):
     # 未配置 Key 时不能 500，要给出一个可读的状态
     from app.config import settings
