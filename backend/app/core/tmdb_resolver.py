@@ -244,11 +244,26 @@ class TmdbResolver:
         if tv_id is None:
             key = ("search",) + scope + (normalized,)
 
+            async def _search_and_pick_tv_id():
+                # 「搜索」与「取首条 tv_id」是**一次**外部数据读取, 所以一起进守卫。
+                # 后者读的是外部 payload 的字段, 而守卫的原则是分类性的而不是
+                # 枚举性的（见 _guarded）—— 它覆盖的应当是「这次客户端调用所触及
+                # 的全部外部数据」。把索引留在守卫外, 等于我们亲手在覆盖面上划一个
+                # 缺口: 一个畸形条目（缺 tv_id 的字典/别的东西）会以 AttributeError
+                # 一路冒到路由层变成 500, 而铁律要求任何未预料的 TMDB 故障都不阻断
+                # 重命名。
+                #
+                # 空结果用 0 作哨兵 (TMDB 的 tv_id 恒为正数): 返回值必须能进缓存。
+                # TmdbCache.get_or_create 用 `hit is not None` 判断命中, 直接返回
+                # None 会让「查无此剧」在**每次按键**触发的预览里重打一次 TMDB。
+                hits = await self._client.search_tv(query)
+                return hits[0].tv_id if hits else 0
+
             async def fetch_search():
-                return await self._guarded(lambda: self._client.search_tv(query))
+                return await self._guarded(_search_and_pick_tv_id)
 
             try:
-                hits = await self._cache.get_or_create(key, fetch_search)
+                tv_id = await self._cache.get_or_create(key, fetch_search)
             except TmdbNotFoundError:
                 # 刻意**不**与 detail 路径对称, 那不矛盾: /search/tv 对不存在的剧回
                 # 200 + 空结果, 它从不回 404 —— 所以 search 上的 404 只可能是基础设施
@@ -259,9 +274,8 @@ class TmdbResolver:
             except TmdbUnavailableError:
                 return STATUS_UNAVAILABLE
 
-            if not hits:
+            if not tv_id:
                 return STATUS_SHOW_NOT_FOUND
-            tv_id = hits[0].tv_id
 
         detail_key = ("show",) + scope + (tv_id,)
 
