@@ -7,6 +7,8 @@
 `docs/superpowers/specs/2026-09-26-tmdb-metadata-and-nfo-design.md`。
 
 裁定编号 R1–R59。要查「为什么代码是这样」时，从这里找。
+**索引**：`docs/superpowers/ledgers/2026-09-26-tmdb-nfo-ruling-index.md` —— 跨两份 ledger 的
+「会改变行为/范围」的裁定清单（附判错代价与锚点），合并审查从这里进。
 
 ---
 
