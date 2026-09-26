@@ -556,13 +556,29 @@ from app.core.tmdb_resolver import (
     STATUS_SEASON_NOT_FOUND,
     STATUS_SHOW_NOT_FOUND,
     STATUS_UNAVAILABLE,
-    EpisodeMatch,
     ResolveRequest,
     TmdbCache,
     TmdbResolver,
+    _DEFAULT_CACHE,
     normalize_show_name,
 )
 from app.models.tmdb import TmdbEpisode, TmdbSeason, TmdbSearchItem, TmdbShow
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_cache():
+    """每个用例前清空进程级缓存。
+
+    本文件里只有缓存相关的几个用例显式传 `cache=`，其余走模块级的 `_DEFAULT_CACHE`。
+    而假客户端的 `cache_fingerprint()` 与 `language` 都是常量，于是**所有用例的缓存键必然碰撞** ——
+    先前用例的命中会让后面的假客户端根本不被调用，请求计数与注入失败的断言就落在陈旧值上
+    （实测：不清则 6 failed / 17 passed，每个用例单独跑均通过）。
+
+    生产环境没有测试边界，所以清缓存纯属测试隔离，不影响任何被断言的属性 ——
+    「缓存跨 resolver 实例存活」仍由 `test_cache_survives_across_resolver_instances` 等
+    显式传 `cache=` 的用例守护。
+    """
+    _DEFAULT_CACHE.clear()
 
 
 SHOW = TmdbShow(tv_id=1396, name="绝命毒师", original_name="Breaking Bad", year=2008)
@@ -595,16 +611,22 @@ class FakeClient:
         return "fake-fp"
 
     async def search_tv(self, query, year=None):
+        # 这个让出点不是装饰。没有它，`test_concurrent_same_key_is_merged` 里
+        # asyncio.gather 的两个任务无法交错 —— 整个 TmdbCache 的锁被删掉该测试
+        # 依然通过，即它零鉴别力。有了它，无锁版本会观察到 2 次 search 调用。
+        await asyncio.sleep(0)
         self.calls["search"].append(query)
         if self._fail == "search":
             raise TmdbUnavailableError("boom")
         return list(self._hits)
 
     async def get_tv_detail(self, tv_id):
+        await asyncio.sleep(0)
         self.calls["detail"].append(tv_id)
         return self._show
 
     async def get_season(self, tv_id, season_number):
+        await asyncio.sleep(0)
         self.calls["season"].append((tv_id, season_number))
         if self._fail == "season":
             raise TmdbUnavailableError("boom")
@@ -732,7 +754,11 @@ def test_cache_expires_after_ttl():
 
 
 def test_concurrent_same_key_is_merged(monkeypatch):
-    # 同一分组的并发请求应合并为一次外部调用
+    # 同一分组的并发请求应合并为一次外部调用（spec §6.3）。
+    #
+    # 这条测试的有效性依赖 FakeClient 里的 `await asyncio.sleep(0)`：
+    # 假客户端若从不让出控制权，gather 的两个任务无法交错，把 TmdbCache 的锁
+    # 整个删掉测试照样通过。改动 FakeClient 时不要把那个让出点去掉。
     cache = TmdbCache(ttl=3600)
     client = FakeClient()
 
@@ -1116,13 +1142,24 @@ _DEFAULT_CACHE = TmdbCache(ttl=3600)
 
 Task 3 Step 1 除了加配置项，还会把这一行改回 `settings.tmdb_cache_ttl`。照着走即可，不要在本任务提前去改 `config.py`（Task 1 的边界是客户端，配置项属于 Task 3）。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: 运行测试确认通过，并用变异验证并发测试真的有效**
 
 ```bash
 cd backend && python -m pytest tests/test_tmdb_resolver.py -v
 ```
 
 预期：23 passed
+
+接着必须做一次变异验证 —— 这是本任务唯一一处「测试的有效性无法从通过与否看出来」的地方：
+
+1. 临时把 `TmdbCache.get_or_create` 里的 `async with self._lock:` 去掉（连同其下的双检 `get`，改为直接 `value = await factory()`），
+2. 重跑本文件 → `test_concurrent_same_key_is_merged` **必须 FAILED**（观察到 2 次 search 调用），
+3. 恢复实现，确认 sha1 未变，重跑 → 23 passed。
+
+若第 2 步没有失败，说明 `FakeClient` 的让出点丢了或锁的作用被绕过，必须先修测试再继续。
+把变异前、变异中、恢复后三次的输出都写进报告。
+
+**注意 stale `.pyc`**：变异版与恢复版若大小相同且在同一秒内写回，CPython 按「源文件 mtime 整秒 + 大小」判失效，会继续跑变异字节码。变异前后各清一次 `__pycache__` 与 `.pytest_cache`，并用 sha1 确认恢复到位。
 
 - [ ] **Step 5: 提交**
 
