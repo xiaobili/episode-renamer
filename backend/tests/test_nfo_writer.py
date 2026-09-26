@@ -43,6 +43,13 @@ def test_tvshow_root_and_core_fields():
     assert root.findtext("status") == "Ended"
 
 
+def test_tvshow_emits_sorttitle_from_name():
+    # sorttitle 是给按标题排序的刮削器用的, 取 name 而不是 original_name ——
+    # 这条断言把两者的区分钉住（SHOW 的 name 与 original_name 不同）。
+    root = parse(build_tvshow_nfo(SHOW))
+    assert root.findtext("sorttitle") == "绝命毒师"
+
+
 def test_tvshow_emits_uniqueid_and_tmdbid():
     # spec §8.2：缺 <uniqueid type="tmdb"> 时 Emby 会重新在线刮削，NFO 形同白写
     root = parse(build_tvshow_nfo(SHOW))
@@ -71,6 +78,17 @@ def test_tvshow_omits_missing_fields_instead_of_empty_tags():
     assert root.find("genre") is None
     assert root.find("premiered") is None
     assert root.findtext("title") == "无简介剧"
+
+
+def test_whitespace_only_value_is_omitted():
+    # 纯空白与空串同样危险: 刮削器会把「只有空白的字段」当成「该字段为空」的真值,
+    # 从而覆盖媒体库里已有的正确数据。_text 的 .strip() 就是为此,
+    # 去掉它本套测试会全绿 —— 这条补上那个洞。
+    show = TmdbShow(tv_id=4, name="剧", overview="   ", status="\t\n")
+    root = parse(build_tvshow_nfo(show))
+    assert root.find("plot") is None
+    assert root.find("status") is None
+    assert root.findtext("title") == "剧"   # 非空白的照常写出
 
 
 def test_tvshow_escapes_ampersand_and_angle_brackets():
