@@ -12,7 +12,7 @@
    这两个 token 迟早会被用到（前者是 danger 按钮的 hover，后者是模态/浮层的
    阴影），而设计 token 作为「系统的公开接口」不该取决于谁碰巧用了它 ——
    组件 <style> 块里的 var(--shadow-overlay) 引用一旦遇上 tree-shaking 就是
-   静默失效。代价实测为 2 个变量、72 字节。 */
+   静默失效。 */
 @theme static {
   /* ---------- 背景三级：用明度差做层级，不用阴影 ---------- */
   --color-canvas:  #F6F7F8;  /* 页面底，比纯白低一档 */
@@ -130,7 +130,7 @@ button:not(:disabled) {
    通配符是唯一能一次覆盖全部三处、且新增组件时不会漏的写法。
 
    duration 用 .01ms 而不是 0：零时长的过渡根本不会启动，因此不会有过渡结束
-   事件（transitionend / transitioncancel / animationend）发出。0.01ms 与 0 在
+   事件（transitionend / transitioncancel）发出。0.01ms 与 0 在
    视觉上无法区分，但它让过渡真正成立，任何监听结束事件的代码都能照常收到通知。
    ========================================================================== */
 @media (prefers-reduced-motion: reduce) {

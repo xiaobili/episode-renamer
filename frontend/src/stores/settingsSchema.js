@@ -5,8 +5,10 @@ export const SETTINGS_KEY = 'episode-renamer:settings'
 
 const CONFLICT_STRATEGIES = ['skip', 'abort', 'overwrite', 'rename_dup']
 
-// 与后端 app/core/template.py 的 PAD_MIN / PAD_MAX 一致。
-// 两侧区间不同会让「界面显示 0 而实际补零 1 位」这种不一致出现。
+// [1,6] 的区间来自 spec 的补零位数设定。后端今天**没有**实现这个区间：
+// backend/app/core/template.py 里没有 PAD_MIN / PAD_MAX，app/config.py:29-30 只存
+// 位数本身、不做任何钳制。所以这道 clamp 目前是唯一的防线 —— 若哪天服务端补上，
+// 区间要与之对齐，否则会出现「界面显示 0 而实际补零 1 位」这类两侧不一致。
 const PAD_MIN = 1
 const PAD_MAX = 6
 
