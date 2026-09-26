@@ -9,9 +9,30 @@ from ..core.local_renamer import batch_rename as local_batch_rename
 from ..core.openlist_renamer import (
     build_openlist_rename_plan, execute_openlist_batch,
 )
+from ..config import settings
+from ..core.template import PadConfig
 from .scanner import get_default_client
 
 router = APIRouter(prefix="/api", tags=["renamer"])
+
+
+def _pad_from_request(req) -> PadConfig | None:
+    """两个字段都没传时返回 None, 保持与改动前完全一致的行为。"""
+    if req.episode_pad_digits is None and req.season_pad_digits is None:
+        return None
+    # 必须显式判 None, 不能用 `x or default` —— 0 是合法输入,
+    # 用 or 会让 0 短路成全局默认值, 钳制逻辑永远不触发。
+    episode = (
+        req.episode_pad_digits
+        if req.episode_pad_digits is not None
+        else settings.episode_pad_digits
+    )
+    season = (
+        req.season_pad_digits
+        if req.season_pad_digits is not None
+        else settings.season_pad_digits
+    )
+    return PadConfig(episode=episode, season=season)
 
 
 _cached_files: dict[str, list[FileInfo]] = {}
@@ -40,6 +61,7 @@ def clear_cache() -> None:
 async def preview_rename(req: RenamePreviewRequest):
     files = find_files_by_ids(req.file_ids)
     results: list[dict] = []
+    pad = _pad_from_request(req)
 
     for f in files:
         source = req.source.lower()
@@ -51,12 +73,12 @@ async def preview_rename(req: RenamePreviewRequest):
             from ..core.local_renamer import build_rename_plan
             plan = build_rename_plan(
                 f, req.template, req.folder_template,
-                req.create_season_folder, override,
+                req.create_season_folder, override, pad=pad,
             )
         elif source == "openlist":
             plan = build_openlist_rename_plan(
                 f, req.template, req.folder_template,
-                req.create_season_folder, override,
+                req.create_season_folder, override, pad=pad,
             )
         else:
             raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
@@ -90,6 +112,7 @@ async def execute_rename(req: RenameExecuteRequest):
         raise HTTPException(status_code=400, detail="未找到对应的文件")
 
     source = req.source.lower()
+    pad = _pad_from_request(req)
 
     if source == "local":
         result = local_batch_rename(
@@ -100,6 +123,7 @@ async def execute_rename(req: RenameExecuteRequest):
             overrides=req.overrides,
             dry_run=False,
             conflict_strategy=req.conflict_strategy,
+            pad=pad,
         )
 
     elif source == "openlist":
@@ -113,7 +137,7 @@ async def execute_rename(req: RenameExecuteRequest):
             override = OverrideInfo(**ov) if ov else None
             plan = build_openlist_rename_plan(
                 f, req.template, req.folder_template,
-                req.create_season_folder, override,
+                req.create_season_folder, override, pad=pad,
             )
             plans.append(plan)
 
@@ -141,6 +165,7 @@ async def dry_run_rename(req: RenameExecuteRequest):
     files = find_files_by_ids(req.file_ids)
 
     source = req.source.lower()
+    pad = _pad_from_request(req)
 
     if source == "local":
         result = local_batch_rename(
@@ -151,6 +176,7 @@ async def dry_run_rename(req: RenameExecuteRequest):
             overrides=req.overrides,
             dry_run=True,
             conflict_strategy=req.conflict_strategy,
+            pad=pad,
         )
     elif source == "openlist":
         client = get_default_client()
@@ -164,7 +190,7 @@ async def dry_run_rename(req: RenameExecuteRequest):
             override = OverrideInfo(**ov) if ov else None
             plan = build_openlist_rename_plan(
                 f, req.template, req.folder_template,
-                req.create_season_folder, override,
+                req.create_season_folder, override, pad=pad,
             )
             plans.append(plan)
 

@@ -8,7 +8,7 @@ from ..models.file import (
 )
 from ..config import settings
 from .parser import parse_filename
-from .template import apply_template, apply_folder_template
+from .template import PadConfig, apply_template, apply_folder_template
 from .utils import generate_id
 from .openlist_client import OpenListClient, RenameObject
 
@@ -19,6 +19,7 @@ def build_openlist_rename_plan(
     folder_template: str = "",
     create_season_folder: bool = False,
     override: Optional[OverrideInfo] = None,
+    pad: PadConfig | None = None,
 ) -> RenamePlan:
     parsed = parse_filename(file.filename, file.parent_dir)
 
@@ -30,11 +31,11 @@ def build_openlist_rename_plan(
         if override.episode is not None:
             parsed.episode = override.episode
 
-    new_filename = apply_template(template, parsed)
+    new_filename = apply_template(template, parsed, pad=pad)
     new_dir = file.parent_dir
 
     if create_season_folder and folder_template:
-        folder_name = apply_folder_template(folder_template, parsed)
+        folder_name = apply_folder_template(folder_template, parsed, pad=pad)
         if folder_name:
             new_dir = str(PurePosixPath(file.parent_dir) / folder_name)
 

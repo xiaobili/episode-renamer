@@ -11,7 +11,7 @@ from ..models.file import (
 )
 from ..config import settings
 from .parser import parse_filename, _SEASON_DIR_PATTERNS
-from .template import apply_template, apply_folder_template
+from .template import PadConfig, apply_template, apply_folder_template
 from .utils import generate_id
 
 
@@ -35,6 +35,7 @@ def build_rename_plan(
     folder_template: str = "",
     create_season_folder: bool = False,
     override: Optional[OverrideInfo] = None,
+    pad: PadConfig | None = None,
 ) -> RenamePlan:
     parsed = parse_filename(file.filename, file.parent_dir)
 
@@ -48,14 +49,14 @@ def build_rename_plan(
         if override.title is not None:
             parsed.title = override.title
 
-    new_filename = apply_template(template, parsed)
+    new_filename = apply_template(template, parsed, pad=pad)
     new_path = str(Path(file.parent_dir) / new_filename)
     new_dir = file.parent_dir
 
     skip_season_folder = _parent_is_season_dir(file.parent_dir, parsed.season)
 
     if create_season_folder and folder_template and not skip_season_folder:
-        folder_name = apply_folder_template(folder_template, parsed)
+        folder_name = apply_folder_template(folder_template, parsed, pad=pad)
         if folder_name:
             new_dir = str(Path(file.parent_dir) / folder_name)
             new_path = str(Path(new_dir) / new_filename)
@@ -176,6 +177,7 @@ def batch_rename(
     overrides: dict[str, dict] | None = None,
     dry_run: bool = False,
     conflict_strategy: str = "skip",
+    pad: PadConfig | None = None,
 ) -> BatchRenameResult:
     plans: list[RenamePlan] = []
     overrides = overrides or {}
@@ -183,7 +185,9 @@ def batch_rename(
     for f in files:
         ov = overrides.get(f.id)
         override = OverrideInfo(**ov) if ov else None
-        plan = build_rename_plan(f, template, folder_template, create_season_folder, override)
+        plan = build_rename_plan(
+            f, template, folder_template, create_season_folder, override, pad=pad
+        )
         conflicts = check_conflict(plan, [])
         plan.conflicts = conflicts
         plans.append(plan)

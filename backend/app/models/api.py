@@ -39,6 +39,8 @@ class RenamePreviewRequest(BaseModel):
     overrides: dict[str, dict] = Field(default_factory=dict)
     source: str = "local"
     path: str = ""
+    episode_pad_digits: Optional[int] = None
+    season_pad_digits: Optional[int] = None
 
 
 class RenameExecuteRequest(BaseModel):
@@ -50,6 +52,8 @@ class RenameExecuteRequest(BaseModel):
     source: str = "local"
     path: str = ""
     conflict_strategy: str = "skip"
+    episode_pad_digits: Optional[int] = None
+    season_pad_digits: Optional[int] = None
 
 
 class OpenListLoginRequest(BaseModel):
