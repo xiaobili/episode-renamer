@@ -1110,6 +1110,71 @@ checkout HEAD 仍能复现原始症状，见 ledger 的「设置不生效」那�
 
 **5. 一处需要执行者注意的既有事实**（不是本计划引入，但会碰到）：`payload.path` 后端**不读**（`api/renamer.py` 只用 `file_ids` / `source` / `conflict_strategy`）。计划逐字保留了它，不做删除 —— 删它属于另一个改动，且会让本计划的断言多一条无关的失败面。
 
+---
+
+## 修复波修订（最终整分支审查之后）
+
+最终审查（opus，range a3f9bdf..aca5168）判 **With fixes**，3 条 Important + 1 条必须修的 Minor。
+**下列步骤文本已被取代**；不改上面的原文，是为了让「当初怎么做的」与「为什么改」都留痕。
+同步：spec §17.3 与 §17.4 已补入这两处行为（在途刮削视为未刮削、刮削失败回退置位、在途时门控其它动作）。
+
+### 取代 Task 1 Step 1 的两条透传断言（Important 3）
+
+fixture 里 `createSeasonFolder` / `tmdb.enabled` / `generateNfo` **三个布尔原先都是 `true`**，
+故载荷里 `create_season_folder` / `tmdb_enabled` / `generate_nfo` 三者可互换而 23 条断言全绿
+（审查者实测：互换后 23/23 PASS）。**上一轮修复（R4）只处理了被点名的那两对，这一对从未被检查。**
+
+**关键认识**：`base` 的 `createSeasonFolder` 改为 `false`，并把透传断言改为下面这块 ——
+**「取不同值」对三个以上布尔在数学上不可能**（布尔只有两个值，三字段必有重复），
+故正解是**逐项变动 + 交叉钉住**：
+
+```js
+assert('create_season_folder 透传', on.create_season_folder, false)   // fixture 已改为 false
+assert('generate_nfo 透传', on.generate_nfo, true)
+assert('nfo_overwrite 透传', on.nfo_overwrite, false)
+
+// 三个布尔各是一个独立字段，**只靠「取不同值」钉不住**：布尔只有两个值，三个字段必有重复，
+// 而重复的那一对互换后两条断言拿到同一个值 → 双双通过（本计划第三次栽在同一形态）。
+// 故只动**一个**输入，断言另两个**不受影响** —— 互换实现会在这里红。
+const tmdbOffPayload = buildRenamePayload({
+  ...base, tmdb: { ...base.tmdb, enabled: false },
+})
+assert('只关 TMDB 时 tmdb_enabled 变 false', tmdbOffPayload.tmdb_enabled, false)
+assert('只关 TMDB 时 generate_nfo 不受影响', tmdbOffPayload.generate_nfo, true)
+assert('只关 TMDB 时 create_season_folder 不受影响', tmdbOffPayload.create_season_folder, false)
+```
+
+（`base` 里 `createSeasonFolder: true` → 改为 `false`；`tmdb.enabled: true` 与 `generateNfo: true` 不动。）
+
+### 取代 Task 3 Step 1 与 Task 4 的按钮禁用条件（Important 1 + Minor 1）
+
+`scraped` 在 await **之前**就置位，而屏幕上的表还是刮削前那一张 —— 此时发起执行会写出
+**用户没见过的文件名**（审查者运行时复现：「用户看到 `Show.S01E01.mkv` / 实际写出
+`Some Show - S01E01 - A Title.mkv`」）。故**刮削在途时门控其它动作**：
+
+- `FileTable.vue`：`预览` 与 `清空` 的 `:disabled` 加 `|| scraping`
+- `AppBottomBar.vue`：新增 prop `scraping: { type: Boolean, default: false }`，
+  `试运行` 与 `执行重命名` 的 `:disabled` 加 `|| scraping`
+- `HomeView.vue`：给 `<AppBottomBar>` 传 `:scraping="ws.scraping"`；给 `<SourceConfigPanel>` 传
+  `:scraping="ws.scraping"`（**镜像竞态**：刮削在途时发起扫描，会让刮削的响应后到、
+  用带标题的表覆盖扫描的表，而 `scraped` 为 false → 同样不一致）
+- `SourceConfigPanel.vue`：新增同名 prop，扫描按钮的 `:disabled` 加 `|| scraping`
+
+另：`workspace.js` 的 `executeAction` 里把 `nfoNeedsScrape.value` **提到 `await` 之前**读进局部变量
+（否则干跑在途时用户重选剧集，会让记录下来的标志与载荷说的不一致）。
+
+### 修复波新增的两个脚本（最终审查的 R7 / 建议 2）
+
+- `frontend/scripts/check-workspace-gating.mjs` —— 把一次性运行时探针
+  （`/tmp/ws-probe.mjs`，47 条断言，审查者已核实其鉴别力）提升为仓库判据。
+  **必须自包含**：自注册一个补 `.js` 的 ESM loader、桩掉 `localStorage` / `window`、
+  装一个 axios adapter。**陷阱（审查者踩过）**：adapter 对非 2xx 必须**显式 reject** ——
+  `validateStatus` 不作用于 adapter 的返回值，直接 resolve `{status: 401}` 会被当成成功，
+  **那样写出来的 401 用例会是一条「永远不会失败的检查」**。
+- `frontend/scripts/check-all.mjs` + `package.json` 的 `"check"` script —— 一次跑齐五个判据，
+  任一失败即非零退出。（本计划三个自查缺陷**全是「检查查错了东西 / 不可能失败 / 根本不会跑」**，
+  runner 至少保证它们执行。）
+
 
 
 
