@@ -6,6 +6,7 @@ from ..config import settings
 from ..core.tmdb_client import (
     TmdbAuthError,
     TmdbClient,
+    TmdbNotFoundError,
     TmdbUnavailableError,
 )
 
@@ -49,6 +50,11 @@ async def test_tmdb(
         hits = await client.search_tv(PROBE_QUERY)
     except TmdbAuthError as exc:
         return {"success": False, "status": "invalid_key", "message": str(exc)}
+    except TmdbNotFoundError as exc:
+        # tmdb_client 对**任何** HTTP 404 都抛它, 包括 /search/tv。拦截式代理 / DNS
+        # 屏蔽会对被封主机回 404 —— 在这条端点里它就是「连不上 TMDB」的一种,
+        # 而本端点存在的全部意义是给设置页一个可读状态, 不是吐 500 + traceback。
+        return {"success": False, "status": "unreachable", "message": str(exc)}
     except TmdbUnavailableError as exc:
         return {"success": False, "status": "unreachable", "message": str(exc)}
 
@@ -77,6 +83,9 @@ async def search_tv(
         # 不要在这里再拼一次前缀 —— TmdbAuthError 的消息本身就是
         # 「TMDB API Key 无效」, 拼出来会是「TMDB API Key 无效: TMDB API Key 无效」。
         raise HTTPException(status_code=400, detail=str(exc))
+    except TmdbNotFoundError as exc:
+        # 与 400 分开: 404 是 TMDB 侧 / 链路的问题, 不是用户的 Key 问题。
+        raise HTTPException(status_code=502, detail=str(exc))
     except TmdbUnavailableError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

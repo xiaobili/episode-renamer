@@ -50,8 +50,10 @@ class FakeClient:
     承诺的只有这一条用例，所以这些让出点不能删。
 
     `fail=` 可选值：`"search"` / `"season"` 抛 TmdbUnavailableError，
-    `"auth"` 在 search_tv 里抛 TmdbAuthError，`"value"` 在 search_tv 里抛
-    ValueError（模拟畸形 payload 在映射层炸出的未分类异常）。
+    `"search_not_found"` 在 search_tv 里抛 TmdbNotFoundError（拦截式代理 /
+    DNS 屏蔽会对被封主机回 404），`"auth"` 在 search_tv 里抛 TmdbAuthError，
+    `"value"` 在 search_tv 里抛 ValueError（模拟畸形 payload 在映射层炸出的
+    未分类异常）。
     """
 
     def __init__(self, hits=None, show=SHOW, seasons=None, fail=None):
@@ -71,6 +73,8 @@ class FakeClient:
         self.calls["search"].append(query)
         if self._fail == "search":
             raise TmdbUnavailableError("boom")
+        if self._fail == "search_not_found":
+            raise TmdbNotFoundError("TMDB 无此资源: /search/tv")
         if self._fail == "auth":
             raise TmdbAuthError("TMDB API Key 无效")
         if self._fail == "value":
@@ -268,6 +272,14 @@ def test_unavailable_on_search_failure():
 def test_unavailable_on_season_failure():
     matches, _ = resolve([ResolveRequest("绝命毒师", 2, 5)], fail="season")
     assert matches[0].status == STATUS_UNAVAILABLE
+
+
+def test_search_not_found_is_show_not_found():
+    # search 路径曾是唯一没接 TmdbNotFoundError 的地方（detail / season 两条都接了）。
+    # 制造者与 R10 已接受的「代理回 HTML」同类: 拦截式代理 / DNS 屏蔽对被封主机回 404。
+    # 逃出 resolve_many 就是预览 500 —— 本仓库的约定是任何 Tmdb* 失败都不得逃过分级。
+    matches, _ = resolve([ResolveRequest("绝命毒师", 2, 5)], fail="search_not_found")
+    assert matches[0].status == STATUS_SHOW_NOT_FOUND
 
 
 def test_one_bad_group_does_not_poison_the_others():

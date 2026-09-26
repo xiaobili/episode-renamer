@@ -88,6 +88,20 @@ def test_test_endpoint_reports_unreachable(client, monkeypatch):
     assert body["status"] == "unreachable"
 
 
+def test_test_endpoint_reports_unreachable_on_not_found(client, monkeypatch):
+    # tmdb_client 对任何 404 都抛 TmdbNotFoundError, 包括 /search/tv。拦截式代理 /
+    # DNS 屏蔽会对被封主机回 404 —— 让它逃到路由层就是 500 + traceback,
+    # 而本端点存在的全部意义是给设置页一个可读状态。
+    from app.core.tmdb_client import TmdbNotFoundError
+
+    _stub_search(monkeypatch, error=TmdbNotFoundError("TMDB 无此资源: /search/tv"))
+    res = client.get("/api/tmdb/test", headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is False
+    assert body["status"] == "unreachable"
+
+
 def test_test_endpoint_reports_disabled_even_with_key(client, monkeypatch):
     # 服务端总开关优先于用户填的 Key —— 否则「禁用」形同虚设
     from app.config import settings
@@ -148,6 +162,17 @@ def test_search_endpoint_maps_unavailable_to_502(client, monkeypatch):
     assert res.json()["detail"] == "TMDB 请求失败: boom"
 
 
+def test_search_endpoint_maps_not_found_to_502(client, monkeypatch):
+    # 与 400 分开: 404 是 TMDB 侧/链路问题, 不是用户的 Key 问题。
+    from app.core.tmdb_client import TmdbNotFoundError
+
+    _stub_search(monkeypatch, error=TmdbNotFoundError("TMDB 无此资源: /search/tv"))
+    res = client.get("/api/tmdb/search", params={"q": "x"},
+                     headers={"X-Tmdb-Key": "a" * 32})
+    assert res.status_code == 502, res.text
+    assert res.json()["detail"] == "TMDB 无此资源: /search/tv"
+
+
 def test_search_endpoint_maps_auth_error_to_400(client, monkeypatch):
     from app.core.tmdb_client import TmdbAuthError
 
@@ -168,7 +193,11 @@ def test_test_endpoint_reports_not_configured(client, monkeypatch):
     assert res.json()["status"] == "not_configured"
 
 
-def test_search_endpoint_rejects_empty_query(client):
+def test_search_endpoint_rejects_empty_query(client, monkeypatch):
+    # 打桩不是为了这个分支本身: 它今天的密闭性是**有条件**的 —— 不出网只因 400 发生在
+    # 构造客户端**之前**。空查询守卫一旦被移除, 这条就会真去打 TMDB。
+    # 接上打桩缝, 密闭性才不依赖某个守卫恰好还在。
+    _stub_search(monkeypatch)
     res = client.get("/api/tmdb/search", params={"q": "   "},
                      headers={"X-Tmdb-Key": "whatever"})
     assert res.status_code == 400, res.text

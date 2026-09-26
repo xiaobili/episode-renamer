@@ -240,6 +240,12 @@ class TmdbResolver:
 
             try:
                 hits = await self._cache.get_or_create(key, fetch_search)
+            except TmdbNotFoundError:
+                # 与 detail / season 两条路径对称。_guarded 刻意原样 re-raise 它
+                # (它是已分类结果, 压成 unavailable 会把「没这部剧」误报成「TMDB 挂了」),
+                # 所以在**调用点**接住。制造者是拦截式代理 / DNS 屏蔽 —— 对被封主机回
+                # 404, 与 R10 已接受的「代理回 HTML」同类。漏了它, 预览请求就是 500。
+                return STATUS_SHOW_NOT_FOUND
             except TmdbUnavailableError:
                 return STATUS_UNAVAILABLE
 
