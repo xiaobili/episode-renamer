@@ -1360,6 +1360,13 @@ git commit -m "fix(backend): 外部数据边界加守卫，未分类异常降级
 
 ### Task 3: 配置、请求模型与预览路由接入
 
+> **⚠️ 本节 Step 2 与 Step 8 的代码块是修复前的版本。** 权威是代码（`backend/app/models/api.py`、`backend/app/api/renamer.py`）。
+>
+> 1. **两个 Request 各加的是 4 个字段，不是 3 个** —— 除 `tmdb_api_key` / `tmdb_language` / `tmdb_overrides` 外还有 **`tmdb_enabled: Optional[bool] = None`**。漏掉它，「启用 TMDB 元数据」勾选框就是死设置（取消勾选不会停止查询）。
+> 2. **`_tmdb_client_from_request` 不再是自带判断的实现**，而是 `app.api.tmdb.build_tmdb_client` 的薄包装（见 Task 4 的说明）—— 全项目**只有那一个**优先级判定点。
+> 3. **空白 Key 必须回退 `.env`，不能短路它** —— 用**真值**判断（`req.tmdb_api_key or settings.tmdb_api_key`）而非 `is not None`。前端空白字段发的是 `''`，用 `is not None` 会把 `''` 当成「已提供」→ TMDB 被禁用，而设置页提示恰恰写着「留空则用服务端 .env 的配置」。**Docker 部署（配 `.env` 一次）是主用例。** 注意这与 `_pad_from_request` 刻意用 `is not None` **不矛盾**：`0` 是合法的补零位数，而 Key 的 `''` 本身就意为「未提供」。两处都已写注释说明这个区别 —— 不要以为是笔误而「修」回去。
+> 4. 两条请求级开关的优先级：**用户显式关闭（`tmdb_enabled is False`）优先，服务端开关（`settings.tmdb_enabled`）同样能压过用户**。
+
 把解析器接进请求链路。关键约束：TMDB 标题必须在模板渲染**之前**到手，因此预览改两遍解析。
 
 **Files:**
@@ -1995,6 +2002,14 @@ git commit -m "test(backend): 补三条有鉴别力的用例（{title} 真来自
 ---
 
 ### Task 4: TMDB 辅助端点
+
+> **⚠️ 本节 Step 3 的代码块是修复前的版本。** 权威是代码（`backend/app/api/tmdb.py`）。执行期间发现两处优先级判定各算一次，后来收敛成**唯一判定点**：
+>
+> 1. **新增 `build_tmdb_client(header_key, header_language, enabled) -> Optional[TmdbClient]`，它是全项目唯一的优先级判定点。** `_client`（抛 400）与 `renamer._tmdb_client_from_request`（降级 `disabled`）都只是它的薄包装。判定用**真值**（`header_key or settings.tmdb_api_key`），因为空白 Key 必须回退 `.env`。
+> 2. **`/test` 与 `/search` 不再各有一套开关判断** —— 服务端总开关与「为什么不可用」的成因归属也必须只有一处（统一前 `/search` **从不看** `settings.tmdb_enabled`，填了 Key 就照查不误，而 `/test` 早就报 `disabled`）。
+> 3. **`/search` 现在受服务端总开关约束**：禁用时返回 400 `"TMDB 已被服务端禁用"`（与 Key 无效的 400 是两种文案）。
+> 4. **NotFound 也要分级**：`/test` 归 `unreachable`、`/search` 归 502 —— 客户端在**任何** 404 上都抛 `TmdbNotFoundError`，而拦截式代理 / DNS 屏蔽网络对被封主机回 404 是现实场景。漏掉它，`/test` 会吐 500 —— 而该端点存在的全部意义就是给设置页一个可读状态。
+> 5. 有一条测试钉住「判定点唯一」（`test_build_tmdb_client_is_the_single_decision_point`），防止第二个判断点长回来。
 
 设置页的「测试连接」与重选对话框的搜索都要用。Key 走请求头而非查询串 —— 查询串会进访问日志。
 
@@ -2633,6 +2648,20 @@ git commit -m "feat(frontend): 设置页新增 TMDB 面板（Key / 语言 / 启�
 
 ### Task 7: 工作区接线、预览表与重选对话框
 
+> **⚠️ 本节的 Step 1 代码块是修复前的版本，不要照抄。** 执行期间的三轮修复与整分支审查的修复波改了它，理由见下。**工作区接线的权威是代码**（`frontend/src/stores/workspace.js`），不是本节文字。逐字照抄 Step 1 会**重新引入两个已修的回归**。
+>
+> 改动清单（每条的来由见 `ledgers/` 里本计划的 ledger）：
+>
+> 1. **`buildPreview` 的请求体要带 `overrides`** —— 原文没有它，于是逐行手动编辑（含「标题」列）**永远到不了服务端**，预览里的「新文件名」列不会随编辑变化。构造方式与 `executeAction` 逐字相同（遍历 `previewRows`，`if (r.override) overrides[r.id] = r.override`，全部行都发）。
+> 2. **两个请求体都要带 `tmdb_enabled`** —— 原文漏了它，于是设置页的「启用 TMDB 元数据」勾选框是**死设置**（取消勾选不会停止查询）。值为 `settingsStore.tmdb.enabled`。
+> 3. **重建行时 `override` 必须按 file id 沿用，不能硬编码 `{}`** —— 原文是 `override: {},`（brief 逐字），而它与第 1 条合在一起会产生：**编辑 → 预览 → 执行** 丢掉手动编辑（预览显示手打标题、执行写出 TMDB 标题）。改成 `override: overrides[f.id] || {}` —— **复用下发的那一份映射**，使「预览显示的」与「执行写出的」同源。不要新建第二份结构。
+> 4. **三个 TMDB 入口（`searchShow` / `pickShow` / `rematchShow`）受用户开关门控** —— 新增 `tmdbOff()`，开关关闭时早退（不发请求、不写 `tmdbOverrides`、不弹「已选用」成功提示、不打开对话框）。原文没有门控，于是关掉开关后仍会查 TMDB，且 `pickShow` 会为一个被丢弃的选择谎报成功。
+> 5. **`pickShow` 在 `row.show_name` 为空时要早退并提示** —— 那正是用户点 🔍 的典型场景（解析器认不出剧名），而原文会静默丢弃选择并弹出成功提示。
+> 6. **设置变更要刷新预览** —— watch 的依赖数组补 `settingsStore.tmdb.apiKey` / `.language` / `.enabled`（它们也是渲染的输入；漏掉它们，改语言后不回刷就是同一个「设置不生效」的观感）。
+> 7. **预览失败要报错，不要静默** —— `buildPreview` 的 catch 要把 `e.response?.data?.detail` 弹成 error toast，并让调用方知道成功与否；`previewAll` 只在成功时弹「预览已刷新」。原文只有 `console.error(e)` 且 `previewAll` 无条件报成功 —— Key 无效时用户看不到任何提示，且旧行留在屏幕上使他以为新 Key 可用。
+>
+> 另：`doScan` / `doOpenListScan` 之后那次 `buildPreview` 的失败**至今仍静默**（同一缺陷的隔壁调用路径，一行一处补 `refreshPreviewReportingFailure()`）—— 见 ledger 的残留项。
+
 本任务把 TMDB 配置真正下发到后端（review focus 里「设置不生效」的防线），并把匹配结果呈现在预览表里、提供重选入口。
 
 **Files:**
@@ -3083,7 +3112,7 @@ cd frontend && node scripts/check-settings-schema.mjs && node scripts/check-sfc-
 | §10.1 配置项 | Task 3 Step 1 |
 | §10.2 请求字段 | Task 3 Step 2 |
 | §10.3 优先级 请求体 > .env > 未配置 | Task 3 Step 8 `_tmdb_client_from_request`；Task 4 `test_header_key_overrides_env_key` / `test_env_key_is_used_when_header_absent` |
-| §10.4 下发链路可测 | Task 4 的两个 header 测试 + Task 7 Step 1 的三处下发；`test_tmdb_overrides_are_accepted_by_the_request_model` 钉住字段确实被模型接受 |
+| §10.4 下发链路可测 | Task 4 的两个 header 测试 + Task 7 Step 1 的三处下发；字段**确实被模型接受**这一条由 `assert "tmdb_overrides" in RenamePreviewRequest.model_fields` 钉住（整分支审查指出：原先引的 `test_tmdb_overrides_are_accepted_by_the_request_model` **不能**证明这件事 —— pydantic 静默忽略未知字段，所以把该字段从模型里删掉它照样返回 200。**这是本节自查里的一条假证据**，已改） |
 | §11 两个端点 + 预览响应新字段 | Task 4；Task 3 Step 8 |
 | §12.1 设置页面板 | Task 6 |
 | §12.2 设置存储 | Task 5 |
