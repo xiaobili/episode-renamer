@@ -152,6 +152,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     if (name === 'openlist') {
       tplStore.createSeasonFolder = false
+      // NFO 也不支持云盘（后端 _nfo_supported 只认 local）—— 留着它, 整个云盘
+      // 工作区每一行都会顶着「云盘不支持」, 而下次切回本地时它会**悄悄**仍然
+      // 开着, 用户以为自己没勾过。
+      generateNfo.value = false
     }
   }
 

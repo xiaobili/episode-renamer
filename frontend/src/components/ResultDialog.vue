@@ -65,6 +65,27 @@
             <p v-if="nfoStats.hint" class="mt-1 text-[11px] leading-relaxed text-warn">
               {{ nfoStats.hint }}
             </p>
+            <!-- 落点清单: spec §9.4 的可见性要求「显式列出」落点路径。
+                 计数与原因分组回答的是「为什么跳过」, 「要写到哪里」只有路径能回答
+                 —— 上溯过头时 tvshow.nfo 会落到**库根**而不是剧目录, 而本对话框
+                 此前只报数字, 用户在干跑时看不到任何一条落点（干跑的全部意义就是
+                 执行前看一眼这个清单）。break-all 让长路径换行而非被截断: 截断
+                 等于把这件事又藏回去。 -->
+            <ul
+              v-if="nfoStats.writtenPaths.length"
+              class="mt-1.5 max-h-[132px] space-y-0.5 overflow-y-auto rounded-[6px] border border-line px-2 py-1.5"
+            >
+              <li class="text-[11px] text-ink-3">
+                {{ nfoStats.dryRun ? '计划写入的落点' : '已写入的落点' }}
+              </li>
+              <li
+                v-for="path in nfoStats.writtenPaths"
+                :key="path"
+                class="break-all font-mono text-[11px] leading-relaxed text-ink-2"
+              >
+                {{ path }}
+              </li>
+            </ul>
           </div>
 
           <table v-if="result.results?.length" class="w-full text-[12px]">
@@ -134,6 +155,8 @@ const nfoStats = computed(() => {
     // 干跑时这两个数字是计划而非事实, 由 workspace.executeAction 记在结果上。
     dryRun: props.result?.dry_run === true,
     writtenCount: written.length,
+    // 计数之外还要**路径本身**（§9.4）—— 数字说不出 tvshow.nfo 落到哪个目录。
+    writtenPaths: written,
     skippedCount: skipped.length,
     reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 个`).join('；'),
     hint: byReason.has('已存在')

@@ -214,21 +214,21 @@
                 </div>
               </td>
               <td class="hidden px-4 py-2.5 lg:table-cell">
-                <div v-if="row.nfo" class="flex flex-col gap-0.5 text-[11px]">
+                <div v-if="row.nfo" class="flex max-w-[240px] flex-col gap-0.5 text-[11px]">
                   <!-- 本行的 nfo 非空, 只说明「这一行有东西要写」（剧情级 / 季级）,
                        不保证**本集**有。show 匹配上而这一集 TMDB 里没有时
                        （NfoEntry.has_metadata 要求 show 与 episode_data 同时存在）,
                        不会有 episode 键 —— 此前这里渲染成一条空白行, 从不说
                        「本集没有 NFO」。这是行级状态, 与批次级的 nfo_scope
                        （disabled / unsupported_source）不是一回事, 故不复用它的文案。 -->
-                  <span v-if="row.nfo.episode" class="truncate text-ink-2" :title="row.nfo.episode">
-                    {{ nfoBaseName(row.nfo.episode) }}
+                  <span v-if="row.nfo.episode" class="break-all text-ink-2" :title="row.nfo.episode">
+                    {{ nfoLandingLabel(row.nfo.episode) }}
                   </span>
                   <span v-else class="text-warn" title="TMDB 未匹配到本集，不写本集 NFO">
                     本集无 NFO
                   </span>
-                  <span v-if="row.nfo.tvshow" class="truncate text-ink-3" :title="row.nfo.tvshow">
-                    + tvshow.nfo
+                  <span v-if="row.nfo.tvshow" class="break-all text-ink-3" :title="row.nfo.tvshow">
+                    + {{ nfoLandingLabel(row.nfo.tvshow) }}
                   </span>
                   <!-- 这条要**两个**条件, 缺任何一个都会打出假警告:
                        ① 不能用「本行 nfo 里没有 tvshow 键」作判据 —— 剧集级决策按契约
@@ -248,6 +248,14 @@
                     :title="nfoScopeHint(row.nfo_scope)"
                   >
                     仅每集 NFO
+                  </span>
+                  <!-- season.nfo 此前**从不渲染**: 后端把 row.nfo.season 送出来了,
+                       前端却没接 —— 于是「季级 NFO 落到哪里」在预览里根本不存在,
+                       而 spec §9.4 要求两道剧集级落点都一眼可见。（放在警告链之后
+                       是为了不打断 v-if / v-else-if 链: 插在中间会让「仅每集 NFO」
+                       变成 season 那一支的 else。） -->
+                  <span v-if="row.nfo.season" class="break-all text-ink-3" :title="row.nfo.season">
+                    + {{ nfoLandingLabel(row.nfo.season) }}
                   </span>
                 </div>
                 <span
@@ -313,10 +321,20 @@ const NFO_SCOPE_HINTS = {
   full: '—',
 }
 
-// 后端给的是**完整路径**（spec §9.4：预览必须能看出 tvshow.nfo 落到哪个库根），
-// 所以这里只取末段做显示，全路径留在 title 里。
-function nfoBaseName(path) {
-  return path ? path.split('/').pop() : ''
+// 显示**末两段**（父目录 / 文件名）, 而不是只看 basename。
+//
+// spec §9.4 要求预览显式列出剧集级 NFO 的绝对路径, 判据是「落点错误时一眼可见」。
+// 落点能错在哪? **目录**: 上溯过头时 tvshow.nfo 会落到库根（/m/lib/tvshow.nfo）
+// 而不是剧目录（/m/lib/绝命毒师/tvshow.nfo）—— 只显示 basename 时两种情况都是
+// 同一行字「tvshow.nfo」, 那句话只在 title 里, 而 title 要悬停才看得见, 且长路径
+// 被浏览器截断。末两段把目录带进来, 不悬停也能分辨库根 / 剧目录 / 季目录。
+// 全路径仍留在 title 里, 方便复制。
+//
+// 单段路径（相对路径）没有父目录可显示, 退回整串。
+function nfoLandingLabel(path) {
+  if (!path) return ''
+  const segments = path.split('/').filter(Boolean)
+  return segments.slice(-2).join('/')
 }
 
 function nfoScopeHint(scope) {
