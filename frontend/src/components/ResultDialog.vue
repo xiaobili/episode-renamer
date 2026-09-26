@@ -47,8 +47,13 @@
 
           <!-- NFO 汇总。只在真有 NFO 动作时出现：覆盖默认关闭, 所以「跳过」是
                常态而非异常 —— 只报「成功 N 个」会让用户以为 NFO 写了, 其实可能
-               一个都没写。原因必须跟着数字一起给, 否则用户看到「跳过 50 个」
-               也不知道该去勾「覆盖已存在的 NFO」。 -->
+               一个都没写。原因必须跟着数字一起给, 否则用户看到「跳过 50 项」
+               也不知道该去勾「覆盖已存在的 NFO」。
+               单位有意分两种：「写入 / 跟随移动」是**文件数**（一个落点一件），
+               「跳过」是**条目数** —— 同一个目标 NFO 上「生成没写」与「跟随没搬成」
+               是两件事，`nfo_skipped` 各出一条（两条理由串也各说各的），计「个」
+               会把条目数读成文件数。故顶行用「项」，下面按理由分组同样按条目计，
+               顶行才与分项之和对得上。改回「个」前先读 R89。 -->
           <div v-if="nfoStats" class="mb-4 rounded-[8px] bg-sunken px-3 py-2.5 text-[12px]">
             <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span class="font-semibold text-ink">NFO</span>
@@ -56,7 +61,7 @@
                 {{ nfoStats.dryRun ? '将写入' : '写入' }} {{ nfoStats.writtenCount }} 个
               </span>
               <span v-if="nfoStats.skippedCount" class="tabular-nums text-ink-2">
-                {{ nfoStats.dryRun ? '将跳过' : '跳过' }} {{ nfoStats.skippedCount }} 个
+                {{ nfoStats.dryRun ? '将跳过' : '跳过' }} {{ nfoStats.skippedCount }} 项
               </span>
               <!-- 跟随移动单独一行: 这些文件**不是本程序生成的**, 是重命名时一并
                    搬走的既有 NFO（spec §9.1.1）。算进「写入 N 个」会把用户自己的
@@ -186,7 +191,7 @@ const nfoStats = computed(() => {
     carriedCount: carried.length,
     carriedPaths: carried,
     skippedCount: skipped.length,
-    reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 个`).join('；'),
+    reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 项`).join('；'),
     hint: byReason.has('已存在')
       ? '如需覆盖既有 NFO，请勾选「覆盖已存在的 NFO」后重新执行'
       : '',
