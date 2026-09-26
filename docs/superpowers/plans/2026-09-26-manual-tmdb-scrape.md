@@ -988,8 +988,12 @@ Run:
 
 ```bash
 cd /home/billy/Projects/episode-renamer
-# 本计划的起点 = 本计划文件被提交时的那个提交（自足，不需要外部记录）
-BASE=$(git log --format=%H -1 -- docs/superpowers/plans/2026-09-26-manual-tmdb-scrape.md)
+# 本计划的起点 = **首次加入**本计划文件的那个提交。
+# 必须用 --diff-filter=A：`-1 --` 取的是**最后**一次改动该文件的提交，那会晚于 Task 1–3，
+# 于是这条检查只看得到最后一个任务的范围 —— 前面几个任务若动过 backend 它报不出来。
+# （本计划第三个「检查查错了东西」的缺陷，见 ledger R12；本次两种范围恰好都为空，
+#  所以它是**侥幸**通过而不是通过。）
+BASE=$(git log --format=%H --diff-filter=A -- docs/superpowers/plans/2026-09-26-manual-tmdb-scrape.md)
 git diff --stat $BASE..HEAD -- backend/
 ```
 
@@ -1021,9 +1025,9 @@ Run:
 
 ```bash
 cd frontend
-grep -rl "未刮削" dist/assets/                      # 期望：命中 HomeView 那个 chunk
-grep -o "刮削标题" dist/assets/HomeView-*.js | wc -l # 期望：≥1
-grep -o "tmdb_enabled:[^,}]*" dist/assets/HomeView-*.js | sort | uniq -c
+grep -rl "未刮削" dist/assets/                      # 期望：至少命中一个 chunk
+grep -o "刮削标题" dist/assets/*.js | wc -l          # 期望：≥1
+grep -o "tmdb_enabled:[^,}]*" dist/assets/*.js | sort | uniq -c
 ```
 
 Expected: 第三条要能看到**两个**取值 —— 已刮削那一支取设置值、未刮削那一支是布尔假（esbuild 生产构建通常压成 `!1`）。若压缩形态与预期不同，以「两个分支的取值都在产物里」为准，并在报告里附上实际输出。
