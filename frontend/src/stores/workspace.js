@@ -281,10 +281,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     buildPreview()
   }
 
+  // 上一次重建预览的失败原因（成功时为 null）。
+  //
+  // 异常仍然被 buildPreview 吞在内部 —— 它的调用点里有两个是**自动**触发的
+  // （模板 watch、设置变更后的回刷），在那里弹 Toast 会在用户打字时刷屏。
+  // 但「吞掉」不等于「当作没发生」: 调用点必须能知道自己失败了, 所以
+  // buildPreview 返回布尔, 原因留在这里给用户主动触发的调用点去报。
+  const previewError = ref(null)
+
   async function buildPreview() {
     if (!filesStore.files.length) {
       previewRows.value = []
-      return
+      previewError.value = null
+      return true
     }
     try {
       const ids = filesStore.files.map(f => f.id)
@@ -347,8 +356,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           override: overrides[f.id] || {},
         }
       })
+      previewError.value = null
+      return true
     } catch (e) {
       console.error(e)
+      // 后端把配置类错误放在 detail 里（spec §5.3: 401 → 「TMDB API Key 无效」）。
+      // 它是**唯一**能让用户看出「我填错了 Key」的地方, 所以走到界面上之前不能丢。
+      previewError.value = e.response?.data?.detail || e.message || '未知错误'
+      return false
     }
   }
 
@@ -367,9 +382,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     previewRows.value.forEach(r => { r.selected = val })
   }
 
+  // 「预览」按钮（以及重选剧集之后）走这里 —— 用户主动发起, 失败必须报出来。
+  //
+  // 报错只放在**用户主动**的调用点上, 不放进 buildPreview 的 catch: watch 会在
+  // 用户每敲一个模板字符时调一次 buildPreview, Key 填错时每敲一键弹一次
+  // 「预览失败」就是刷屏。
+  //
+  // 修复前的形态是**无条件**弹「预览已刷新」, 而 previewRows 只在成功时才被替换
+  // —— Key 无效时后端回 401（detail「TMDB API Key 无效」）, 前端却显示
+  // 「刷新成功」+ 一张**旧表**, 用户于是得出结论「新 Key 能用」。
+  // spec §5.3 要求这类配置错误必须让用户看见, 这正是它被违反的那一处。
+  async function refreshPreviewReportingFailure() {
+    if (await buildPreview()) return true
+    showToast('预览失败: ' + (previewError.value || '未知错误'), 'error')
+    return false
+  }
+
   async function previewAll() {
-    await buildPreview()
-    showToast('预览已刷新', 'success')
+    if (await refreshPreviewReportingFailure()) showToast('预览已刷新', 'success')
   }
 
   function clearAll() {
@@ -520,11 +550,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       showToast(TMDB_OFF_TOAST, 'warning')
       return
     }
+    // 覆盖表的键是剧名。剧名是空的（解析器没能认出这部剧 —— 用户点 🔍 的**头号
+    // 原因**）时, 下面那次赋值会静默丢掉用户的选择: 预览不会变, 而修复前这里
+    // 照样弹「已选用 xxx」, 用户于是以为换成功了。
+    // 与上面「开关关了」那一支同一形态、同一语气: 先关对话框再警告 ——
+    // 用户要做的事（回去把剧名填上）在对话框后面, 不关就等于让他先自己关一次。
     const showName = tmdbDialog.row.show_name
-    if (showName) tmdbOverrides[showName] = item.tv_id
+    if (!showName) {
+      tmdbDialog.open = false
+      showToast('请先填写剧名，再重选剧集', 'warning')
+      return
+    }
+    tmdbOverrides[showName] = item.tv_id
     tmdbDialog.open = false
-    await buildPreview()
-    showToast(`已选用 ${item.name}${item.year ? ` (${item.year})` : ''}`, 'success')
+    // 选择**确实**记下了才报成功。刷新失败时不能报「已选用」——那是同一类
+    // 「告诉用户一件没发生的事」的缺陷（见 refreshPreviewReportingFailure）。
+    if (await refreshPreviewReportingFailure()) {
+      showToast(`已选用 ${item.name}${item.year ? ` (${item.year})` : ''}`, 'success')
+    }
   }
 
   // 模板或补零位数变更后立即重建预览。原来这个 watch 在 HomeView 的 setup 里，
