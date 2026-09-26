@@ -68,9 +68,12 @@ assert('只给一个字段不影响 tmdb 完整性',
 
 // --- tmdb 字段的类型防御（localStorage 里的值可能被手工改坏）---
 assert('apiKey 非字符串回落空串', normalizeSettings({ tmdb: { apiKey: 123 } }).tmdb.apiKey, '')
-assert('apiKey 为空串时保持空串', normalizeSettings({ tmdb: { apiKey: '' } }).tmdb.apiKey, '')
+assert('apiKey 被 trim（粘贴常带尾部空白）',
+  normalizeSettings({ tmdb: { apiKey: '  key  ' } }).tmdb.apiKey, 'key')
+assert('apiKey 全空白回落空串',
+  normalizeSettings({ tmdb: { apiKey: '   ' } }).tmdb.apiKey, '')
 assert('language 非字符串回落 zh-CN', normalizeSettings({ tmdb: { language: 42 } }).tmdb.language, 'zh-CN')
-assert('language 为空串回落 zh-CN', normalizeSettings({ tmdb: { language: '   ' } }).tmdb.language, 'zh-CN')
+assert('language 全空白回落 zh-CN', normalizeSettings({ tmdb: { language: '   ' } }).tmdb.language, 'zh-CN')
 assert('enabled 非布尔回落 true', normalizeSettings({ tmdb: { enabled: 'yes' } }).tmdb.enabled, true)
 assert('enabled false 被保留', normalizeSettings({ tmdb: { enabled: false } }).tmdb.enabled, false)
 

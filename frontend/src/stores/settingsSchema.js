@@ -74,7 +74,9 @@ export function normalizeSettings(raw) {
       ? raw.conflictStrategy
       : def.conflictStrategy,
     tmdb: {
-      apiKey: asString(tmdb.apiKey, def.tmdb.apiKey),
+      // Key 从网页复制常带尾部空白或换行。不 trim 的话用户看到的是「API Key 无效」，
+      // 却查不出原因。Key 本身不含空白字符，trim 是无损的。
+      apiKey: asString(tmdb.apiKey, def.tmdb.apiKey).trim(),
       // 只有「非空字符串」才算有效语言。空串与纯空白都回落到默认，
       // 否则会把空语言下发给 TMDB，拿到的是原语言数据而用户以为设置了中文。
       language: (typeof tmdb.language === 'string' && tmdb.language.trim())
