@@ -412,7 +412,7 @@ def build_episode_nfo(episode: TmdbEpisode, season_number: int, show_title: str)
 cd backend && python -m pytest tests/test_nfo_writer.py -v
 ```
 
-预期：17 passed
+预期：15 passed
 
 - [ ] **Step 6: 提交**
 

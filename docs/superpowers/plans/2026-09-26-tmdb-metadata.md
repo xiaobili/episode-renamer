@@ -1116,7 +1116,7 @@ Task 3 Step 1 除了加配置项，还会把这一行改回 `settings.tmdb_cache
 cd backend && python -m pytest tests/test_tmdb_resolver.py -v
 ```
 
-预期：24 passed
+预期：23 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1301,13 +1301,11 @@ from ..models.file import ParsedInfo, OverrideInfo
 
 编辑 `backend/app/core/local_renamer.py`：
 
-把第 10 行的 import 改为：
+把第 13 行的 import 改为（只是加上 `apply_override`，另外两个名字仍在使用，必须保留）：
 
 ```python
 from .parser import apply_override, parse_filename, _SEASON_DIR_PATTERNS
 ```
-
-（删掉现在不再使用的 `parse_filename` 之外的旧名请按实际保留 —— `parse_filename` 仍在第 40 行被调用，必须留下。）
 
 把 `build_rename_plan` 中第 40-50 行替换为：
 
@@ -1337,7 +1335,7 @@ from .parser import apply_override, parse_filename
 cd backend && python -m pytest tests/ -v
 ```
 
-预期：既有用例全部 PASS（`test_rename_routes.py` 的 11 个、`test_template_pad.py` 的 7 个、`test_pad_config.py` 的 9 个）。`test_template_title.py` 中 `test_title_renders_when_present` 现在应 PASS。
+预期：既有用例全部 PASS（`test_rename_routes.py` 的 10 个、`test_template_pad.py` 的 7 个、`test_pad_config.py` 的 9 个）。`test_template_title.py` 中 `test_title_renders_when_present` 现在应 PASS。
 
 若有 FAIL，先修本步骤的改动，**不要**进入 Step 8 —— 覆盖逻辑被两个 renamer 共用，这里坏了会波及所有重命名。
 
