@@ -35,12 +35,17 @@ const base = {
   createSeasonFolder: true,
   conflictStrategy: 'skip',
   overrides: { f1: { title: '我的标题' } },
+  // 补零位数与 NFO 两项**必须取不同的值**。取同值时「互换实现里这两个字段」
+  // 会让两条断言都拿到同一个数 → 双双通过，那对断言就成了零鉴别力的摆设。
+  // 而互换的后果是真损失：补零位数互换会让每个文件按错的位数改名，NFO 两项
+  // 互换会让用户勾了生成却不生成 —— 两处都静默。故 2/3 与 true/false 是
+  // **有意的**，不要「顺手统一」成同值。
   episodePadDigits: 2,
-  seasonPadDigits: 2,
+  seasonPadDigits: 3,
   tmdb: { apiKey: 'THE-KEY', language: 'zh-CN', enabled: true },
   tmdbOverrides: { 绝命毒师: 1396 },
   scraped: true,
-  generateNfo: false,
+  generateNfo: true,
   nfoOverwrite: false,
 }
 
@@ -73,8 +78,8 @@ assert('folder_template 透传', on.folder_template, 'Season {season_padded}')
 assert('create_season_folder 透传', on.create_season_folder, true)
 assert('overrides 透传', on.overrides, { f1: { title: '我的标题' } })
 assert('episode_pad_digits 透传', on.episode_pad_digits, 2)
-assert('season_pad_digits 透传', on.season_pad_digits, 2)
-assert('generate_nfo 透传', on.generate_nfo, false)
+assert('season_pad_digits 透传', on.season_pad_digits, 3)
+assert('generate_nfo 透传', on.generate_nfo, true)
 assert('nfo_overwrite 透传', on.nfo_overwrite, false)
 
 // --- conflict_strategy 只属于 execute（RenamePreviewRequest 没有这个字段）---
