@@ -18,14 +18,38 @@ router = APIRouter(prefix="/api/tmdb", tags=["tmdb"])
 PROBE_QUERY = "Breaking Bad"
 
 
-def build_tmdb_client(
+# 「这次不启用 TMDB」的两种成因。它们同时是 /api/tmdb/test 的 status 字面值
+# 与前端设置页分支的键, 所以是线上契约, 不要顺手改名。
+REASON_DISABLED = "disabled"
+REASON_NOT_CONFIGURED = "not_configured"
+
+# 各端点自己的文案（spec §5.3 错误分级: 用户要做的事不同 ——「去开服务端总开关」
+# 还是「去填 Key」）。文案按端点分, 但**成因只有一个来源**, 见 resolve_tmdb_client。
+_UNAVAILABLE_MESSAGES = {
+    "rename": {
+        REASON_DISABLED: "TMDB 已被服务端禁用",
+        REASON_NOT_CONFIGURED: "TMDB 未配置 API Key",
+    },
+    "test": {
+        REASON_DISABLED: "TMDB 已被服务端禁用",
+        REASON_NOT_CONFIGURED: "未配置 API Key",
+    },
+}
+
+
+def resolve_tmdb_client(
     header_key: Optional[str] = None,
     header_language: Optional[str] = None,
     enabled: Optional[bool] = None,
-) -> Optional[TmdbClient]:
+) -> tuple[Optional[TmdbClient], Optional[str]]:
     """TMDB 生效配置的**唯一**决策点 —— /api/tmdb/* 与 /api/rename/* 共用。
 
-    返回 None 表示「这次不启用 TMDB」, 怎么表达由调用方决定:
+    返回 `(client, None)`, 或 `(None, 成因)`。成因是 REASON_* 之一, **只在这里
+    判定** —— 调用点拿到的不是「又一个需要自己再读一次 settings 的问题」, 而是一个
+    已经分好类的字符串。复制这份判定曾经就是本仓库出现过的真实缺陷形态（同一次
+    运行里已经修掉一个）。
+
+    调用方怎么表达由自己决定:
     /api/tmdb/* 抛 400（用户主动点的端点, 必须报错不降级）,
     /api/rename/* 降级为 disabled（spec §5.4: TMDB 永不阻断重命名）。
 
@@ -47,29 +71,44 @@ def build_tmdb_client(
     # 任意一侧关闭都返回 None。用户显式取消勾选优先; 服务端的 tmdb_enabled
     # 为假时同样压过请求 —— 与 /api/tmdb/test 报的 disabled 是同一语义。
     if enabled is False or not settings.tmdb_enabled:
-        return None
+        return None, REASON_DISABLED
 
     key = header_key or settings.tmdb_api_key
     if not key:
-        return None
+        return None, REASON_NOT_CONFIGURED
 
-    return TmdbClient(
-        api_key=key,
-        language=header_language or settings.tmdb_language,
-        timeout=settings.tmdb_timeout,
+    return (
+        TmdbClient(
+            api_key=key,
+            language=header_language or settings.tmdb_language,
+            timeout=settings.tmdb_timeout,
+        ),
+        None,
     )
+
+
+def build_tmdb_client(
+    header_key: Optional[str] = None,
+    header_language: Optional[str] = None,
+    enabled: Optional[bool] = None,
+) -> Optional[TmdbClient]:
+    """只要「能不能用」的调用点（/api/rename/*）用的薄封装。
+
+    判定本身在 resolve_tmdb_client 里, 只有一处 —— 这里不复制任何判断,
+    也不该再长出第二套（test_tmdb_routes 有一条用例逐条钉死那些优先级）。
+    """
+    client, _ = resolve_tmdb_client(header_key, header_language, enabled)
+    return client
 
 
 def _client(header_key: Optional[str], header_language: Optional[str]) -> TmdbClient:
     # /api/tmdb/* 是用户主动调用的端点: 拿不到可用配置必须报错, 不能像
-    # /api/rename/* 那样静默降级。判定本身在 build_tmdb_client 里, 只有一处。
-    client = build_tmdb_client(header_key, header_language)
+    # /api/rename/* 那样静默降级。判定本身在 resolve_tmdb_client 里, 只有一处。
+    client, reason = resolve_tmdb_client(header_key, header_language)
     if client is None:
-        # 两种成因给两种文案（spec §5.3 错误分级）: 用户要做的事完全不同 ——
-        # 「去填 Key」还是「去开服务端总开关」。
-        if not settings.tmdb_enabled:
-            raise HTTPException(status_code=400, detail="TMDB 已被服务端禁用")
-        raise HTTPException(status_code=400, detail="TMDB 未配置 API Key")
+        raise HTTPException(
+            status_code=400, detail=_UNAVAILABLE_MESSAGES["rename"][reason]
+        )
     return client
 
 
@@ -78,15 +117,14 @@ async def test_tmdb(
     x_tmdb_key: Optional[str] = Header(default=None),
     x_tmdb_language: Optional[str] = Header(default=None),
 ):
-    client = build_tmdb_client(x_tmdb_key, x_tmdb_language)
+    client, reason = resolve_tmdb_client(x_tmdb_key, x_tmdb_language)
     if client is None:
         # 本端点不抛错, 而是把成因作为可读状态返回给设置页（「测试连接」）。
-        if not settings.tmdb_enabled:
-            return {"success": False, "status": "disabled", "message": "TMDB 已被服务端禁用"}
+        # status 直接就是那个成因 —— 设置页按它分支, 所以成因只有一个来源。
         return {
             "success": False,
-            "status": "not_configured",
-            "message": "未配置 API Key",
+            "status": reason,
+            "message": _UNAVAILABLE_MESSAGES["test"][reason],
         }
 
     try:
