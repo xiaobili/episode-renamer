@@ -74,6 +74,7 @@ assert('apiKey 全空白回落空串',
   normalizeSettings({ tmdb: { apiKey: '   ' } }).tmdb.apiKey, '')
 assert('language 非字符串回落 zh-CN', normalizeSettings({ tmdb: { language: 42 } }).tmdb.language, 'zh-CN')
 assert('language 全空白回落 zh-CN', normalizeSettings({ tmdb: { language: '   ' } }).tmdb.language, 'zh-CN')
+assert('language 被 trim', normalizeSettings({ tmdb: { language: ' ja-JP ' } }).tmdb.language, 'ja-JP')
 assert('enabled 非布尔回落 true', normalizeSettings({ tmdb: { enabled: 'yes' } }).tmdb.enabled, true)
 assert('enabled false 被保留', normalizeSettings({ tmdb: { enabled: false } }).tmdb.enabled, false)
 
