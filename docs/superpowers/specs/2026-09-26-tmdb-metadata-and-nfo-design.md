@@ -254,8 +254,16 @@ TTL 默认 3600 秒。用户手动重选剧集时直接覆盖该分组对应条�
 | 文件 | 落点 | 风险 |
 |---|---|---|
 | 每集 `.nfo` | 视频**新路径**替换扩展名为 `.nfo` | 无 |
-| `season.nfo` | 剧集根目录 | 低 |
-| `tvshow.nfo` | 剧集根目录 | **高——可污染整个媒体库** |
+| `season.nfo` | 该季视频的**公共父目录** | 低 |
+| `tvshow.nfo` | 该剧视频的**公共父目录**（剧集根） | **高——可污染整个媒体库** |
+
+`season.nfo` 与 `tvshow.nfo` 用的是**同一条规则的两种粒度**：前者按季取公共父，后者按剧取公共父。
+
+`season.nfo` **必须落在季目录里**，而不是剧集根 —— Emby / Jellyfin 只在季目录下查找 `season.nfo`。两种情形下它自然正确：
+
+```
+开季文件夹    /media/绝命毒师/Season 02/ 下的 Videos → 公共父 = Season 02/      ✓ 季目录
+未开季文件夹  /media/绝命毒师/ 下的 Videos          → 公共父 = /media/绝命毒师/   ✓ 此处即是季目录
 
 ### 9.2 污染场景
 
@@ -279,6 +287,8 @@ TTL 默认 3600 秒。用户手动重选剧集时直接覆盖该分组对应条�
 ```
 
 判定采用公共父目录（而非「视频所在目录」），是因为视频可能分处 `S01` / `S02` 子目录——此时剧集根应上溯一层，取视频所在目录会把 `tvshow.nfo` 写进季子目录。
+
+**show_name 一致性校验同时把关两种剧集级文件。** 校验不通过时，`tvshow.nfo` 与 `season.nfo` 都不写：此时该目录根本不是一部剧的目录，把它当成季目录写 `season.nfo` 同样错。
 
 ### 9.4 两道保障
 
@@ -356,7 +366,12 @@ tmdb_overrides: dict[str, int] = {}   # 剧名 -> tv_id
 }
 ```
 
-`/api/rename/execute` 与 `/api/rename/dry-run` 的响应在既有 `BatchRenameResult` 基础上，为每条 `RenameResult` 增加 `nfo_written: list[str]` 与 `nfo_skipped: list[{path, reason}]`。
+`/api/rename/execute` 与 `/api/rename/dry-run` 的响应在既有 `BatchRenameResult` 基础上扩展：
+
+- `RenameResult` 增加 `nfo_path: Optional[str]` —— 该文件的**每集** NFO 落点，确实与单个文件一一对应
+- `BatchRenameResult` 增加 `nfo_written: list[str]` 与 `nfo_skipped: list[{path, reason}]`
+
+剧集级文件（`tvshow.nfo` / `season.nfo`）的汇总放在**批次**上而非每条结果上：它们不隶属任何单个文件，挂到每条结果会把同一路径重复 N 遍。dry-run 时这两项描述的是「将写入 / 将跳过」的计划，不落盘。
 
 ## 12. 前端改动
 
