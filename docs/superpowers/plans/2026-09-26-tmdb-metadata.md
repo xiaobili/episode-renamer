@@ -549,8 +549,12 @@ import asyncio
 
 import pytest
 
-from app.core.tmdb_client import TmdbNotFoundError, TmdbUnavailableError
 from app.core import tmdb_resolver
+from app.core.tmdb_client import (
+    TmdbAuthError,
+    TmdbNotFoundError,
+    TmdbUnavailableError,
+)
 from app.core.tmdb_resolver import (
     STATUS_EPISODE_NOT_FOUND,
     STATUS_MATCHED,
@@ -1167,6 +1171,179 @@ cd backend && python -m pytest tests/test_tmdb_resolver.py -v
 ```bash
 git add backend/app/core/tmdb_resolver.py backend/tests/test_tmdb_resolver.py
 git commit -m "feat(backend): TMDB 解析器（分组去重 / 进程级缓存 / 六态降级）"
+```
+
+---
+
+### Task 2 补充：外部数据边界守卫（审查轮追加）
+
+**这一节是审查的产物，不在原始计划里。** 三个独立审查者在不同轮次指出同一件事：TMDB 的响应是外部输入，畸形 payload 会以枚举不完的方式抛出未分类异常 —— `get_season` 里 `int(number)` 的 `ValueError`、`genres` 数组里的 `null`、200 却回非对象……这些都不属于 `TmdbAuthError` / `TmdbNotFoundError` / `TmdbUnavailableError` 三者，因此会穿过 `resolve_many` 一路到路由，让**整个预览请求 500**，违反全局约束「TMDB 故障绝不阻断重命名」。
+
+早先的应对思路是在 `tmdb_client._get` 的 return 处加一处 `isinstance(data, dict)` 守卫来单点关闭整类。**那个思路是错的**：`int(number)` 在**映射层**，不在请求层，`_get` 的守卫覆盖不到它。要满足措辞为「绝不」的分类性要求，只能在外来数据进入 resolver 的那一层做宽捕获 —— 而外部数据边界正是宽捕获惯用且正确的地方（不同于在内部逻辑里吞异常）。
+
+**Files:**
+- Modify: `backend/app/core/tmdb_resolver.py`
+- Modify: `backend/tests/test_tmdb_resolver.py`
+
+**Interfaces:**
+- Produces: `TmdbResolver._guarded(call: Callable)` —— `@staticmethod`，await 传入的无参协程工厂；`TmdbAuthError` 与 `TmdbNotFoundError` / `TmdbUnavailableError` 原样 re-raise，其余异常包成 `TmdbUnavailableError`（`from exc` 保留原因链）
+- **不得**修改 `backend/app/core/tmdb_client.py` —— 分类发生在请求边界，降级语义属于 resolver
+
+- [ ] **Step A: 加守卫**
+
+在 `TmdbResolver` 里加：
+
+```python
+    @staticmethod
+    async def _guarded(call: Callable):
+        """外部数据边界：把客户端调用里**未分类**的异常归为 unavailable。
+
+        这里用宽捕获是正确且惯用的做法, 因为这里是**外部数据边界**, 不是内部逻辑。
+        铁律「TMDB 故障绝不阻断重命名」的措辞是分类性的, 而不是枚举性的 —— 它要求
+        任何未预料的故障都不能冒到路由层, 而不是只兜住我们列得出的那几种。TMDB 的
+        响应是外部输入, 畸形 payload 会以枚举不完的方式炸出来: `int(number)` 的
+        ValueError、genres 数组里的 null、200 却回非对象……客户端在请求边界
+        (tmdb_client._get) 已经分类了它看得见的那些, 但**映射层**的异常它看不到,
+        逐个枚举必然漏, 漏一个就是整个预览请求 500。
+
+        两个例外, 顺序与语义都不能动:
+        - `TmdbAuthError` 必须原样冒泡: 那是配置错误, 是这条铁律唯一的例外。
+          吞成 unavailable 会让「Key 填错了」伪装成「TMDB 挂了」, 用户永远查不出来。
+        - `TmdbNotFoundError` 不能被压成 unavailable: 它是**已分类**的结果
+          (剧/季不存在), 六态降级要靠它把 season_not_found 与 unavailable 分开。
+          压掉它等于把「没这一季」误报成「TMDB 挂了」。
+
+        （不要为了「干净」删掉这个宽捕获或那两个 re-raise。）
+        """
+        try:
+            return await call()
+        except TmdbAuthError:
+            raise  # 配置错误: 绝不降级
+        except (TmdbNotFoundError, TmdbUnavailableError):
+            raise  # 已分类的降级语义: 原样保留, 不要压成 unavailable
+        except Exception as exc:  # 外部数据边界, 见上文 docstring
+            raise TmdbUnavailableError(
+                f"TMDB 响应无法解析: {type(exc).__name__}"
+            ) from exc
+```
+
+`Callable` 已在该文件顶部从 `typing` 导入（`TmdbCache` 用作 clock 的类型），无需新增 import。
+
+再把三处客户端调用改为经守卫：
+
+```python
+            return await self._guarded(lambda: self._client.search_tv(query))
+```
+
+```python
+            return await self._guarded(lambda: self._client.get_tv_detail(tv_id))
+```
+
+```python
+            return await self._guarded(
+                lambda: self._client.get_season(tv_id, season_number)
+            )
+```
+
+**不要按字面理解成「除 `TmdbAuthError` 外任何异常都压平」。** 那会连 `TmdbNotFoundError` 一起压掉，`season_not_found` 与 `unavailable` 的区分随之消失 —— 实测该做法会让 `test_season_not_found` 以 `assert 'unavailable' == 'season_not_found'` 失败。要归并的是**未分类**的异常。
+
+- [ ] **Step B: 写失败的三条契约测试**
+
+这三条钉住守卫的两端边界。
+
+先给 `FakeClient` 的 `fail` 增加两个取值，并在类 docstring 里登记（现有 `"search"` / `"season"` 抛 `TmdbUnavailableError`）：
+
+```python
+        if self._fail == "auth":
+            raise TmdbAuthError("TMDB API Key 无效")
+        if self._fail == "value":
+            # 畸形 payload 在映射层炸出的未分类异常，如 int(None)
+            raise ValueError("invalid literal for int() with base 10: None")
+```
+
+（加在 `search_tv` 里 `"search"` 分支之后。`FakeClient` 的 `__init__` 签名不变。）
+
+测试文件的 import 区要把 `TmdbAuthError` 一并引入：
+
+```python
+from app.core.tmdb_client import (
+    TmdbAuthError,
+    TmdbNotFoundError,
+    TmdbUnavailableError,
+)
+```
+
+再补三条用例（沿用文件里既有的 `resolve()` 辅助函数）：
+
+```python
+def test_auth_error_propagates_out_of_resolve_many():
+    # 唯一的例外。Key 无效是配置错误，必须让用户看见 —— 吞成 unavailable 会让
+    # 「Key 填错了」伪装成「TMDB 挂了」，用户永远查不出来。
+    # 这条断言是唯一拦得住它的东西：把守卫改成 except TmdbAuthError 后返回
+    # unavailable（变异 C），只有本用例失败（DID NOT RAISE），其余全绿。
+    with pytest.raises(TmdbAuthError):
+        resolve([ResolveRequest("绝命毒师", 2, 5)], fail="auth")
+
+
+def test_unclassified_error_is_degraded_not_raised():
+    # 外部数据边界的兜底：畸形 payload 抛的 ValueError（如 int(number) 拿到 null）
+    # 不属于任何已分类异常。它若逃出 resolve_many，整个预览请求就 500 了 ——
+    # 与铁律「TMDB 故障绝不阻断重命名」冲突。必须降级成 unavailable。
+    matches, _ = resolve([ResolveRequest("绝命毒师", 2, 5)], fail="value")
+    assert matches[0].status == STATUS_UNAVAILABLE
+
+
+def test_failed_lookup_is_not_cached():
+    # 失败不缓存：第一次失败、第二次成功 —— 必须真的重试，而不是把失败存下来。
+    cache = TmdbCache(ttl=3600)
+    client = FakeClient()
+    original = client.search_tv
+    attempts = {"n": 0}
+
+    async def flaky(query, year=None):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise TmdbUnavailableError("boom")
+        return await original(query, year)
+
+    client.search_tv = flaky
+    resolver = TmdbResolver(client, cache=cache)
+    first = asyncio.run(resolver.resolve_many([ResolveRequest("绝命毒师", 2, 5)]))
+    second = asyncio.run(resolver.resolve_many([ResolveRequest("绝命毒师", 2, 5)]))
+
+    assert first[0].status == STATUS_UNAVAILABLE
+    assert attempts["n"] == 2, "失败不该被缓存，第二次必须重新请求"
+    assert second[0].status == STATUS_MATCHED
+```
+
+注意第三条自己传了显式 `cache=`，因此不受 autouse fixture 的影响路径干扰 —— 它要断言的正是「同一个 cache 实例上失败不留下痕迹」，必须与 fixture 隔离的默认缓存放开。
+
+- [ ] **Step C: 跑测试**
+
+```bash
+cd backend && python -m pytest tests/test_tmdb_resolver.py -v
+```
+
+预期：26 passed（23 原有 + 3 新增）
+
+- [ ] **Step D: 变异验证**
+
+守卫的价值无法从「测试通过」看出来 —— 必须证明它在被移除时会失败。做三组：
+
+| 变异 | 期望 |
+|---|---|
+| A 去掉宽捕获分支 | `test_unclassified_error_is_degraded_not_raised` FAILED |
+| B 把 `TmdbNotFoundError` 也压成 unavailable | `test_season_not_found` FAILED（`assert 'unavailable' == 'season_not_found'`） |
+| C 让守卫吞掉 `TmdbAuthError` | `test_auth_error_propagates_out_of_resolve_many` FAILED（DID NOT RAISE） |
+
+每组记录：变异前 sha1 → 变异后 sha1 → 观察到的失败输出 → 恢复后 sha1（须与变异前一致）。
+变异前后各清一次 `__pycache__` 与 `.pytest_cache` —— 变异版与恢复版大小相同且同一秒写回时，CPython 会继续跑变异字节码。
+
+- [ ] **Step E: 提交**
+
+```bash
+git add backend/app/core/tmdb_resolver.py backend/tests/test_tmdb_resolver.py
+git commit -m "fix(backend): 外部数据边界加守卫，未分类异常降级为 unavailable"
 ```
 
 ---
