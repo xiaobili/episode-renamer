@@ -56,40 +56,6 @@
   --shadow-overlay: 0 8px 28px -6px rgb(21 24 27 / 0.14), 0 2px 6px -2px rgb(21 24 27 / 0.08);
 }
 
-/* ==========================================================================
-   过渡别名层 —— 第四期删除
-   --------------------------------------------------------------------------
-   第二、三期会逐个组件改用上面的新 token 名。在那之前，这一层让仍未改造的
-   11 个旧组件继续正常工作，使「每一期结束应用都可构建可运行」成立。
-
-   映射中两处是有意的降级，不是随手对应：
-     success / success-light → ink-2 / sunken   让出绿系给强调色（spec §5.2）
-     text-faint              → ink-3            文字只有三级，禁用态靠 opacity-45
-
-   删除前提：第四期 Task 8 的 grep 校验必须零命中。
-   ========================================================================== */
-/* 注意：这一块**不加** static —— 它是第四期要删除的过渡脚手架，
-   按需发射正好：旧组件用到哪个别名就发射哪个，删掉之后不留残留。 */
-@theme {
-  --color-primary:        var(--color-accent);
-  --color-primary-hover:  var(--color-accent-hover);
-  --color-primary-light:  var(--color-accent-soft);
-  --color-bg:             var(--color-canvas);
-  --color-surface-muted:  var(--color-sunken);
-  --color-border:         var(--color-line);
-  --color-border-strong:  var(--color-line-strong);
-  --color-text:           var(--color-ink);
-  --color-text-secondary: var(--color-ink-2);
-  --color-text-muted:     var(--color-ink-3);
-  --color-text-faint:     var(--color-ink-3);
-  --color-success:        var(--color-ink-2);
-  --color-success-light:  var(--color-sunken);
-  --color-warning:        var(--color-warn);
-  --color-warning-light:  var(--color-warn-soft);
-  --color-error:          var(--color-danger);
-  --color-error-light:    var(--color-danger-soft);
-}
-
 html, body, #app {
   height: 100%;
   margin: 0;
@@ -163,8 +129,9 @@ button:not(:disabled) {
    transition、以及 AppButton / ExecutingOverlay 的 animate-spin。
    通配符是唯一能一次覆盖全部三处、且新增组件时不会漏的写法。
 
-   duration 用 .01ms 而不是 0：Vue 的 <Transition> 依赖 transitionend
-   事件来收尾，duration: 0 时事件可能不触发，元素会卡在离场状态。
+   duration 用 .01ms 而不是 0：零时长的过渡根本不会启动，因此不会有过渡结束
+   事件（transitionend / transitioncancel / animationend）发出。0.01ms 与 0 在
+   视觉上无法区分，但它让过渡真正成立，任何监听结束事件的代码都能照常收到通知。
    ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
   *,
