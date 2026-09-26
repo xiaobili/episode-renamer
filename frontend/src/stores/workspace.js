@@ -273,6 +273,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         template: tplStore.currentTemplate,
         folder_template: tplStore.folderTemplate,
         create_season_folder: tplStore.createSeasonFolder,
+        episode_pad_digits: settingsStore.episodePadDigits,
+        season_pad_digits: settingsStore.seasonPadDigits,
       })
       const previews = res.data.results || []
       previewRows.value = filesStore.files.map(f => {
@@ -371,6 +373,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         create_season_folder: tplStore.createSeasonFolder,
         conflict_strategy: conflictStrategy.value,
         overrides,
+        episode_pad_digits: settingsStore.episodePadDigits,
+        season_pad_digits: settingsStore.seasonPadDigits,
       })
       lastResult.value = res.data
       resultDialog.value = true
