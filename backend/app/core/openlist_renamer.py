@@ -7,7 +7,7 @@ from ..models.file import (
     FileInfo, RenamePlan, RenameResult, BatchRenameResult, OverrideInfo,
 )
 from ..config import settings
-from .parser import parse_filename
+from .parser import apply_override, parse_filename
 from .template import PadConfig, apply_template, apply_folder_template
 from .utils import generate_id
 from .openlist_client import OpenListClient, RenameObject
@@ -21,15 +21,9 @@ def build_openlist_rename_plan(
     override: Optional[OverrideInfo] = None,
     pad: PadConfig | None = None,
 ) -> RenamePlan:
-    parsed = parse_filename(file.filename, file.parent_dir)
-
-    if override:
-        if override.show_name is not None:
-            parsed.show_name = override.show_name
-        if override.season is not None:
-            parsed.season = override.season
-        if override.episode is not None:
-            parsed.episode = override.episode
+    # 注意: 这里此前漏了 override.title —— 于是 OpenList 源下手动填的标题
+    # 永远进不了文件名。apply_override 一并修好。
+    parsed = apply_override(parse_filename(file.filename, file.parent_dir), override)
 
     new_filename = apply_template(template, parsed, pad=pad)
     new_dir = file.parent_dir

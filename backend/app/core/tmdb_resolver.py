@@ -6,6 +6,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from ..config import settings
 from ..models.tmdb import TmdbEpisode, TmdbSeason, TmdbShow
 from .tmdb_client import (
     TmdbAuthError,
@@ -103,8 +104,7 @@ class TmdbCache:
         self._store.clear()
 
 
-# Task 3 会改为 settings.tmdb_cache_ttl —— 那里才给 config.py 加上这个字段
-_DEFAULT_CACHE = TmdbCache(ttl=3600)
+_DEFAULT_CACHE = TmdbCache(ttl=settings.tmdb_cache_ttl)
 
 
 class TmdbResolver:

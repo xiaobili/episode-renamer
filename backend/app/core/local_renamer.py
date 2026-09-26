@@ -10,7 +10,7 @@ from ..models.file import (
     FileInfo, RenamePlan, RenameResult, BatchRenameResult, OverrideInfo,
 )
 from ..config import settings
-from .parser import parse_filename, _SEASON_DIR_PATTERNS
+from .parser import apply_override, parse_filename, _SEASON_DIR_PATTERNS
 from .template import PadConfig, apply_template, apply_folder_template
 from .utils import generate_id
 
@@ -37,17 +37,7 @@ def build_rename_plan(
     override: Optional[OverrideInfo] = None,
     pad: PadConfig | None = None,
 ) -> RenamePlan:
-    parsed = parse_filename(file.filename, file.parent_dir)
-
-    if override:
-        if override.show_name is not None:
-            parsed.show_name = override.show_name
-        if override.season is not None:
-            parsed.season = override.season
-        if override.episode is not None:
-            parsed.episode = override.episode
-        if override.title is not None:
-            parsed.title = override.title
+    parsed = apply_override(parse_filename(file.filename, file.parent_dir), override)
 
     new_filename = apply_template(template, parsed, pad=pad)
     new_path = str(Path(file.parent_dir) / new_filename)

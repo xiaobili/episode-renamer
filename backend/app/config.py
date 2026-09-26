@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     openlist_max_concurrent: int = 3
     openlist_request_interval: float = 0.5
 
+    # TMDB 集成。api_key 为空 = 未配置 = 功能整体降级为 disabled,
+    # 不发任何网络请求, 重命名行为与改动前完全一致。
+    tmdb_api_key: str = ""
+    tmdb_language: str = "zh-CN"
+    tmdb_enabled: bool = True
+    tmdb_timeout: float = 10.0
+    tmdb_cache_ttl: int = 3600
+
 
 settings = Settings()
 DATA_DIR.mkdir(exist_ok=True)

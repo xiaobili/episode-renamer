@@ -41,6 +41,9 @@ class RenamePreviewRequest(BaseModel):
     path: str = ""
     episode_pad_digits: Optional[int] = None
     season_pad_digits: Optional[int] = None
+    tmdb_api_key: Optional[str] = None
+    tmdb_language: Optional[str] = None
+    tmdb_overrides: dict[str, int] = Field(default_factory=dict)
 
 
 class RenameExecuteRequest(BaseModel):
@@ -54,6 +57,9 @@ class RenameExecuteRequest(BaseModel):
     conflict_strategy: str = "skip"
     episode_pad_digits: Optional[int] = None
     season_pad_digits: Optional[int] = None
+    tmdb_api_key: Optional[str] = None
+    tmdb_language: Optional[str] = None
+    tmdb_overrides: dict[str, int] = Field(default_factory=dict)
 
 
 class OpenListLoginRequest(BaseModel):

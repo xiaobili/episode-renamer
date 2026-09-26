@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from ..models.file import ParsedInfo
+from ..models.file import ParsedInfo, OverrideInfo
 from .utils import (
     split_name_ext,
     get_extension,
@@ -370,3 +370,21 @@ def batch_parse_filenames(
         parent = parent_dirs[i] if parent_dirs and i < len(parent_dirs) else None
         results.append(parse_filename(fn, parent))
     return results
+
+
+def apply_override(
+    info: ParsedInfo,
+    override: Optional[OverrideInfo] = None,
+) -> ParsedInfo:
+    """把用户覆盖写进解析结果。就地修改并返回。
+
+    提取自 local_renamer / openlist_renamer 里两份逐字重复的内联代码 ——
+    预览路由现在也要走这一步（两遍解析的第一遍）, 第四份复制粘贴就该收敛了。
+    """
+    if not override:
+        return info
+    for field in ("show_name", "season", "episode", "title"):
+        value = getattr(override, field)
+        if value is not None:
+            setattr(info, field, value)
+    return info
