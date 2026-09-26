@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import xml.etree.ElementTree as ET
 from typing import Optional
 
+from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
 from ..models.tmdb import TmdbEpisode, TmdbSeason, TmdbShow
 
 
@@ -78,3 +80,141 @@ def build_episode_nfo(episode: TmdbEpisode, season_number: int, show_title: str)
     _text(root, "rating", episode.rating)
     _uniqueid(root, episode.tmdb_id)
     return _serialize(root)
+
+
+def episode_nfo_path(video_path: str) -> str:
+    """每集 NFO 的落点: 与视频同名同目录, 扩展名换成 .nfo。
+
+    Emby / Jellyfin / Kodi 都是靠**文件名配对**识别每集 NFO 的,
+    不读 XML 内容来判断它属于哪一集。所以这里必须与视频严格同名。
+    """
+    base, _extension = os.path.splitext(video_path)
+    return base + ".nfo"
+
+
+def common_parent(paths: list[str]) -> str:
+    """一组路径的公共父目录。
+
+    用公共父而不是「第一个文件的所在目录」: 视频可能分处 Season 02 / Season 03
+    两个子目录, 此时剧集根应上溯一层。
+    """
+    if not paths:
+        return ""
+    directories = [os.path.dirname(p) for p in paths]
+    if len(directories) == 1:
+        return directories[0]
+    return os.path.commonpath(directories)
+
+
+def _folder_belongs_to_single_show(root: str, show_name: str, all_entries: list[NfoEntry]) -> bool:
+    """公共父目录下, 本批次的所有视频必须同属一部剧。
+
+    不满足时说明这是「多部剧混放」的目录（如 /media/未分类/）。把 tvshow.nfo
+    写进去会让 Emby 把整个目录识别成一部剧 —— 不可逆的数据污染。
+    """
+    for other in all_entries:
+        if os.path.dirname(other.new_path) == root and other.show_name != show_name:
+            return False
+    return True
+
+
+def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[NfoDecision]:
+    """为每条 entry 算出「写什么、写哪里」, 以及不写时的原因。
+
+    纯函数, 不碰文件系统 —— 库根污染的全部防护都集中在这里, 因此必须能被
+    穷举测试。真正写盘的只有 write_nfo_files（Task 3）。
+
+    **顺序契约**: 返回值先是每集决策（按 show_name, season, episode, new_path 排序）,
+    然后是剧集级、再是季级（分别按剧名 / (剧名, 季号) 排序）。下游的预览与测试
+    依赖这个顺序, 不要改成「每部剧的剧集级与季级相邻」那种交错顺序。
+    """
+    if not options.enabled or not entries:
+        return []
+
+    # 三桶分离收集, 最后按「每集 → 剧集级 → 季级」拼接返回, 以兑现上面的顺序契约。
+    episode_decisions: list[NfoDecision] = []
+    tvshow_decisions: list[NfoDecision] = []
+    season_decisions: list[NfoDecision] = []
+
+    # --- 每集 NFO：与视频一一对应, 按路径排序保证确定性 ---
+    ordered = sorted(entries, key=lambda e: (e.show_name, e.season or 0, e.episode or 0, e.new_path))
+    for item in ordered:
+        path = episode_nfo_path(item.new_path)
+        if not item.has_metadata:
+            episode_decisions.append(NfoDecision(
+                file_id=item.file_id, kind="episode", path=path, content=None,
+                reason="TMDB 未匹配, 不写残缺 NFO",
+            ))
+            continue
+        episode_decisions.append(NfoDecision(
+            file_id=item.file_id, kind="episode", path=path,
+            content=build_episode_nfo(item.episode_data, item.season, item.show.name),
+        ))
+
+    # --- 剧集级与季级：按剧分组 ---
+    by_show: dict[str, list[NfoEntry]] = {}
+    for item in entries:
+        by_show.setdefault(item.show_name, []).append(item)
+
+    for show_name in sorted(by_show):
+        group = by_show[show_name]
+        show_root = common_parent([e.new_path for e in group])
+
+        if not _folder_belongs_to_single_show(show_root, show_name, entries):
+            for item in group:
+                tvshow_decisions.append(NfoDecision(
+                    file_id=item.file_id, kind="tvshow",
+                    path=os.path.join(show_root, "tvshow.nfo"), content=None,
+                    reason=f"{show_root} 下有多部剧混放, 不写剧集级 NFO",
+                ))
+                if item.season is None:
+                    continue
+                season_root = common_parent([
+                    e.new_path for e in group if e.season == item.season
+                ])
+                season_decisions.append(NfoDecision(
+                    file_id=item.file_id, kind="season",
+                    path=os.path.join(season_root, "season.nfo"), content=None,
+                    reason=f"{show_root} 下有多部剧混放, 不写剧集级 NFO",
+                ))
+            continue
+
+        show_data = next((e.show for e in group if e.show is not None), None)
+        if show_data is None:
+            tvshow_decisions.append(NfoDecision(
+                file_id=group[0].file_id, kind="tvshow",
+                path=os.path.join(show_root, "tvshow.nfo"), content=None,
+                reason="TMDB 未匹配, 不写残缺 NFO",
+            ))
+        else:
+            tvshow_decisions.append(NfoDecision(
+                file_id=group[0].file_id, kind="tvshow",
+                path=os.path.join(show_root, "tvshow.nfo"),
+                content=build_tvshow_nfo(show_data),
+            ))
+
+        seasons: dict[int, list[NfoEntry]] = {}
+        for item in group:
+            if item.season is not None:
+                seasons.setdefault(item.season, []).append(item)
+
+        for season_number in sorted(seasons):
+            season_group = seasons[season_number]
+            season_root = common_parent([e.new_path for e in season_group])
+            season_data = next(
+                (e.season_data for e in season_group if e.season_data is not None), None,
+            )
+            if season_data is None:
+                season_decisions.append(NfoDecision(
+                    file_id=season_group[0].file_id, kind="season",
+                    path=os.path.join(season_root, "season.nfo"), content=None,
+                    reason="TMDB 未匹配, 不写残缺 NFO",
+                ))
+            else:
+                season_decisions.append(NfoDecision(
+                    file_id=season_group[0].file_id, kind="season",
+                    path=os.path.join(season_root, "season.nfo"),
+                    content=build_season_nfo(season_data),
+                ))
+
+    return episode_decisions + tvshow_decisions + season_decisions
