@@ -78,6 +78,38 @@
         </div>
       </AppPanel>
 
+      <AppPanel title="TMDB 设置">
+        <div class="flex flex-col gap-4">
+          <AppInput
+            v-model="draft.tmdb.apiKey"
+            type="password"
+            label="API Key"
+            placeholder="v3 API Key 或 v4 Read Access Token"
+            hint="两种都支持：32 位 Key 走查询参数，eyJ 开头的 Token 走 Bearer 头。留空则用服务端 .env 的配置。"
+          />
+          <AppSelect v-model="draft.tmdb.language" label="元数据语言">
+            <option value="zh-CN">中文 (zh-CN)</option>
+            <option value="zh-TW">繁體中文 (zh-TW)</option>
+            <option value="ja-JP">日本語 (ja-JP)</option>
+            <option value="en-US">English (en-US)</option>
+          </AppSelect>
+          <AppCheckbox
+            v-model="draft.tmdb.enabled"
+            label="启用 TMDB 元数据（查找每集真实标题）"
+          />
+
+          <div class="flex items-center gap-3">
+            <AppButton variant="secondary" :loading="testing" @click="testConnection">
+              <Plug class="h-4 w-4" aria-hidden="true" />
+              测试连接
+            </AppButton>
+            <span v-if="testResult" class="text-[12px]" :class="testResult.ok ? 'text-ink-2' : 'text-warn'">
+              {{ testResult.message }}
+            </span>
+          </div>
+        </div>
+      </AppPanel>
+
       <AppPanel title="说明">
         <div class="flex flex-col gap-2 text-[13px] leading-[1.8] text-ink-2">
           <p><strong class="text-ink">本地模式:</strong> 直接操作本机磁盘文件，支持撤销（通过 SQLite 日志）</p>
@@ -111,15 +143,17 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Info, RotateCcw, Save } from 'lucide-vue-next'
+import { Info, Plug, RotateCcw, Save } from 'lucide-vue-next'
 
 import { getPresets } from '../api/template'
+import { testTmdb } from '../api/tmdb'
 import { useSettingsStore } from '../stores/settings'
 
 import AppPanel from '../components/ui/AppPanel.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import AppInput from '../components/ui/AppInput.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
+import AppCheckbox from '../components/ui/AppCheckbox.vue'
 
 const settingsStore = useSettingsStore()
 
@@ -129,6 +163,8 @@ const presets = ref([])
 const draft = reactive(settingsStore.toObject())
 const saving = ref(false)
 const savedFlash = ref('')
+const testing = ref(false)
+const testResult = ref(null)
 
 const dirty = computed(() => JSON.stringify(draft) !== JSON.stringify(settingsStore.toObject()))
 
@@ -162,6 +198,30 @@ async function save() {
     setTimeout(() => { savedFlash.value = '' }, 1500)
   } finally {
     saving.value = false
+  }
+}
+
+async function testConnection() {
+  testing.value = true
+  testResult.value = null
+  try {
+    const res = await testTmdb({
+      apiKey: draft.tmdb.apiKey,
+      language: draft.tmdb.language,
+    })
+    const data = res.data || {}
+    const messages = {
+      ok: data.sample ? `连接正常（${data.auth_mode}，示例：${data.sample}）` : '连接正常',
+      not_configured: '未配置 API Key —— 请在下方填入，或由服务端通过 .env 提供',
+      invalid_key: 'API Key 无效，请检查是否复制完整',
+      unreachable: '无法访问 TMDB，请检查网络',
+      disabled: 'TMDB 已被服务端禁用（tmdb_enabled = false）',
+    }
+    testResult.value = { ok: data.status === 'ok', message: messages[data.status] || data.message || '未知状态' }
+  } catch (e) {
+    testResult.value = { ok: false, message: '测试失败: ' + (e.response?.data?.detail || e.message) }
+  } finally {
+    testing.value = false
   }
 }
 
