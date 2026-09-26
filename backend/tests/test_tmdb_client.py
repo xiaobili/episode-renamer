@@ -1,5 +1,5 @@
 # 本项目未装 pytest-asyncio，用标准库 asyncio.run 驱动异步断言 ——
-# 这两个测试都是纯函数式的「发一次请求、看请求长什么样」，不需要事件循环 fixture。
+# 这些测试都是纯函数式的「发一次请求、看请求长什么样」，不需要事件循环 fixture。
 import asyncio
 
 import httpx
@@ -84,6 +84,20 @@ def test_search_maps_response_to_models():
     assert hits[1].year is None
 
 
+def test_search_skips_results_without_id():
+    # 结果偶尔缺 id。缺了就跳过，不能让 KeyError 逃出去 ——
+    # 下游只兜 TmdbNotFoundError / TmdbUnavailableError。
+    payload = {"results": [
+        {"id": 1396, "name": "绝命毒师", "original_name": "Breaking Bad",
+         "first_air_date": "2008-01-20"},
+        {"name": "无 id 的脏数据"},
+    ]}
+    client = TmdbClient("k", transport=_transport([], payload))
+    hits = asyncio.run(client.search_tv("x"))
+
+    assert [h.tv_id for h in hits] == [1396]
+
+
 def test_get_season_indexes_episodes_by_number():
     payload = {
         "id": 3575, "name": "第 2 季", "overview": "s2", "air_date": "2009-03-08",
@@ -113,6 +127,47 @@ def test_get_season_skips_episodes_without_number():
     assert list(season.episodes.keys()) == [3]
 
 
+def test_get_tv_detail_maps_response_to_model():
+    payload = {
+        # 故意与入参不同：tv_id 必须用入参，不能用响应体的 id
+        "id": 999999,
+        "name": "绝命毒师",
+        "original_name": "Breaking Bad",
+        "first_air_date": "2008-01-20",
+        "overview": "一名高中化学老师转行制毒",
+        "vote_average": 8.9,
+        "vote_count": 12345,
+        "genres": [{"id": 18, "name": "剧情"}, {"id": 80, "name": "犯罪"}],
+        "status": "Ended",
+    }
+    client = TmdbClient("k", transport=_transport([], payload))
+    show = asyncio.run(client.get_tv_detail(1396))
+
+    assert show.tv_id == 1396
+    assert show.name == "绝命毒师"
+    assert show.original_name == "Breaking Bad"
+    assert show.overview == "一名高中化学老师转行制毒"
+    assert show.year == 2008
+    # rating 与 votes 分别取自 vote_average / vote_count，两值不同 —— 互换即失败
+    assert show.rating == 8.9
+    assert show.votes == 12345
+    assert show.genres == ["剧情", "犯罪"]
+    assert show.premiered == "2008-01-20"
+    assert show.status == "Ended"
+
+
+def test_get_tv_detail_tolerates_missing_fields():
+    # TMDB 会省略部分可选字段。缺字段不能炸，也不能把 None 塞进 list 字段。
+    payload = {"name": "无日期剧"}
+    client = TmdbClient("k", transport=_transport([], payload))
+    show = asyncio.run(client.get_tv_detail(7))
+
+    assert show.tv_id == 7
+    assert show.year is None
+    assert show.premiered is None
+    assert show.genres == []
+
+
 def test_401_raises_auth_error():
     # Review Focus 2：Key 无效是配置错误，必须冒泡让用户看见，不可降级
     client = TmdbClient("bad", transport=_transport([], {"status_message": "Invalid API key"}, 401))
@@ -130,6 +185,19 @@ def test_500_raises_unavailable():
     client = TmdbClient("k", transport=_transport([], {}, 500))
     with pytest.raises(TmdbUnavailableError):
         asyncio.run(client.search_tv("x"))
+
+
+def test_non_json_200_raises_unavailable():
+    # 代理 / captive portal 会回 200 + HTML。json 解析抛的 JSONDecodeError 是
+    # ValueError，必须归类为「不可用」，不能让它逃出错误分级体系。
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>captive portal</html>")
+
+    client = TmdbClient("k", transport=httpx.MockTransport(handler))
+    with pytest.raises(TmdbUnavailableError) as excinfo:
+        asyncio.run(client.search_tv("x"))
+
+    assert isinstance(excinfo.value.__cause__, ValueError)
 
 
 def test_429_retries_once_then_raises_unavailable(monkeypatch):

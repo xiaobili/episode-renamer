@@ -100,7 +100,13 @@ class TmdbClient:
             if response.status_code >= 400:
                 raise TmdbUnavailableError(f"TMDB 返回 {response.status_code}")
 
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as exc:
+                # 代理 / captive portal 常回 200 + HTML 页面。JSONDecodeError 是
+                # ValueError，不归类就会逃出错误分级体系 —— 下游只兜
+                # NotFound / Unavailable，铁律「TMDB 故障绝不阻断重命名」会被打破。
+                raise TmdbUnavailableError(f"TMDB 返回非 JSON 响应: {path}") from exc
 
         raise last_error or TmdbUnavailableError("TMDB 限流")
 
@@ -113,9 +119,13 @@ class TmdbClient:
         data = await self._get("/search/tv", **params)
         items = []
         for raw in data.get("results") or []:
+            tv_id = raw.get("id")
+            # 结果偶尔缺 id。缺了就跳过 —— 不能让 KeyError 逃出错误分级体系。
+            if tv_id is None:
+                continue
             air_date = raw.get("first_air_date")
             items.append(TmdbSearchItem(
-                tv_id=raw["id"],
+                tv_id=tv_id,
                 name=raw.get("name") or "",
                 original_name=raw.get("original_name") or "",
                 year=_year_of(air_date),
