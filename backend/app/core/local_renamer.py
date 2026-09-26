@@ -11,7 +11,7 @@ from ..models.file import (
 )
 from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
 from ..config import settings
-from .nfo_writer import build_nfo_decisions, write_nfo_files
+from .nfo_writer import build_nfo_decisions, episode_nfo_path, write_nfo_files
 from .parser import apply_override, parse_filename, _SEASON_DIR_PATTERNS
 from .template import PadConfig, apply_template, apply_folder_template
 from .tmdb_resolver import EpisodeMatch
@@ -236,6 +236,12 @@ def batch_rename(
             continue
 
         result = execute_rename_plan(plan, dry_run=dry_run, conflict_strategy=conflict_strategy)
+        if nfo_options and nfo_options.enabled and result.new_path != plan.new_path:
+            # rename_dup（「自动编号」）下 execute_rename_plan 把真实目标解析成了
+            # X_1.mkv, 而每集决策是按 plan.new_path 算的 —— 不跟着改指向的话,
+            # 改名后的视频拿不到与它同名的 X_1.nfo（Emby 靠同名配对）, 而 NFO 会
+            # 落到 X.nfo: 那是**冲突那一集**的位置, 覆盖模式下还会把它改写掉。
+            nfo_path_by_file[plan.file_id] = episode_nfo_path(result.new_path)
         result.nfo_path = nfo_path_by_file.get(plan.file_id)
         results.append(result)
 
@@ -248,6 +254,14 @@ def batch_rename(
 
     nfo_written: list[str] = []
     nfo_skipped: list[dict] = []
+
+    # 真实目标被改过名的那几条（X.mkv → X_1.mkv）, 每集决策改指向改名后的落点。
+    # NfoDecision 可变, 故原地改 —— 必须赶在下面写盘 / 干跑列清单之前。
+    if nfo_decisions:
+        for decision in nfo_decisions:
+            moved_to = nfo_path_by_file.get(decision.file_id)
+            if decision.kind == "episode" and moved_to is not None and moved_to != decision.path:
+                decision.path = moved_to
 
     if nfo_options and nfo_options.enabled and nfo_decisions:
         if dry_run:

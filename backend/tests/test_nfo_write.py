@@ -315,6 +315,36 @@ def test_overwrite_replaces_the_existing_nfo_when_asked(tmp_path):
     assert "绝命毒师" in content
 
 
+def test_rename_dup_keeps_the_episode_nfo_paired_with_the_video(tmp_path):
+    """`rename_dup`（界面上的「自动编号」）把目标解析成 X_1.mkv —— 每集 NFO 必须
+    跟着改名后的视频走（X_1.nfo）。不跟的话视频没有同名 NFO, 而 NFO 会落到 X.nfo:
+    那是冲突那一集的位置, 覆盖模式下还会把它的内容改写掉。"""
+    video = make_video(tmp_path)
+    show_dir = tmp_path / SHOW_DIR
+    clash_video = show_dir / "绝命毒师 - S02E05.mkv"
+    clash_video.write_bytes(b"existing video")
+    clash_nfo = show_dir / "绝命毒师 - S02E05.nfo"
+    clash_nfo.write_text("冲突那一集的既有 NFO", encoding="utf-8")
+
+    result = batch_rename(
+        [make_file(video)], TEMPLATE,
+        conflict_strategy="rename_dup",
+        nfo_options=named_options(overwrite=True),
+        nfo_matches={"f1": make_match()},
+    )
+
+    renamed_video = show_dir / "绝命毒师 - S02E05_1.mkv"
+    renamed_nfo = show_dir / "绝命毒师 - S02E05_1.nfo"
+    assert renamed_video.is_file()
+    assert result.results[0].new_path == str(renamed_video)
+    assert result.results[0].nfo_path == str(renamed_nfo)
+    assert renamed_nfo.is_file(), "NFO 必须与改名后的视频同名配对"
+    assert str(renamed_nfo) in result.nfo_written
+    # 冲突那一集的视频与它的 NFO 都不该被碰
+    assert clash_video.read_bytes() == b"existing video"
+    assert clash_nfo.read_text(encoding="utf-8") == "冲突那一集的既有 NFO"
+
+
 def test_dry_run_reports_unmatched_entries_with_the_real_reason(tmp_path):
     video = make_video(tmp_path)
 
