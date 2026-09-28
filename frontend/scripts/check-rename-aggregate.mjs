@@ -87,6 +87,27 @@ function assert(label, actual, expected) {
   assert('空批次 success 为 true', agg.success, true)
 }
 
+// --- 三项计数全 0 时, 不得回退去按 status 重判 ---
+// 一个**混合**实现（优先用后端字段, 但三项全 0 时回退去判 status）能通过上面所有
+// 断言 —— 而它正是本任务要防的那个方向（评审在 /tmp 里造出来实测: 18/18 PASS）。
+// 真实响应不会三项全 0（count_result 恒返回 (1,0,0)/(0,1,0)/(0,0,1) 之一）,
+// 但**调用方合成的条目**会（传输层失败、根本没有计数）。
+//
+// 这条同时钉住 total 的**来源**: 它是 items.length, 不是三项计数之和 ——
+// 三项全 0 而 total 为 2 时, 写成求和的实现会红。
+{
+  const agg = aggregateBatch({
+    items: [
+      { executed: 0, skipped: 0, failed: 0, result: { status: 'skipped_conflict' } },
+      { executed: 1, skipped: 0, failed: 0, result: { status: 'renamed' } },
+    ],
+  })
+  assert('三项全 0 时不回退去判 status（executed）', agg.executed, 1)
+  assert('三项全 0 时不回退去判 status（skipped）', agg.skipped, 0)
+  assert('三项全 0 时不回退去判 status（failed）', agg.failed, 0)
+  assert('total 是条目数而非计数之和', agg.total, 2)
+}
+
 // --- results 必须按输入顺序收齐 ---
 // 少了这条, 删掉 `results.push(item.result)` **没有任何断言会红** —— 后果是
 // ResultDialog 的明细表**静默消失**: 汇总数字还在, 每一行的详情没了。
