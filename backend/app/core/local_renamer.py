@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -361,6 +362,171 @@ def execute_rename_plan(
             result.status = "failed"
 
     return result
+
+
+def landed_path_of(result: RenameResult) -> Optional[str]:
+    """该结果是否落地: 落地返回真实落点, 未落地返回 None。
+
+    公开（不带下划线）是因为 OpenList 那条路由也要用它 —— 让 renamer.py 跨模块
+    import 私有的 _NO_LANDING_STATUSES 会把「哪些状态算没落地」这条规则散到两处。
+    """
+    if result.status in _NO_LANDING_STATUSES:
+        return None
+    return result.new_path
+
+
+@dataclass
+class OneOutcome:
+    """单个文件的执行结果，以及它自己的 NFO 副作用。
+
+    只有**每集** NFO 在这里 —— 剧集级 / 季级属于整批, 由 finalize_show_nfo 负责。
+    """
+    result: RenameResult
+    landed_path: Optional[str] = None
+    dead_episode_path: Optional[str] = None
+    nfo_written: list[str] = field(default_factory=list)
+    nfo_carried: list[str] = field(default_factory=list)
+    nfo_skipped: list[tuple[str, str]] = field(default_factory=list)
+    executed: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+
+def execute_one(
+    plan: RenamePlan,
+    *,
+    dry_run: bool = False,
+    conflict_strategy: str = "skip",
+    nfo_options: NfoOptions | None = None,
+    nfo_matches: dict[str, EpisodeMatch] | None = None,
+) -> OneOutcome:
+    """执行**一个** plan: 重命名 + 每集 NFO + 跟随既有同前缀 NFO。
+
+    与 batch_rename 的每文件循环逐字同源（叶子助手共用）。两处的等价性由
+    tests/test_single_file_core.py 的交叉判据钉住 —— 改这里要同时跑它。
+    """
+    nfo_matches = nfo_matches or {}
+    # 冲突行走 abort 时 result 是合成的, 但**不能提前 return**: 下面那段
+    # 「没落地 → 不写 NFO」必须对它一样生效, 否则用户选了最保守的策略、看到
+    # nfo_path 为 None, 转头却发现自己那一集的 NFO 已经落在别人视频旁边了。
+    aborted = bool(plan.conflicts and conflict_strategy == "abort")
+    if aborted:
+        result = RenameResult(
+            id=plan.id,
+            original_path=plan.original_path,
+            new_path=plan.new_path,
+            original_filename=plan.original_filename,
+            new_filename=plan.new_filename,
+            success=False,
+            error=f"冲突: {', '.join(plan.conflicts)}",
+            status="conflict",
+        )
+    else:
+        result = execute_rename_plan(
+            plan, dry_run=dry_run, conflict_strategy=conflict_strategy
+        )
+
+    outcome = OneOutcome(result=result)
+    is_video = not _is_subtitle_file(plan.file_info)
+    landed = landed_path_of(result) is not None
+    decision = (
+        _episode_decision_for(plan, nfo_matches, nfo_options)
+        if nfo_options is not None
+        else None
+    )
+
+    # --- 跟随既有同前缀 NFO。**必须在写每集 NFO 之前**, 与 batch_rename 同序 ---
+    #
+    # 顺序是有意的, 理由与 batch_rename 里那段「位置在**这里**是有意的」逐字相同:
+    # 「生成开 + 覆盖关」时, 先搬过去的旧 NFO 占住新位置, 生成于是报「已存在」,
+    # 用户原有的内容得以保留。反过来（先生成再搬）会让生成先写、搬动再撞上
+    # 「目标已存在」而放弃 —— 用户的内容被生成结果替掉, 旧文件还在原处当孤儿。
+    if not aborted and is_video and result.status in _CARRY_STATUSES:
+        carried_path, carry_reason = carry_same_stem_nfo(
+            plan.original_path, result.new_path, dry_run=dry_run
+        )
+        if carried_path is not None:
+            outcome.nfo_carried.append(carried_path)
+        elif carry_reason is not None:
+            outcome.nfo_skipped.append(
+                (episode_nfo_path(result.new_path), carry_reason)
+            )
+
+    # --- 写每集 NFO（在跟随之后）---
+    if decision is not None:
+        if not landed:
+            # 它不写, 但必须**报出来**（nfo_skipped）—— 静默地少写一个 NFO 与
+            # 静默地写错一个一样不可见。
+            outcome.dead_episode_path = decision.path
+        else:
+            # rename_dup（「自动编号」）下真实落点是 X_1.mkv, 而每集决策是按
+            # plan.new_path 算的 —— 不跟着改指向的话, 改名后的视频拿不到与它同名
+            # 的 X_1.nfo（Emby 靠同名配对）, 而 NFO 会落到 X.nfo: 那是**冲突那一
+            # 集**的位置, 覆盖模式下还会把它改写掉。
+            if result.new_path != plan.new_path:
+                decision.path = episode_nfo_path(result.new_path)
+            # nfo_path 报的是**计划落点**, 与是否真的写下去无关 —— 与
+            # batch_rename 里 nfo_path_by_file 的语义一致（内容为 None 时它也设）。
+            result.nfo_path = decision.path
+            written, skipped = write_nfo_files(
+                [decision], overwrite=bool(nfo_options and nfo_options.overwrite)
+            )
+            outcome.nfo_written = written
+            outcome.nfo_skipped.extend(skipped)
+
+    if is_video:
+        outcome.landed_path = landed_path_of(result)
+
+    outcome.executed, outcome.skipped, outcome.failed = count_result(result, aborted)
+    return outcome
+
+
+def finalize_show_nfo(
+    plans: list[RenamePlan],
+    landed_paths: list[str],
+    nfo_matches: dict[str, EpisodeMatch],
+    options: NfoOptions,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """批次收尾: 只写剧集级 / 季级 NFO。返回 (写入的路径, [(跳过路径, 原因)])。
+
+    landed_paths 必须是**真实落点**（前端从单文件响应回传）而不是「假定都成功」:
+    整批一个都没落地时, 组级落点就是凭空推出来的 —— 写下去会在一个没有任何剧集
+    文件的目录里放一份 tvshow.nfo（spec §9.4 的库根污染）。
+
+    组级决策的 NfoEntry 用 plan.new_path 而非 landed_paths 里的真实路径 —— 推导链
+    （common_parent / _show_root / _folder_belongs_to_single_show）只消费
+    os.path.dirname, 而 rename_dup 只改文件名词干、目录不变, 两者结论必然相同。
+    见 spec R14。
+    """
+    if not options.enabled or not plans:
+        return [], []
+
+    entries = [
+        _entry_for(plan, nfo_matches)
+        for plan in plans
+        if not _is_subtitle_file(plan.file_info)
+    ]
+    if not entries:
+        return [], []
+
+    group_decisions = [
+        d for d in build_nfo_decisions(entries, options) if d.kind != "episode"
+    ]
+    skipped_pairs: list[tuple[str, str]] = []
+
+    kept: list[NfoDecision] = []
+    for decision in group_decisions:
+        if _keep_decision(decision, set(), landed_paths):
+            kept.append(decision)
+        else:
+            # 组级决策被丢弃 = 那份剧集级/季级 NFO 不会写。**丢弃要报出来**:
+            # 静默扔掉的话结果里既没有落点也没有跳过记录, 用户无从知道这部剧本该
+            # 有的 tvshow.nfo 为什么一个都没写。
+            skipped_pairs.append((decision.path, _DROPPED_GROUP_NFO_REASON))
+
+    written, write_skipped = write_nfo_files(kept, overwrite=options.overwrite)
+    skipped_pairs.extend(write_skipped)
+    return written, dedupe_skipped_pairs(skipped_pairs)
 
 
 def batch_rename(
