@@ -94,6 +94,146 @@ def test_no_landed_files_writes_no_group_nfo(matched_env):
     assert not os.path.exists(os.path.join(matched_env["dir"], "season.nfo"))
 
 
+def test_partial_landing_still_writes_group_nfo(matched_env):
+    """**部分落地**（只有一集真的改名成功）→ 组级 NFO 照写。
+
+    与 test_no_landed_files_writes_no_group_nfo 成对, 两条合起来才是完整的判据:
+    「有的落地 → 写」「一个都没落地 → 不写」。此前所有 finalize 夹具非「全都落地」
+    即「一个都没落地」, 「部分落地」这个**不变量真正针对的场景**没有任何夹具。
+
+    这里落地的偏偏是**第二集**（f2）: tvshow / season 决策按契约挂在组内首个
+    file_id（f1）上, 而 f1 没落地。于是本用例同时钉住「组级判据是**目录里有视频
+    落地**, 不是**组代表落地**」—— 改成后者时 f1 不在 landed 里, 决策被丢,
+    tvshow.nfo 不落盘, 前两条断言必红。（未配 TMDB 的版本只能断言跳过清单里的
+    reason, 见 test_group_nfo_planned_when_any_file_landed; 这条断言的是**真的写到
+    盘上**, 更强。）
+    """
+    landed = {"f2": matched_env["landed"]["f2"]}
+    res = matched_env["client"].post(
+        "/api/rename/finalize", json=_payload(matched_env, landed=landed)
+    )
+    assert res.status_code == 200, res.text
+    written = res.json()["nfo_written"]
+    assert os.path.join(matched_env["dir"], "tvshow.nfo") in written
+    assert os.path.join(matched_env["dir"], "season.nfo") in written
+    # 盘上也得有 —— 只查响应会漏掉「报了但没写」。
+    for path in written:
+        assert os.path.exists(path), path
+
+
+# --- 子树几何：落点在 `Season 01/` 子目录里, 组级决策仍须保留 --------------------
+
+
+@pytest.fixture
+def season_env(tmp_path, monkeypatch):
+    """文件会落进 `Season 01/` 子目录的布局（folder_template + 建季目录）。
+
+    剧集根会因此**上溯一层**: new_path 的公共父目录是 `tmp/Season 01`, 而它自己
+    匹配季目录模式 → tvshow.nfo 落在 `tmp/`, season.nfo 落在 `tmp/Season 01/`。
+    这正是 `_keep_decision` 里那段前缀判据（`p == directory or p.startswith(prefix)`）
+    存在的理由 —— 落点与决策目录**不相等**, 而是在它的子树里。
+    """
+    from app.api import renamer as renamer_api
+
+    files = [
+        _video(tmp_path, "Show.S01E01.mkv", "f1"),
+        _video(tmp_path, "Show.S01E02.mkv", "f2"),
+    ]
+    cache_files(files)
+    monkeypatch.setattr(
+        renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
+    )
+    return {"client": TestClient(app), "files": files, "dir": str(tmp_path)}
+
+
+def test_group_decision_kept_when_landing_is_in_subtree(season_env):
+    """落点在 `Season 01/` 子目录里 → 组级决策**仍然保留**（前缀判据, 不是相等判据）。
+
+    把 `_keep_decision` 的组级分支换成 `any(p == directory for p in landed_paths)`
+    （「落点必须**就是**那个目录」）本用例必红: tvshow 决策的目录是 `tmp/`,
+    而落点是 `tmp/Season 01/Show - S01E01.mkv` —— 目录里**确实**有剧集文件,
+    却会被判成「没有文件落地」, tvshow.nfo 静默不写。这条判据此前没有任何夹具
+    钉住（现有 finalize 夹具全是单层平铺目录, 落点与决策目录恒相等）。
+    """
+    landed = {"f1": os.path.join(season_env["dir"], "Season 01", "Show - S01E01.mkv")}
+    res = season_env["client"].post(
+        "/api/rename/finalize",
+        json=_payload(
+            season_env, landed=landed,
+            folder_template="Season {season_padded}", create_season_folder=True,
+        ),
+    )
+    assert res.status_code == 200, res.text
+    written = res.json()["nfo_written"]
+    # 剧集根上溯到 tmp/, 季级落在季目录里 —— 两条落点都不等于决策目录本身。
+    assert os.path.join(season_env["dir"], "tvshow.nfo") in written, written
+    assert os.path.join(season_env["dir"], "Season 01", "season.nfo") in written, written
+    for path in written:
+        assert os.path.exists(path), path
+
+
+def test_group_decision_dropped_when_landing_is_in_another_shows_dir(tmp_path, monkeypatch):
+    """落点在**另一部剧**的目录里 → 本剧的组级决策必须丢弃（不许写成「landed 非空」）。
+
+    这条补的是前缀判据的**另一半**: `_keep_decision` 的组级分支若被换成「landed
+    非空就保留」（一个看起来等价、且现有全部 finalize 用例都对它全绿的写法）,
+    本用例必红 —— 一个只有 A 剧文件的批次里, 只因 B 剧的某个文件落了地, 就会在
+    A 剧的目录里写出 tvshow.nfo, 而那个目录**一个剧集文件都没有**: 正是 spec §9.4
+    的库根污染, 也正是 batch_rename 的 `landed_paths` 按目录判的原因。
+
+    用 TMDB 命中的夹具: 只有内容可写时「写不写」才是个真判断（未配 TMDB 时两种
+    实现都写不出文件, 断言会变成恒真）。
+    """
+    from app.api import renamer as renamer_api
+
+    dir_a = tmp_path / "ShowA"
+    dir_b = tmp_path / "ShowB"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    video_a = dir_a / "ShowA.S01E02.mkv"
+    video_b = dir_b / "ShowB.S01E02.mkv"
+    video_a.write_text("x", encoding="utf-8")
+    video_b.write_text("x", encoding="utf-8")
+    files = [
+        FileInfo(id="fa", source="local", path=str(video_a), filename=video_a.name,
+                 extension=".mkv", parent_dir=str(dir_a)),
+        FileInfo(id="fb", source="local", path=str(video_b), filename=video_b.name,
+                 extension=".mkv", parent_dir=str(dir_b)),
+    ]
+    cache_files(files)
+    monkeypatch.setattr(
+        renamer_api, "_tmdb_client_from_request", lambda req: _FakeTmdbClient()
+    )
+
+    body = {
+        "file_ids": ["fa", "fb"],
+        "template": TEMPLATE,
+        "source": "local",
+        "path": str(tmp_path),
+        "overrides": {
+            "fa": {"show_name": "ShowA", "season": 1, "episode": 2},
+            "fb": {"show_name": "ShowB", "season": 1, "episode": 2},
+        },
+        "generate_nfo": True,
+        # 只有 **B 剧**的文件落地。
+        "landed": {"fb": str(dir_b / "ShowB - S01E02.mkv")},
+    }
+    res = TestClient(app).post("/api/rename/finalize", json=body)
+    assert res.status_code == 200, res.text
+    body_out = res.json()
+
+    # B 剧: 目录里有剧集文件落地 → 照写。
+    assert str(dir_b / "tvshow.nfo") in body_out["nfo_written"], body_out["nfo_written"]
+    assert os.path.exists(dir_b / "tvshow.nfo")
+    # A 剧: 一个文件都没落地 → 不许写, 且必须**报出来**。
+    assert not os.path.exists(dir_a / "tvshow.nfo")
+    assert not os.path.exists(dir_a / "season.nfo")
+    reasons = {d["path"]: d["reason"] for d in body_out["nfo_skipped"]}
+    assert reasons[str(dir_a / "tvshow.nfo")] == (
+        "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
+    ), reasons
+
+
 def test_finalize_never_writes_episode_nfo(matched_env):
     """每集 NFO 由单文件接口写, 收尾**不得**再写一遍。
 
