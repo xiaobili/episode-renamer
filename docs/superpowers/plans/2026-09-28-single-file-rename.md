@@ -277,6 +277,8 @@ import pytest
 from app.core.local_renamer import (
     batch_rename, execute_one, finalize_show_nfo, plan_files,
 )
+import os
+
 from app.core.nfo_writer import dedupe_skipped_pairs
 from app.core.tmdb_resolver import STATUS_MATCHED, EpisodeMatch
 from app.models.file import FileInfo
@@ -415,6 +417,9 @@ def test_fixture_is_not_vacuous(tmp_path):
     assert d["batch_carried"], "nfo_carried 为空 —— 夹具失去鉴别力"
     assert d["batch_skipped"], "nfo_skipped 为空 —— 夹具失去鉴别力"
     assert d["batch_counts"][0] > 0, "没有一条 executed —— 夹具失去鉴别力"
+    # 这一条钉住 E03 那行不落地的文件: 少了它, counts 断言就从「也钉 failed」
+    # 退回「只钉 executed/total」, 而元判据自己不会红。
+    assert d["batch_counts"][2] > 0, "没有一条 failed —— 夹具失去鉴别力"
 
 
 def test_two_paths_agree_on_counts(tmp_path):
@@ -435,6 +440,54 @@ def test_two_paths_agree_on_nfo_carried(tmp_path):
 def test_two_paths_agree_on_nfo_skipped(tmp_path):
     d = _run_both(tmp_path)
     assert d["single_skipped"] == d["batch_skipped"]
+
+
+def test_rename_dup_failure_reports_the_bumped_path_on_both_paths(tmp_path, monkeypatch):
+    """rename_dup 撞上重命名失败时, 两条路径必须报**同一个**落点。
+
+    `execute_rename_plan` 在**尝试重命名之前**就把 result.new_path 改成了 X_1
+    （它那段的 dst 循环), 所以失败时它也指向 X_1; batch_rename 的 nfo_path_by_file
+    对任何 `new_path != plan.new_path` 的行都做这个改指向, 于是未落地那一行报的是
+    X_1.nfo。execute_one 曾经只在 landed 分支里改 —— 分叉就在这里, 而交叉判据的
+    夹具里没有「冲突 + 重命名失败」的行, 所以它看不见。
+
+    把 execute_one 里的改指向挪回 landed 判断**之内**本用例必红。
+    """
+    import os as _os
+
+    (tmp_path / "Show - S01E01.mkv").write_text("occupied", encoding="utf-8")
+    video = _video(tmp_path, "Show.S01E01.mkv")
+
+    real_rename = _os.rename
+
+    def boom(src, dst):
+        # 只让**改指向之后**的那个目标失败, 制造「rename_dup 已改 new_path 但
+        # 重命名抛错」这一种组合。
+        if str(dst).endswith("Show - S01E01_1.mkv"):
+            raise OSError(13, "Permission denied")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(_os, "rename", boom)
+
+    options = NfoOptions(enabled=True)
+    matches = _matches()
+
+    batch = batch_rename(
+        [video], TEMPLATE, overrides=OVERRIDES,
+        conflict_strategy="rename_dup", nfo_options=options, nfo_matches=matches,
+    )
+    plan = plan_files([video], TEMPLATE, overrides=OVERRIDES)[0]
+    outcome = execute_one(
+        plan, conflict_strategy="rename_dup",
+        nfo_options=options, nfo_matches=matches,
+    )
+
+    assert outcome.result.status == "failed", outcome.result.status
+    bumped = os.path.join(str(tmp_path), "Show - S01E01_1.nfo")
+    assert outcome.dead_episode_path == bumped
+    assert (bumped, "该文件未改名, 不写 NFO") in [
+        (d["path"], d["reason"]) for d in batch.nfo_skipped
+    ]
 
 
 def test_rename_dup_episode_nfo_follows_real_target(tmp_path):
@@ -563,22 +616,31 @@ def execute_one(
 
     # --- 写每集 NFO（在跟随之后）---
     if decision is not None:
+        # rename_dup（「自动编号」）下真实落点是 X_1.mkv, 而每集决策是按
+        # plan.new_path 算的 —— 不跟着改指向的话, 改名后的视频拿不到与它同名
+        # 的 X_1.nfo（Emby 靠同名配对）, 而 NFO 会落到 X.nfo: 那是**冲突那一
+        # 集**的位置, 覆盖模式下还会把它改写掉。
+        #
+        # **改指向必须在 landed 判断之前**, 这是与 batch_rename 的逐字一致:
+        # execute_rename_plan 是在**尝试重命名之前**就把 result.new_path 改成
+        # X_1 的, 所以重命名**失败**时它也指向 X_1, 而 batch_rename 的
+        # nfo_path_by_file 对任何 `new_path != plan.new_path` 的行都做这个改指向
+        # —— 于是未落地那一行报的也是 X_1.nfo。只在 landed 分支里改会让两条路径
+        # 对同一个失败行报出不同的落点（实测分叉: batch 报 X_1.nfo, 单文件报
+        # X.nfo）, 而夹具里没有「冲突 + 重命名失败」的行, 交叉判据看不见它。
+        if result.new_path != plan.new_path:
+            decision.path = episode_nfo_path(result.new_path)
+
         if not landed:
             # 它不写, 但必须**报出来**（nfo_skipped）—— 静默地少写一个 NFO 与
-            # 静默地写错一个一样不可见。batch_rename 在 :684 做同一件事
-            # （dead_episode_paths → _NOT_RENAMED_NFO_REASON）。**漏掉这一句
-            # 就是两条路径的分叉**: 交叉判据在夹具含不落地文件时会红。
+            # 静默地写错一个一样不可见。batch_rename 里 `dead_episode_paths`
+            # 那段做同一件事。**漏掉这一句就是两条路径的分叉**: 交叉判据在夹具
+            # 含不落地文件时会红。
             outcome.dead_episode_path = decision.path
             outcome.nfo_skipped.append(
                 (decision.path, _NOT_RENAMED_NFO_REASON)
             )
         else:
-            # rename_dup（「自动编号」）下真实落点是 X_1.mkv, 而每集决策是按
-            # plan.new_path 算的 —— 不跟着改指向的话, 改名后的视频拿不到与它同名
-            # 的 X_1.nfo（Emby 靠同名配对）, 而 NFO 会落到 X.nfo: 那是**冲突那一
-            # 集**的位置, 覆盖模式下还会把它改写掉。
-            if result.new_path != plan.new_path:
-                decision.path = episode_nfo_path(result.new_path)
             # nfo_path 报的是**计划落点**, 与是否真的写下去无关 —— 与
             # batch_rename 里 nfo_path_by_file 的语义一致（内容为 None 时它也设）。
             result.nfo_path = decision.path
@@ -653,14 +715,14 @@ def finalize_show_nfo(
 - [ ] **Step 5: 跑新测试**
 
 Run: `cd backend && python -m pytest tests/test_single_file_core.py -q`
-Expected: 6 passed
+Expected: 7 passed
 
 若 `test_two_paths_agree_on_nfo_skipped` 红，先**不要**改测试：说明两条路径的跳过语义确有差异，逐条比对 `batch.nfo_skipped` 与算出来的 `got`，把差异定位到 `execute_one` 或 `finalize_show_nfo`，修实现。
 
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 220 passed（214 + 6）
+Expected: 221 passed（214 + 7）
 
 - [ ] **Step 7: 提交**
 
@@ -872,7 +934,7 @@ Expected: 5 passed
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 225 passed（220 + 5）
+Expected: 226 passed（221 + 5）
 
 - [ ] **Step 7: 提交**
 
@@ -1097,7 +1159,7 @@ Expected: 5 passed
 - [ ] **Step 5: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 230 passed（225 + 5）
+Expected: 231 passed（226 + 5）
 
 - [ ] **Step 6: 提交**
 
@@ -1469,7 +1531,7 @@ Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 4 结束时的 230 + 新增 6 条 = 236，以实际为准）
+Expected: 全绿（数量 = Task 4 结束时的 231 + 新增 6 条 = 237，以实际为准）
 
 - [ ] **Step 7: 提交**
 
