@@ -1005,6 +1005,8 @@ tests/test_openlist_single.py 的模块注释）。
 """
 import asyncio
 
+import httpx
+
 from app.core.openlist_client import OpenListClient, _AdaptiveLimiter
 
 
@@ -1092,6 +1094,56 @@ def test_limit_can_be_raised_at_runtime():
     peak, remaining = asyncio.run(_run())
     assert remaining == 0, f"调高后仍有 {remaining} 个等待者没被唤醒"
     assert peak >= 2, f"调高后峰值并发仍为 {peak}，等待者未被唤醒"
+
+
+def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
+    """401 重连时**不得**持着名额再要名额 —— limit=1 下那会永久挂住。
+
+    这是 `_request` 这条路径的**第一个**判据。把实现改回「持着名额递归调用
+    自己」（旧版形状）本用例会挂到 `wait_for` 超时 —— 超时即红, 不是断言失败。
+
+    用假的 `httpx.AsyncClient` 喂三次响应: 401（token 过期）→ login 成功 →
+    重试成功。`_reconnect` 会调 `login`, 而 `login` 期望的响应形状请照
+    `openlist_client.py` 里 `login` 的实际读取路径造（读 token 的字段名以那里
+    为准, 本用例不该猜）。
+    """
+    import app.core.openlist_client as mod
+
+    class _FakeAsyncClient:
+        responses: list = []
+        calls: list = []
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def request(self, method, url, **kwargs):
+            _FakeAsyncClient.calls.append((method, url))
+            status, payload = _FakeAsyncClient.responses.pop(0)
+            return httpx.Response(status, json=payload, request=httpx.Request(method, url))
+
+    async def _run():
+        client = mod.OpenListClient("http://x", "u", "p")
+        client.token = "expired-token"
+        client.apply_limits(max_concurrent=1)
+        _FakeAsyncClient.calls = []
+        _FakeAsyncClient.responses = [
+            (401, {}),                                    # 第一次: token 过期
+            (200, {"code": 200, "data": {"token": "new"}}),  # login
+            (200, {"code": 200, "data": {"ok": True}}),      # 重试
+        ]
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
+        # 超时即红: 死锁时这个 await 永远不会返回
+        return await asyncio.wait_for(client._request("POST", "/api/fs/get"), timeout=2.0)
+
+    data = asyncio.run(_run())
+    assert data == {"code": 200, "data": {"ok": True}}
+    assert len(_FakeAsyncClient.calls) == 3, _FakeAsyncClient.calls
 
 
 def test_apply_limits_is_a_noop_when_unchanged():
@@ -1245,7 +1297,53 @@ class _AdaptiveLimiter:
             await asyncio.sleep(self._request_interval - elapsed)
 ```
 
-把 `_request` 里的 `async with self._semaphore:` 改为 `async with self._limiter:`
+把 `_request` **重构为「限流器只包住单次 HTTP 尝试」**（不是只把 `async with` 的目标换掉）：
+
+```python
+    async def _request(self, method: str, path: str, **kwargs) -> dict:
+        """发一次请求（401 时自动重连后重试一次）。
+
+        **限流器只包住单次 HTTP 尝试, 不包住重连** —— 这是刻意的, 也是本次
+        重构的全部理由: `_reconnect` 会走 `login` → `_request`, 也就是**在持着
+        名额的情况下再要一个名额**。在途请求数已达上限时（每个都撞上 401）
+        外层名额永不释放、内层永远拿不到 —— 死锁。
+
+        这不是新引入的: 旧版 `asyncio.Semaphore(settings.openlist_max_concurrent)`
+        持着名额递归调用自己, 同样会死锁（默认 3 时, 3 个在途请求同时 401 即
+        触发）。但本函数此前**没有任何测试**, 这条路径至今没有判据 —— 本次
+        顺带补上（见 Step 1 的 test_reconnect_does_not_deadlock_at_limit_one）。
+
+        与旧实现唯一的行为差异: 调用方传进来的 `headers` 现在**每次重试都会
+        带上**（旧版 `kwargs.pop` 之后递归, 重试时只剩 Authorization）。仓库里
+        没有任何调用方传 headers, 且新行为才是对的。
+        """
+        url = f"{self.server_url}{path}"
+        headers = kwargs.pop("headers", {})
+
+        while True:
+            async with self._limiter:
+                await self._wait_interval()
+
+                req_headers = dict(headers)
+                if self.token:
+                    req_headers["Authorization"] = self.token
+
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), verify=False) as client:
+                        resp = await client.request(method, url, headers=req_headers, **kwargs)
+                        self.last_request_time = time.monotonic()
+                        resp.raise_for_status()
+                        return resp.json()
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 401 or not self.token:
+                        raise
+                except httpx.RequestError as e:
+                    raise ConnectionError(f"OpenList 请求失败: {e}") from e
+
+            # 走到这里说明撞了 401 且 token 还在 —— **出了 limiter 再重连**。
+            # 重连自己会发请求（login）, 在名额内做就会与外层争名额。
+            await self._reconnect()
+```
 
 在 `login` 方法之前插入：
 
@@ -1270,12 +1368,12 @@ class _AdaptiveLimiter:
 - [ ] **Step 4: 跑测试**
 
 Run: `cd backend && python -m pytest tests/test_openlist_limiter.py -q`
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 232 passed（227 + 5）
+Expected: 233 passed（227 + 6）
 
 - [ ] **Step 6: 提交**
 
@@ -1650,7 +1748,7 @@ Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 4 结束时的 232 + 新增 6 条 = 238，以实际为准）
+Expected: 全绿（数量 = Task 4 结束时的 233 + 新增 6 条 = 239，以实际为准）
 
 - [ ] **Step 7: 提交**
 
