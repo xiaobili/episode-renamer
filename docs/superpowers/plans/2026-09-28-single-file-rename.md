@@ -3374,8 +3374,15 @@ assert('用 aggregateBatch 聚合结果', /aggregateBatch\(/.test(src), true)
 //     的第二参, 所以它抓不到;
 //   · `预览行带 new_path` 打红「删掉行构造里那句」—— 与 Step 3b 是同一个死设置缺口
 //     的第二道防线。
-assert('limit 不是字面量（第二参不是数字）',
-  /runWithConcurrency\([\s\S]{0,120}?\n\s*limit,/.test(src), true)
+// **不要写成「要求 `limit,` 在另一行」** —— 计划的调用是 `items, limit,` **同一行**,
+// 那样写会恒红（与 Step 5b 初版同一个毛病）。正确做法是捕获第二参本身, 断言它是
+// 标识符而不是数字字面量。
+{
+  const m = src.match(/runWithConcurrency\(([\s\S]{0,200}?)\)/)
+  const args = m ? m[1].split(',').map(a => a.trim()) : []
+  assert('runWithConcurrency 的第二参是标识符而非字面量',
+    /^[A-Za-z_$][\w$]*$/.test(args[1] || ''), true)
+}
 assert('预览行带 new_path',
   /new_path:\s*pv\.new_path/.test(src), true)
 
@@ -3407,12 +3414,33 @@ Expected: 全部通过。
 1. **逐文件请求**：N 个文件发出 N 次 `/rename/execute`，每次都带**单数** `file_id`；
 2. **部分失败不吞整批**：其中一个文件回 500 时，结果仍然产出，该文件计 `failed`、其余计 `executed`，**且失败那一行的文件名是它自己**（钉住 `selected[0]` 那个变异）；
 3. **收尾在全部执行之后**：`/rename/finalize` 的请求体里 `landed` 恰好是落地文件的真实落点（钉住 `= ''` 那个变异）；
-4. **并发遵守设置**：把 `localConcurrency` 设为 2、选 4 个文件，观测到的在途峰值 ≤ 2（钉住两参对调那个变异）；
+4. **并发遵守设置**：把 `localConcurrency` 设为 2、选 4 个文件，观测到的在途峰值 **`== 2`**
+   （钉住两参对调那个变异）。**不要写 `<= 2`** —— 它对「永远降级为串行」（峰值 1）
+   照样为真，而那正是本任务刚修掉的死设置 bug：判据的宽松方向恰好指向被修掉的缺陷；
 5. **收尾失败仍出结果**：让 `/rename/finalize` 回 500，结果对话框**仍然打开**且改名结果完好（钉住 F1）。
 
 并把它加进 `check-all.mjs` 的 `SCRIPTS`（**头注释里不要写脚本数**）。
 
 Step 3c 的源码级断言**保留** —— 它们是廉价的防回归，与运行期判据互补。
+
+- [ ] **Step 3e: 失败文案带上后端的 `detail`**
+
+计划逐字代码里的这一句：
+
+```js
+          error: failures.find(f => f.index === i)?.error?.message || '请求失败',
+```
+
+拿到的永远是 axios 的 `Request failed with status code 500`，而后端真正有用的说明在
+`error.response.data.detail` —— **同一个函数的 catch 分支已经用的是这个约定**
+（`e.response?.data?.detail || e.message`），两处不一致。另外 `|| '请求失败'` 是**死代码**
+（`Error.message` 永远非空）。改成：
+
+```js
+          error: failures.find(f => f.index === i)?.error?.response?.data?.detail
+            || failures.find(f => f.index === i)?.error?.message
+            || '请求失败',
+```
 
 在 `executeAction` 之前加一个小助手（预览与执行两处都要收集覆盖，但行集合不同，故由调用方传行进来）：
 
