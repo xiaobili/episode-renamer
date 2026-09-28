@@ -2168,6 +2168,50 @@ def test_no_landed_files_yields_no_decision_at_all(env):
 
 **实现要求**：`finalize_show_nfo` 在丢弃组级决策时要把它写进 `skipped_pairs`（带 `_DROPPED_GROUP_NFO_REASON`），这样上面两条用例才有东西可断言 —— Task 2 的 Step 4 已经这么实现了。
 
+- [ ] **Step 1b: 补两条分支判据**
+
+上面 6 条之外再补两条 —— 覆盖 `/rename/finalize` 的另外两个分支，它们此前无常驻判据（只被手工验证过）：
+
+```python
+def test_openlist_source_returns_empty_without_error(env):
+    """OpenList 本期不写 NFO（spec §2）—— 收尾必须**如实返回空**, 而不是报错。
+
+    前端本来就只在 local 时调它, 这里防的是手工调用。去掉路由里
+    `_nfo_supported` 那道守卫本用例必红: 它会走到 local 的落盘逻辑。
+    """
+    res = env["client"].post("/api/rename/finalize", json=_payload(
+        env, landed={"f1": "/x"}, source="openlist"))
+    assert res.status_code == 200, res.text
+    assert res.json() == {"success": True, "nfo_written": [], "nfo_skipped": []}
+
+
+def test_unknown_file_ids_are_rejected(env):
+    """file_ids 一个都找不到时如实报 400, 不要静默返回空。
+
+    静默返回空会让前端以为「收尾成功、只是没有组级 NFO 可写」—— 那是假话。
+    """
+    body = _payload(env, landed={})
+    body["file_ids"] = ["nope"]
+    res = env["client"].post("/api/rename/finalize", json=body)
+    assert res.status_code == 400, res.text
+    assert "未找到" in res.json()["detail"]
+```
+
+若 `env` 夹具在按 Step 1b 之前的修正改过名，照实际夹具名适配。
+
+- [ ] **Step 1c: 记录执行期对上面用例的修正**
+
+**Step 1 的 6 条用例里有 4 条在实现期被证明不可用，已按下列理由改写**（以提交进仓库的测试为准，本节的代码块只作历史记录）：
+
+| 原用例 | 问题 | 改法 |
+|---|---|---|
+| `test_no_landed_files_yields_no_decision_at_all` | 断言 `tvshow not in nfo_skipped` **任何实现都无法满足** —— 正确实现报「该剧下没有文件真正改名落地」、错误实现报「TMDB 未匹配」, 两者都在清单里。它与 `test_nfo_write.py:1041` 那条**带变异验证**的既有判据直接冲突 | 改为断言**丢弃原因**（`_DROPPED_GROUP_NFO_REASON`），改名 `..._drops_the_group_decision` |
+| `test_no_landed_files_writes_no_group_nfo` / `test_group_nfo_planned_when_any_file_landed` / `test_finalize_never_writes_episode_nfo` | 跑在**未配 TMDB** 的夹具上 → 每条决策 content 恒为 None → **三条都是空断言**（实测：假定全部落地 / 不过滤 episode / 无视 generate_nfo 三种变异下全绿） | 改用**配了 TMDB 替身**的夹具（复用 `tests/test_rename_nfo_route.py` 的 `_FakeTmdbClient`），三条现在各有杀手变异 |
+| `test_group_nfo_written_when_any_file_landed` | 只查路径鉴别不了「按组代表判落地」 | 补 `reason` 断言 |
+
+**教训（写给后续任务的自己）**：Task 6 的用例跑在未配 TMDB 的夹具上，于是所有 NFO 决策的 content 都是 None —— 任何「写了什么」的断言都成了恒真。**判据的夹具必须让被测行为真的发生**，否则它只是在验证「什么都没发生」。
+
+
 - [ ] **Step 2: 跑它，确认红**
 
 Run: `cd backend && python -m pytest tests/test_rename_finalize_route.py -q`
@@ -2222,12 +2266,12 @@ async def finalize_rename(req: RenameFinalizeRequest):
 - [ ] **Step 4: 跑测试**
 
 Run: `cd backend && python -m pytest tests/test_rename_finalize_route.py -q`
-Expected: 6 passed
+Expected: 8 passed
 
 - [ ] **Step 5: 跑全套并提交**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 5 结束时的 241 + 新增 6 条 = 247，以实际为准）
+Expected: 全绿（数量 = Task 5 结束时的 241 + 新增 8 条 = 249，以实际为准）
 
 ```bash
 git add backend/app/api/renamer.py backend/tests/test_rename_finalize_route.py
