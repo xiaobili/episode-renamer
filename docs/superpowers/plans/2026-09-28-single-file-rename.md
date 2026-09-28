@@ -3292,9 +3292,13 @@ export function finalizeRename(data) {
       showToast('操作失败: ' + (e.response?.data?.detail || e.message), 'error')
     } finally {
       executing.value = false
-      progress.done = 0
-      progress.total = 0
-      progress.current = ''
+      // **不要在这里清 progress** —— 遮罩关闭还有 200ms 的淡出
+      // （ExecutingOverlay 的 .overlay-leave-active transition: opacity 0.2s），
+      // 而这一拍清零会让**仍在屏幕上**的那一帧渲染成「已完成 0 / 0」+ 0% + 空条:
+      // 用户看到的最后一个状态是假的, 正是本仓库最忌讳的那一类。
+      // 下次执行的起始处（`progress.done = 0` / `progress.total = items.length`）
+      // 已经覆盖了陈旧值, 所以这里什么都不用做。
+      // 改动前这次清零不可见（卡片只有静态文字）—— 是进度条让它显形的。
       // 同时复位 executeDryRun：HomeView 用 `v-if="!executeDryRun"` 把遮罩整个卸掉，
       // 若它停留在 true，后续的执行会在「已打开」的状态下第一次挂载遮罩，而
       // <Transition> 在没有 appear 时不会为首挂播放进入过渡 —— spec §11 的
@@ -3562,6 +3566,7 @@ const percent = computed(() => {
             <div
               class="h-1.5 w-full overflow-hidden rounded-full bg-sunken"
               role="progressbar"
+              aria-label="执行进度"
               :aria-valuenow="progress.done"
               aria-valuemin="0"
               :aria-valuemax="progress.total"
@@ -3571,7 +3576,10 @@ const percent = computed(() => {
                 :style="{ width: percent + '%' }"
               />
             </div>
-            <div class="mt-2 flex items-center justify-between text-[12px] text-ink-2">
+            <div
+              class="mt-2 flex items-center justify-between text-[12px] text-ink-2"
+              aria-live="off"
+            >
               <span>已完成 {{ progress.done }} / {{ progress.total }}</span>
               <span>{{ percent }}%</span>
             </div>
@@ -3586,6 +3594,11 @@ const percent = computed(() => {
           <div v-else class="mt-1 text-[12px] text-ink-2">请稍候，操作进行中请勿关闭</div>
         </div>
 ```
+
+**关于两处 aria 属性**（评审指出，本任务引入的缺陷）：
+
+- `aria-label="执行进度"` —— `role="progressbar"` 没有可访问名时，辅助技术只会念出「进度条 3 0 12」，用户不知道这是什么。
+- `aria-live="off"` —— 进度条整块位于既有的 `role="status" aria-live="polite"` 区域内，而**本任务让这块文本每个文件都变一次**（改动前卡片只有一句静态文字）。不加这一句，读屏会对**每一个文件**播报一次「已完成 n / 共 m」—— 300 个文件就是 300 次播报。
 
 - [ ] **Step 2: 传入 progress**
 
