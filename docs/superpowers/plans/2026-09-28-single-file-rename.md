@@ -265,6 +265,12 @@ git commit -m "refactor(local_renamer): 抽出 plan_files / _entry_for / count_r
 
 编排循环存在两份（batch_rename 的循环与 execute_one），叶子助手是共用的。
 这条判据就是「两份副本」这个顾虑的答案: 任何一处漂移都会在这里红。
+
+**夹具必须产出非空的四类结果**, 否则断言退化成 [] == [] 恒真、零鉴别力
+（本项目已有三次前科）。`test_fixture_is_not_vacuous` 就是为此存在的元判据。
+
+**两条路径必须各跑各的目录**: 批量路径会真的改名, 共用目录时单文件路径的源
+文件已经不存在了, 两边根本不是在比同一件事。
 """
 import pytest
 
@@ -272,82 +278,145 @@ from app.core.local_renamer import (
     batch_rename, execute_one, finalize_show_nfo, plan_files,
 )
 from app.core.nfo_writer import dedupe_skipped_pairs
+from app.core.tmdb_resolver import STATUS_MATCHED, EpisodeMatch
 from app.models.file import FileInfo
 from app.models.nfo import NfoOptions
+from app.models.tmdb import TmdbEpisode, TmdbSeason, TmdbShow
 
 TEMPLATE = "{show} - S{season_padded}E{episode_padded}{extension}"
 
+OVERRIDES = {
+    "Show.S01E01.mkv": {"show_name": "Show", "season": 1, "episode": 1},
+    "Show.S01E02.mkv": {"show_name": "Show", "season": 1, "episode": 2},
+    "Show.S01E02.chs.srt": {"show_name": "Show", "season": 1, "episode": 2},
+}
 
-def _video(tmp_path, name, is_subtitle=False):
-    path = tmp_path / name
+
+def _matches():
+    """真实元数据 —— 少了它每条决策的 content 都是 None, 两边都写不出文件。"""
+    show = TmdbShow(tv_id=1396, name="Show")
+    season = TmdbSeason(season_number=1, name="第 1 季")
+    return {
+        "Show.S01E01.mkv": EpisodeMatch(
+            status=STATUS_MATCHED, show=show, season=season,
+            episode=TmdbEpisode(episode_number=1, name="试播集"),
+        ),
+        "Show.S01E02.mkv": EpisodeMatch(
+            status=STATUS_MATCHED, show=show, season=season,
+            episode=TmdbEpisode(episode_number=2, name="第二集"),
+        ),
+    }
+
+
+def _video(dir_path, name, is_subtitle=False):
+    path = dir_path / name
     path.write_text("x", encoding="utf-8")
     return FileInfo(
-        id=name,
-        source="local",
-        path=str(path),
-        filename=name,
+        id=name, source="local", path=str(path), filename=name,
         extension=".srt" if is_subtitle else ".mkv",
-        parent_dir=str(tmp_path),
-        is_subtitle=is_subtitle,
+        parent_dir=str(dir_path), is_subtitle=is_subtitle,
     )
+
+
+def _setup(dir_path):
+    """一个含「已存在」与「可跟随」两种情形的批次。"""
+    files = [
+        _video(dir_path, "Show.S01E01.mkv"),
+        _video(dir_path, "Show.S01E02.mkv"),
+        _video(dir_path, "Show.S01E02.chs.srt", is_subtitle=True),
+    ]
+    # E02 的目标 NFO 先占住 → 生成侧报「已存在」
+    (dir_path / "Show - S01E02.nfo").write_text("old", encoding="utf-8")
+    # E01 的旧前缀 NFO 存在 → 跟随侧把它搬过去
+    (dir_path / "Show.S01E01.nfo").write_text("legacy", encoding="utf-8")
+    return files
 
 
 def _run_both(tmp_path):
-    """同一批输入分别走两条路径, 返回 (批量结果, 单文件聚合结果)。"""
-    videos = [
-        _video(tmp_path, "Show.S01E01.mkv"),
-        _video(tmp_path, "Show.S01E02.mkv"),
-        _video(tmp_path, "Show.S01E02.chs.srt", is_subtitle=True),
-    ]
-    overrides = {
-        "Show.S01E01.mkv": {"show_name": "Show", "season": 1, "episode": 1},
-        "Show.S01E02.mkv": {"show_name": "Show", "season": 1, "episode": 2},
-        "Show.S01E02.chs.srt": {"show_name": "Show", "season": 1, "episode": 2},
-    }
+    """同一批输入各跑一个目录, 返回归一掉目录前缀后的可比较字典。"""
     options = NfoOptions(enabled=True, overwrite=False)
+    matches = _matches()
 
-    # --- 路径 A: 批量 ---
+    batch_dir = tmp_path / "batch"
+    batch_dir.mkdir()
     batch = batch_rename(
-        videos, TEMPLATE, overrides=overrides, nfo_options=options,
+        _setup(batch_dir), TEMPLATE, overrides=OVERRIDES,
+        nfo_options=options, nfo_matches=matches,
     )
 
-    # --- 路径 B: 单文件 + 收尾 ---
-    plans = plan_files(videos, TEMPLATE, overrides=overrides)
+    single_dir = tmp_path / "single"
+    single_dir.mkdir()
+    plans = plan_files(_setup(single_dir), TEMPLATE, overrides=OVERRIDES)
     outcomes = [
-        execute_one(p, nfo_options=options) for p in plans
+        execute_one(p, nfo_options=options, nfo_matches=matches) for p in plans
     ]
     landed = [o.landed_path for o in outcomes if o.landed_path is not None]
-    show_written, show_skipped = finalize_show_nfo(plans, landed, {}, options)
+    show_written, show_skipped = finalize_show_nfo(plans, landed, matches, options)
 
-    return batch, outcomes, show_written, show_skipped
+    def norm(paths):
+        return sorted(
+            p.replace(str(batch_dir), "<D>").replace(str(single_dir), "<D>")
+            for p in paths
+        )
+
+    return {
+        "batch_counts": (batch.executed, batch.skipped, batch.failed, batch.total),
+        "single_counts": (
+            sum(o.executed for o in outcomes),
+            sum(o.skipped for o in outcomes),
+            sum(o.failed for o in outcomes),
+            len(outcomes),
+        ),
+        "batch_written": norm(batch.nfo_written),
+        "single_written": norm(
+            [p for o in outcomes for p in o.nfo_written] + show_written
+        ),
+        "batch_carried": norm(batch.nfo_carried),
+        "single_carried": norm([p for o in outcomes for p in o.nfo_carried]),
+        "batch_skipped": sorted(
+            (norm([d["path"]])[0], d["reason"]) for d in batch.nfo_skipped
+        ),
+        "single_skipped": sorted(
+            (norm([p])[0], r)
+            for p, r in dedupe_skipped_pairs(
+                [x for o in outcomes for x in o.nfo_skipped] + list(show_skipped)
+            )
+        ),
+    }
+
+
+def test_fixture_is_not_vacuous(tmp_path):
+    """**元判据**: 夹具必须产出非空的四类结果。
+
+    它保护的是下面四条等价断言本身还有鉴别力 —— 夹具一旦退化成空集,
+    那四条会静默变成 [] == [] 的摆设。删掉本用例, 这种退化就没有任何机械
+    判据能发现（本项目已有三次前科）。
+    """
+    d = _run_both(tmp_path)
+    assert d["batch_written"], "nfo_written 为空 —— 夹具失去鉴别力"
+    assert d["batch_carried"], "nfo_carried 为空 —— 夹具失去鉴别力"
+    assert d["batch_skipped"], "nfo_skipped 为空 —— 夹具失去鉴别力"
+    assert d["batch_counts"][0] > 0, "没有一条 executed —— 夹具失去鉴别力"
 
 
 def test_two_paths_agree_on_counts(tmp_path):
-    batch, outcomes, _sw, _ss = _run_both(tmp_path)
-    assert sum(o.executed for o in outcomes) == batch.executed
-    assert sum(o.skipped for o in outcomes) == batch.skipped
-    assert sum(o.failed for o in outcomes) == batch.failed
-    assert sum(o.executed + o.skipped + o.failed for o in outcomes) == batch.total
+    d = _run_both(tmp_path)
+    assert d["single_counts"] == d["batch_counts"]
 
 
 def test_two_paths_agree_on_nfo_written(tmp_path):
-    batch, outcomes, show_written, _ss = _run_both(tmp_path)
-    episode_written = [p for o in outcomes for p in o.nfo_written]
-    assert sorted(episode_written + show_written) == sorted(batch.nfo_written)
+    d = _run_both(tmp_path)
+    assert d["single_written"] == d["batch_written"]
 
 
 def test_two_paths_agree_on_nfo_carried(tmp_path):
-    batch, outcomes, _sw, _ss = _run_both(tmp_path)
-    carried = [p for o in outcomes for p in o.nfo_carried]
-    assert sorted(carried) == sorted(batch.nfo_carried)
+    d = _run_both(tmp_path)
+    assert d["single_carried"] == d["batch_carried"]
 
 
 def test_two_paths_agree_on_nfo_skipped(tmp_path):
-    batch, outcomes, _sw, show_skipped = _run_both(tmp_path)
-    pairs = [p for o in outcomes for p in o.nfo_skipped] + list(show_skipped)
-    got = sorted(dedupe_skipped_pairs(pairs))
-    expected = sorted((d["path"], d["reason"]) for d in batch.nfo_skipped)
-    assert got == expected
+    d = _run_both(tmp_path)
+    assert d["single_skipped"] == d["batch_skipped"]
 
 
 def test_rename_dup_episode_nfo_follows_real_target(tmp_path):
@@ -454,6 +523,24 @@ def execute_one(
         else None
     )
 
+    # --- 跟随既有同前缀 NFO。**必须在写每集 NFO 之前**, 与 batch_rename 同序 ---
+    #
+    # 顺序是有意的, 理由与 local_renamer.py:392-396 那段逐字相同: 「生成开 +
+    # 覆盖关」时, 先搬过去的旧 NFO 占住新位置, 生成于是报「已存在」, 用户原有的
+    # 内容得以保留。反过来（先生成再搬）会让生成先写、搬动再撞上「目标已存在」
+    # 而放弃 —— 用户的内容被生成结果替掉, 旧文件还在原处当孤儿。
+    if not aborted and is_video and result.status in _CARRY_STATUSES:
+        carried_path, carry_reason = carry_same_stem_nfo(
+            plan.original_path, result.new_path, dry_run=dry_run
+        )
+        if carried_path is not None:
+            outcome.nfo_carried.append(carried_path)
+        elif carry_reason is not None:
+            outcome.nfo_skipped.append(
+                (episode_nfo_path(result.new_path), carry_reason)
+            )
+
+    # --- 写每集 NFO（在跟随之后）---
     if decision is not None:
         if not landed:
             # 它不写, 但必须**报出来**（nfo_skipped）—— 静默地少写一个 NFO 与
@@ -474,23 +561,6 @@ def execute_one(
             )
             outcome.nfo_written = written
             outcome.nfo_skipped.extend(skipped)
-    elif nfo_options is not None and nfo_options.enabled and landed and is_video:
-        # 没有决策（理论上不可达: enabled 且是视频时 _episode_decision_for 必返回
-        # 一条）。保留这个分支会让「静默少写」看起来是被允许的, 故显式不管。
-        pass
-
-    # 跟随既有同前缀 NFO。位置在生成**之后**是有意的 —— 与 batch_rename 同序:
-    # 搬过去的旧 NFO 占住新位置, 生成报「已存在」, 用户原有的内容得以保留。
-    if not aborted and is_video and result.status in _CARRY_STATUSES:
-        carried_path, carry_reason = carry_same_stem_nfo(
-            plan.original_path, result.new_path, dry_run=dry_run
-        )
-        if carried_path is not None:
-            outcome.nfo_carried.append(carried_path)
-        elif carry_reason is not None:
-            outcome.nfo_skipped.append(
-                (episode_nfo_path(result.new_path), carry_reason)
-            )
 
     if is_video:
         outcome.landed_path = landed_path_of(result)
@@ -557,14 +627,14 @@ def finalize_show_nfo(
 - [ ] **Step 5: 跑新测试**
 
 Run: `cd backend && python -m pytest tests/test_single_file_core.py -q`
-Expected: 5 passed
+Expected: 6 passed
 
 若 `test_two_paths_agree_on_nfo_skipped` 红，先**不要**改测试：说明两条路径的跳过语义确有差异，逐条比对 `batch.nfo_skipped` 与算出来的 `got`，把差异定位到 `execute_one` 或 `finalize_show_nfo`，修实现。
 
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 219 passed（214 + 5）
+Expected: 220 passed（214 + 6）
 
 - [ ] **Step 7: 提交**
 
@@ -667,12 +737,14 @@ async def test_move_plan_moves_then_renames():
         f, TEMPLATE, folder_template="Season {season_padded}",
         create_season_folder=True,
     )
-    assert plan.new_dir.endswith("Season 1"), plan.new_dir
+    # {season_padded} 走全局默认补零 2 位 → "Season 01"（config.py 的
+    # season_pad_digits = 2）。断言写成 "Season 1" 会红。
+    assert plan.new_dir.endswith("Season 01"), plan.new_dir
     client = FakeClient()
     result = await execute_openlist_one(client, plan)
     assert result.success is True
     assert client.calls[0][0] == "mkdir"
-    assert client.calls[1] == ("move", "/media/Show", "/media/Show/Season 1",
+    assert client.calls[1] == ("move", "/media/Show", "/media/Show/Season 01",
                                ("Show.S01E01.mkv",))
     assert client.calls[2][0] == "rename"
 
@@ -780,7 +852,7 @@ Expected: 5 passed
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 224 passed（219 + 5）
+Expected: 225 passed（220 + 5）
 
 - [ ] **Step 7: 提交**
 
@@ -1005,7 +1077,7 @@ Expected: 5 passed
 - [ ] **Step 5: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 229 passed（224 + 5）
+Expected: 230 passed（225 + 5）
 
 - [ ] **Step 6: 提交**
 
@@ -1230,7 +1302,8 @@ from ..models.file import (
 )
 from ..core.local_renamer import (
     batch_rename as local_batch_rename,
-    execute_one, finalize_show_nfo, plan_files,
+    OneOutcome, count_result, execute_one, finalize_show_nfo,
+    landed_path_of, plan_files,
 )
 from ..core.openlist_renamer import (
     build_openlist_rename_plan, execute_openlist_batch, execute_openlist_one,
@@ -1344,7 +1417,7 @@ Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 4 结束时的 229 + 新增 5 条 = 234，以实际为准）
+Expected: 全绿（数量 = Task 4 结束时的 230 + 新增 5 条 = 235，以实际为准）
 
 - [ ] **Step 7: 提交**
 
