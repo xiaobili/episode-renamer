@@ -364,13 +364,13 @@ async def execute_rename(req: RenameExecuteRequest):
         _as_batch_request(req, overrides), [file]
     )
 
-    plans = plan_files(
-        [file], req.template, req.folder_template, req.create_season_folder,
-        merged, pad=pad,
-    )
-    plan = plans[0]
-
     if source == "local":
+        # 本地用 plan_files: 它建 plan **并算冲突**（execute_one 读 plan.conflicts
+        # 判 abort）。
+        plan = plan_files(
+            [file], req.template, req.folder_template, req.create_season_folder,
+            merged, pad=pad,
+        )[0]
         outcome = execute_one(
             plan,
             conflict_strategy=req.conflict_strategy,
@@ -380,6 +380,18 @@ async def execute_rename(req: RenameExecuteRequest):
             nfo_matches=matches_by_file,
         )
     elif source == "openlist":
+        # **OpenList 必须用它自己的 builder**, 不能借道 plan_files —— 两个 builder
+        # **不等价**: build_rename_plan 在父目录已是季目录时会**抑制**建季目录
+        # （local_renamer._parent_is_season_dir）, build_openlist_rename_plan 不会。
+        # 而预览与干跑的 OpenList 分支走的正是 build_openlist_rename_plan ——
+        # 借道会让「预览说一套、执行做另一套」, 正是本仓库最忌讳的那一类
+        # （见 spec §9.4 与 renamer.py 里那段注释）。另外 plan_files 里的
+        # check_conflict 会对**远端路径**做本地 stat, 对 OpenList 毫无意义。
+        ov = merged.get(file.id)
+        plan = build_openlist_rename_plan(
+            file, req.template, req.folder_template,
+            req.create_season_folder, OverrideInfo(**ov) if ov else None, pad=pad,
+        )
         client = get_default_client()
         if not client or not client.connected:
             raise HTTPException(status_code=401, detail="请先连接 OpenList")
@@ -397,7 +409,10 @@ async def execute_rename(req: RenameExecuteRequest):
 
     return SingleRenameResult(
         success=outcome.failed == 0,
-        source=req.source,
+        # 用**已算好的局部变量** source（已 lower()）, 而不是原始的 req.source:
+        # 批量路径报的是规范化后的 "local"/"openlist"（见 openlist_renamer.py 与
+        # local_renamer.py 的 BatchRenameResult 构造）, 这里不该漂。
+        source=source,
         file_id=file.id,
         result=outcome.result,
         executed=outcome.executed,

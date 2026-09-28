@@ -80,6 +80,78 @@ def test_unknown_file_id_is_rejected(client):
     assert "未找到" in res.json()["detail"]
 
 
+class _FakeOpenListClient:
+    """OpenList 执行路径的最小替身。"""
+
+    connected = True
+
+    def __init__(self):
+        self.calls: list = []
+
+    def apply_limits(self, max_concurrent=None, request_interval=None):
+        pass
+
+    async def rename(self, path, new_name):
+        self.calls.append(("rename", path, new_name))
+        return {"code": 200}
+
+    async def move(self, src_dir, dst_dir, names):
+        self.calls.append(("move", src_dir, dst_dir, tuple(names)))
+        return {"code": 200}
+
+    async def mkdir(self, parent_dir, dir_name):
+        self.calls.append(("mkdir", parent_dir, dir_name))
+        return {"code": 200}
+
+
+def test_openlist_execute_agrees_with_preview_on_the_target_path(monkeypatch):
+    """OpenList 的**执行**目标必须与**预览**逐字一致。
+
+    两个 builder **不等价**: build_rename_plan 在父目录已是季目录时会抑制建季目录
+    （local_renamer._parent_is_season_dir）, build_openlist_rename_plan 不会。
+    执行分支若借道 plan_files, 同一份输入下预览报一个落点、执行做另一个 ——
+    「预览说一套、执行做另一套」, 本仓库最忌讳的一类。把 openlist 分支改回
+    plan_files 本用例必红。
+
+    这也是 OpenList **执行**路由的第一条判据（此前一条都没有）。
+    """
+    import app.api.renamer as renamer_mod
+
+    fake = _FakeOpenListClient()
+    monkeypatch.setattr(renamer_mod, "get_default_client", lambda: fake)
+
+    # 父目录**本身**就是季目录 → 两个 builder 在这里分道扬镳
+    cache_files([FileInfo(
+        id="f1", source="openlist",
+        path="/media/Show/Season 02/Show.S02E03.mkv",
+        filename="Show.S02E03.mkv", extension=".mkv",
+        parent_dir="/media/Show/Season 02",
+    )])
+    client = TestClient(app)
+    common = {
+        "template": TEMPLATE,
+        "source": "openlist",
+        "path": "/media/Show/Season 02",
+        "folder_template": "Season {season_padded}",
+        "create_season_folder": True,
+    }
+    override = {"show_name": "Show", "season": 2, "episode": 3}
+
+    preview = client.post("/api/rename/preview", json={
+        **common, "file_ids": ["f1"], "overrides": {"f1": override},
+    })
+    assert preview.status_code == 200, preview.text
+    expected = preview.json()["results"][0]["new_path"]
+
+    executed = client.post("/api/rename/execute", json={
+        **common, "file_id": "f1", "override": override,
+    })
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["result"]["new_path"] == expected, (
+        "执行落点与预览不一致 —— 两个 builder 被混用了"
+    )
+
+
 def test_generate_nfo_flag_controls_the_episode_decision(tmp_path):
     """generate_nfo=False 时**不该**产生任何每集 NFO 决策; 开了就必须有。
 

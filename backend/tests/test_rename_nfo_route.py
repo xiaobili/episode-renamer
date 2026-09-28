@@ -365,6 +365,9 @@ def test_execute_with_tmdb_writes_only_its_own_episode_nfo(matched_client, tmp_p
     # 组级 NFO 一份都不该由单文件接口写出来（它们归 /rename/finalize）
     assert not any(p.endswith("tvshow.nfo") for p in written), written
     assert not any(p.endswith("season.nfo") for p in written), written
+    # 而且**盘上**也只能有每集那一份 —— 只查响应会漏掉「写了但没报」。
+    # （两条字幕用例用的是同一写法。）
+    assert sorted(p.name for p in show_dir.glob("*.nfo")) == ["Test Show - S01E02.nfo"]
 
 
 def test_subtitle_is_excluded_from_both_preview_and_execute(tmp_path, monkeypatch):
