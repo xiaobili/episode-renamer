@@ -248,3 +248,58 @@ async def execute_openlist_batch(
         total=len(plans),
         results=results,
     )
+
+
+async def execute_openlist_one(
+    client: OpenListClient,
+    plan: RenamePlan,
+) -> RenameResult:
+    """执行**一个** OpenList plan。
+
+    与 execute_openlist_batch 的差别不只是循环: 批量版用 client.batch_rename 把
+    同目录的多个改名合并成一次 API 调用, 单文件版没有可合并的对象, 改用
+    client.rename / client.move。故两个函数的调用序列不同 —— 这是单文件化的
+    直接代价, 由前端并发数与客户端限流器共同约束请求量。
+
+    **没有 dry_run 形参**, 这是刻意的: 干跑在本设计里是**批次级**的（spec R9,
+    与 local_renamer.execute_one 同源）—— 单文件路径在生产里只被 /rename/execute
+    以「真执行」调用, 一个没有调用者的分支就是一处没有判据的分支。
+    """
+    result = RenameResult(
+        id=plan.id,
+        original_path=plan.original_path,
+        new_path=plan.new_path,
+        original_filename=plan.original_filename,
+        new_filename=plan.new_filename,
+    )
+
+    same_dir = plan.original_dir == plan.new_dir
+    same_name = plan.original_filename == plan.new_filename
+
+    if same_dir and same_name:
+        result.success = True
+        result.status = "skipped_same"
+        return result
+
+    dir_cache: dict[str, bool] = {}
+    try:
+        if not same_dir:
+            await _ensure_dir(client, plan.new_dir, dir_cache)
+            await client.move(plan.original_dir, plan.new_dir, [plan.original_filename])
+            if not same_name:
+                await client.rename(
+                    str(PurePosixPath(plan.new_dir) / plan.original_filename),
+                    plan.new_filename,
+                )
+            result.success = True
+            result.status = "renamed_moved"
+        else:
+            await client.rename(plan.original_path, plan.new_filename)
+            result.success = True
+            result.status = "renamed"
+    except Exception as exc:
+        result.success = False
+        result.error = str(exc)
+        result.status = "failed"
+
+    return result
