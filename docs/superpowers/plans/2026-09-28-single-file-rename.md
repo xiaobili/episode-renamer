@@ -2298,7 +2298,6 @@ git commit -m "feat(api): 新增 /rename/finalize，按前端回传的真实落�
 
 ```js
 // 并发池的机械判据。零依赖，只用 node 内置模块（与其余 check-*.mjs 同规格）。
-import { readFileSync } from 'node:fs'
 import { runWithConcurrency, resolveConcurrency, sleep } from '../src/stores/renameRunner.js'
 
 let failed = 0
@@ -2381,15 +2380,6 @@ function assert(label, actual, expected) {
     resolveConcurrency({ ...base, source: 'local', targets: ['/m/a.mkv', '/m/a.mkv'] }), 1)
   assert('有重名时 openlist 也降级为 1',
     resolveConcurrency({ ...base, source: 'openlist', targets: ['/m/a.mkv', '/m/a.mkv'] }), 1)
-}
-
-// --- 死设置防复发：workspace.js 里的并发数必须来自 settingsStore ---
-{
-  const src = readFileSync(new URL('../src/stores/workspace.js', import.meta.url), 'utf8')
-  const m = src.match(/runWithConcurrency\(\s*[^,]+,\s*([^,]+),/)
-  const arg = m ? m[1].trim() : ''
-  assert('并发数从 settingsStore 读（不是字面量）',
-    /settingsStore\.\w*[Cc]oncurrency/.test(arg), true)
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
@@ -2475,7 +2465,7 @@ export async function runWithConcurrency(items, limit, worker, { onProgress, int
 - [ ] **Step 4: 跑判据**
 
 Run: `cd frontend && node scripts/check-rename-runner.mjs`
-Expected: 除最后一条「并发数从 settingsStore 读」外全 PASS —— 那一条要等 Task 10 把 `workspace.js` 接上才会绿。**这是预期的**，记下来。
+Expected: 全部通过。
 
 - [ ] **Step 5: 把新脚本加进 runner 名单**
 
@@ -3003,7 +2993,7 @@ Expected: 全部通过
 - [ ] **Step 9: 跑全套前端判据**
 
 Run: `cd frontend && node scripts/check-all.mjs`
-Expected: `check-rename-runner.mjs` 里「并发数从 settingsStore 读」仍红（等 Task 10）。**其余全绿**。
+Expected: 全部通过。
 
 - [ ] **Step 10: 提交**
 
@@ -3229,7 +3219,34 @@ export function finalizeRename(data) {
 - [ ] **Step 5: 跑前端判据**
 
 Run: `cd frontend && node scripts/check-all.mjs`
-Expected: 全部通过 —— 包括 Task 7 里那条此前一直红的「并发数从 settingsStore 读」。
+Expected: 全部通过。
+
+- [ ] **Step 5b: 补上「死设置防复发」的判据**
+
+现在 `workspace.js` 真的接上了设置，可以加这条判据了（它检查的正是本任务刚写下的那行）：
+
+在 `frontend/scripts/check-rename-runner.mjs` 末尾追加：
+
+```js
+// --- 死设置防复发：workspace.js 里的并发数必须来自 settingsStore ---
+// 这条断言**只能在这里加**: 它检查的是 workspace.js 里那一行, 而那个文件到本任务
+// 才被改。提前放进 Task 7 会让 Task 7–9 的 check-all 一直红 —— 一条恒红的判据
+// 等于没有判据（没人会去看它为什么红）。
+{
+  const src = readFileSync(new URL('../src/stores/workspace.js', import.meta.url), 'utf8')
+  const m = src.match(/runWithConcurrency\(\s*[^,]+,\s*([^,]+),/)
+  const arg = m ? m[1].trim() : ''
+  assert('并发数从 settingsStore 读（不是字面量）',
+    /settingsStore\.\w*[Cc]oncurrency/.test(arg), true)
+}
+```
+
+并把 `readFileSync` 加回文件顶部的 import。
+
+Run: `cd frontend && node scripts/check-all.mjs`
+Expected: 全部通过。
+
+**实测这条判据能红**：把 `workspace.js` 里传给 `runWithConcurrency` 的第二参改成字面量 `4`，跑一次，确认它红；恢复。
 
 - [ ] **Step 6: 构建一次，确认没有语法/引用错误**
 
