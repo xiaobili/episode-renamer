@@ -17,7 +17,7 @@
 - **试运行（Dry Run）** — 先预览再执行，执行前不动任何文件
 - **冲突策略** — `skip` / `abort` / `rename_dup` / `overwrite` 四种目标已存在时的处理方式
 
-> 执行是**逐文件**进行的，因此 `abort` 的含义是「这一个文件不执行」，不再是「整批中止」。
+  > 执行是**逐文件**进行的，因此 `abort` 的含义是「这一个文件不执行」，不再是「整批中止」。
 
 - **TMDB 元数据** — 按剧名匹配 TMDB，可为模板提供 `{title}`，并生成 tvshow / season / episode 三级 NFO（仅本地源）
 - **Docker 一键部署** — 多阶段构建（前端产物打进后端镜像），自带健康检查
@@ -39,14 +39,17 @@
 ## 🔌 执行接口
 
 重命名按**单个文件**执行：前端逐个并发发起 `POST /api/rename/execute`，并据此显示进度条。
-剧集级 / 季级 NFO（`tvshow.nfo` / `season.nfo`）是整批的事实，由前端在全部文件跑完后调用
-`POST /api/rename/finalize` 写出，请求体里的 `landed` 是**实际落地**的文件及其真实落点。
+每集 NFO 随 `execute` 一起写出 —— 单个文件的改写与它自己的 NFO 是同一次请求的事实。
+
+剧集级 / 季级 NFO（`tvshow.nfo` / `season.nfo`）是整批的事实：**仅本地源且开启 NFO 生成时**，
+前端会在全部文件跑完后调用 `POST /api/rename/finalize` 写出，请求体里的 `landed` 是
+**实际落地**的文件及其真实落点。
 
 | 接口 | 形态 |
 | --- | --- |
 | `POST /api/rename/preview` | 批量（纯计划，不写盘） |
 | `POST /api/rename/dry-run` | 批量（纯计划，不写盘） |
-| `POST /api/rename/execute` | **单文件** |
+| `POST /api/rename/execute` | **单文件**（每集 NFO 在这里写） |
 | `POST /api/rename/finalize` | 批量收尾（只写剧集级 / 季级 NFO） |
 
 > 后端为单 worker 进程运行，`execute` 与 `finalize` 依赖进程内的文件缓存，**不要**加 `--workers`。
@@ -244,8 +247,9 @@ episode-renamer/
 | POST   | `/api/parse`              | 解析单个文件名                |
 | POST   | `/api/parse/batch`        | 批量解析文件名                |
 | POST   | `/api/rename/preview`     | 生成重命名预览（含 TMDB / NFO 字段） |
-| POST   | `/api/rename/execute`     | 执行重命名                  |
+| POST   | `/api/rename/execute`     | 执行重命名（单文件）             |
 | POST   | `/api/rename/dry-run`     | 试运行重命名，不落盘             |
+| POST   | `/api/rename/finalize`    | 批次收尾：只写剧集级 / 季级 NFO    |
 | GET    | `/api/files`              | 获取后端缓存的扫描文件列表          |
 | DELETE | `/api/files`              | 清空后端缓存的扫描文件列表          |
 | GET    | `/api/presets`            | 获取预设模板列表               |
