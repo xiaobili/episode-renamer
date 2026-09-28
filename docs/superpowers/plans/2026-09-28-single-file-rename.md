@@ -3258,11 +3258,26 @@ export function finalizeRename(data) {
         })
         // **必须在 buildPreview() 之前调**：buildPreview 会重扫并刷新后端的
         // _cached_files，之后 finalize 就重建不出同一批 plan 了。
-        const fin = await finalizeRename(buildRenamePayload({
-          ...baseArgs, mode: 'finalize', fileIds: selected.map(r => r.id),
-          overrides: _collectOverrides(selected), landed,
-        }))
-        finalizeBody = fin.data
+        //
+        // **收尾失败绝不能吞掉整批结果**: 走到这里, 每个文件的改名**已经在盘上
+        // 完成了**。若让 finalizeRename 的异常冒到外层 catch, 用户看到的是一句
+        // 「操作失败」, 而破坏性操作其实已经做完 —— 他极可能再跑一次, 撞上
+        // 「目标已存在」的跳过。故这里单独 try/catch, 降级成「没有组级 NFO」,
+        // 并**如实告诉用户是哪一步没做成**（结果对话框里的 NFO 清单也会少掉
+        // 组级那几项, 这一点由这句 toast 兜住）。
+        try {
+          const fin = await finalizeRename(buildRenamePayload({
+            ...baseArgs, mode: 'finalize', fileIds: selected.map(r => r.id),
+            overrides: _collectOverrides(selected), landed,
+          }))
+          finalizeBody = fin.data
+        } catch (e) {
+          showToast(
+            '重命名已完成，但剧集级 NFO 未写出: ' +
+            (e.response?.data?.detail || e.message),
+            'warning',
+          )
+        }
       }
 
       lastResult.value = {
@@ -3317,7 +3332,10 @@ function assert(label, actual, expected) {
   else { console.log('PASS', label) }
 }
 
-const src = readFileSync(new URL('../src/stores/workspace.js', import.meta.url), 'utf8')
+// **先剥掉注释再匹配**: 否则把一处调用注释掉, 文本断言照样绿 —— 那是最廉价的一种
+// 「判据恒真」。与 check-workspace-gating.mjs 里那批源码级断言同一考虑。
+const raw = readFileSync(new URL('../src/stores/workspace.js', import.meta.url), 'utf8')
+const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
 
 // --- 执行载荷是**单数**形态 ---
 // 改回 `mode: 'execute'` + fileIds 会让互斥校验抛错，整条执行路径被 catch 吞成 toast。
@@ -3371,6 +3389,30 @@ Run: `cd frontend && node scripts/check-execute-loop.mjs`
 Expected: 全部通过。
 
 **每条断言都要实测能红**（改坏 → 跑 → 恢复，逐个记录）。
+
+- [ ] **Step 3d: 补一条**运行期**判据（源码级断言不够）**
+
+**这一条推翻了本计划先前的一个判断。** Step 3c 的理由是「`workspace.js` import vue/pinia，node 加载不了，只能断言源码」—— **那个前提是错的**：`check-workspace-gating.mjs:22-64` 已经在做这件事（注册 ESM 扩展钩子、打桩 `localStorage` / `window`、装 axios adapter、加载**真实的** workspace store）。既然仓库里已有这门技术，就该用它。
+
+源码级断言的弱点已被实证：本任务的**两个 bug（`settled` 用 `map` 跳过空洞、预览行缺 `new_path`）都是运行期探针挖出来的，而当时那批源码断言全绿**。评审另给了三个「通过全部 13 条源码断言却破坏行为」的变异：
+
+| 变异 | 后果 | 源码断言为何抓不到 |
+|---|---|---|
+| `runWithConcurrency(limit, items, …)` 两参对调 | `renameRunner` 抛错，**整个功能死掉** | `limit` 那条正则捕获到的是标识符 `items`，仍然「不是字面量」 |
+| 失败记录里 `selected[i]` → `selected[0]` | **每一行失败都报错文件** | 文本里 `selected[` 照样在 |
+| `landed[s.result.id] = s.result.new_path` → `= ''` | 收尾收不到落点，组级 NFO 决策全错 | 赋值语句文本没变 |
+
+新建 `frontend/scripts/check-execute-behaviour.mjs`，**照 `check-workspace-gating.mjs` 的既有技术**（同一个 ESM 钩子 + 打桩 + axios adapter）驱动**真实的** store 跑一次 `executeAction(false)`，断言五件事：
+
+1. **逐文件请求**：N 个文件发出 N 次 `/rename/execute`，每次都带**单数** `file_id`；
+2. **部分失败不吞整批**：其中一个文件回 500 时，结果仍然产出，该文件计 `failed`、其余计 `executed`，**且失败那一行的文件名是它自己**（钉住 `selected[0]` 那个变异）；
+3. **收尾在全部执行之后**：`/rename/finalize` 的请求体里 `landed` 恰好是落地文件的真实落点（钉住 `= ''` 那个变异）；
+4. **并发遵守设置**：把 `localConcurrency` 设为 2、选 4 个文件，观测到的在途峰值 ≤ 2（钉住两参对调那个变异）；
+5. **收尾失败仍出结果**：让 `/rename/finalize` 回 500，结果对话框**仍然打开**且改名结果完好（钉住 F1）。
+
+并把它加进 `check-all.mjs` 的 `SCRIPTS`（**头注释里不要写脚本数**）。
+
+Step 3c 的源码级断言**保留** —— 它们是廉价的防回归，与运行期判据互补。
 
 在 `executeAction` 之前加一个小助手（预览与执行两处都要收集覆盖，但行集合不同，故由调用方传行进来）：
 
