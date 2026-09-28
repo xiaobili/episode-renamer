@@ -1566,6 +1566,78 @@ def test_unknown_file_id_is_rejected(client):
     assert "未找到" in res.json()["detail"]
 
 
+class _FakeOpenListClient:
+    """OpenList 执行路径的最小替身。"""
+
+    connected = True
+
+    def __init__(self):
+        self.calls: list = []
+
+    def apply_limits(self, max_concurrent=None, request_interval=None):
+        pass
+
+    async def rename(self, path, new_name):
+        self.calls.append(("rename", path, new_name))
+        return {"code": 200}
+
+    async def move(self, src_dir, dst_dir, names):
+        self.calls.append(("move", src_dir, dst_dir, tuple(names)))
+        return {"code": 200}
+
+    async def mkdir(self, parent_dir, dir_name):
+        self.calls.append(("mkdir", parent_dir, dir_name))
+        return {"code": 200}
+
+
+def test_openlist_execute_agrees_with_preview_on_the_target_path(monkeypatch):
+    """OpenList 的**执行**目标必须与**预览**逐字一致。
+
+    两个 builder **不等价**: build_rename_plan 在父目录已是季目录时会抑制建季目录
+    （local_renamer._parent_is_season_dir）, build_openlist_rename_plan 不会。
+    执行分支若借道 plan_files, 同一份输入下预览报一个落点、执行做另一个 ——
+    「预览说一套、执行做另一套」, 本仓库最忌讳的一类。把 openlist 分支改回
+    plan_files 本用例必红。
+
+    这也是 OpenList **执行**路由的第一条判据（此前一条都没有）。
+    """
+    import app.api.renamer as renamer_mod
+
+    fake = _FakeOpenListClient()
+    monkeypatch.setattr(renamer_mod, "get_default_client", lambda: fake)
+
+    # 父目录**本身**就是季目录 → 两个 builder 在这里分道扬镳
+    cache_files([FileInfo(
+        id="f1", source="openlist",
+        path="/media/Show/Season 02/Show.S02E03.mkv",
+        filename="Show.S02E03.mkv", extension=".mkv",
+        parent_dir="/media/Show/Season 02",
+    )])
+    client = TestClient(app)
+    common = {
+        "template": TEMPLATE,
+        "source": "openlist",
+        "path": "/media/Show/Season 02",
+        "folder_template": "Season {season_padded}",
+        "create_season_folder": True,
+    }
+    override = {"show_name": "Show", "season": 2, "episode": 3}
+
+    preview = client.post("/api/rename/preview", json={
+        **common, "file_ids": ["f1"], "overrides": {"f1": override},
+    })
+    assert preview.status_code == 200, preview.text
+    expected = preview.json()["results"][0]["new_path"]
+
+    executed = client.post("/api/rename/execute", json={
+        **common, "file_id": "f1", "override": override,
+    })
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["result"]["new_path"] == expected, (
+        "执行落点与预览不一致 —— 两个 builder 被混用了"
+    )
+
+
 def test_generate_nfo_flag_controls_the_episode_decision(tmp_path):
     """generate_nfo=False 时**不该**产生任何每集 NFO 决策; 开了就必须有。
 
@@ -1824,13 +1896,13 @@ async def execute_rename(req: RenameExecuteRequest):
         _as_batch_request(req, overrides), [file]
     )
 
-    plans = plan_files(
-        [file], req.template, req.folder_template, req.create_season_folder,
-        merged, pad=pad,
-    )
-    plan = plans[0]
-
     if source == "local":
+        # 本地用 plan_files: 它建 plan **并算冲突**（execute_one 读 plan.conflicts
+        # 判 abort）。
+        plan = plan_files(
+            [file], req.template, req.folder_template, req.create_season_folder,
+            merged, pad=pad,
+        )[0]
         outcome = execute_one(
             plan,
             conflict_strategy=req.conflict_strategy,
@@ -1840,6 +1912,18 @@ async def execute_rename(req: RenameExecuteRequest):
             nfo_matches=matches_by_file,
         )
     elif source == "openlist":
+        # **OpenList 必须用它自己的 builder**, 不能借道 plan_files —— 两个 builder
+        # **不等价**: build_rename_plan 在父目录已是季目录时会**抑制**建季目录
+        # （local_renamer._parent_is_season_dir）, build_openlist_rename_plan 不会。
+        # 而预览与干跑的 OpenList 分支走的正是 build_openlist_rename_plan ——
+        # 借道会让「预览说一套、执行做另一套」, 正是本仓库最忌讳的那一类
+        # （见 spec §9.4 与 renamer.py 里那段注释）。另外 plan_files 里的
+        # check_conflict 会对**远端路径**做本地 stat, 对 OpenList 毫无意义。
+        ov = merged.get(file.id)
+        plan = build_openlist_rename_plan(
+            file, req.template, req.folder_template,
+            req.create_season_folder, OverrideInfo(**ov) if ov else None, pad=pad,
+        )
         client = get_default_client()
         if not client or not client.connected:
             raise HTTPException(status_code=401, detail="请先连接 OpenList")
@@ -1857,7 +1941,10 @@ async def execute_rename(req: RenameExecuteRequest):
 
     return SingleRenameResult(
         success=outcome.failed == 0,
-        source=req.source,
+        # 用**已算好的局部变量** source（已 lower()）, 而不是原始的 req.source:
+        # 批量路径报的是规范化后的 "local"/"openlist"（见 openlist_renamer.py 与
+        # local_renamer.py 的 BatchRenameResult 构造）, 这里不该漂。
+        source=source,
         file_id=file.id,
         result=outcome.result,
         executed=outcome.executed,
