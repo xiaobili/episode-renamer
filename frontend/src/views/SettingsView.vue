@@ -82,11 +82,12 @@
           >
             <Info class="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <p>
-              这两项随每次重命名请求下发，<strong class="text-ink">立即生效</strong>。
-              服务端的 <code class="font-mono">OPENLIST_MAX_CONCURRENT</code> /
-              <code class="font-mono">OPENLIST_REQUEST_INTERVAL</code> 只在这两项
-              未设置时作为初值。注意它们作用于 OpenList 客户端的<strong class="text-ink">全部</strong>请求
-              （含扫描与列目录），不只是重命名。
+              这两项随重命名请求（执行 / 试运行）下发，<strong class="text-ink">立即生效</strong>，
+              优先于服务端的 <code class="font-mono">OPENLIST_MAX_CONCURRENT</code> /
+              <code class="font-mono">OPENLIST_REQUEST_INTERVAL</code>；后两者是客户端
+              构造时的初值，在<strong class="text-ink">尚未执行过重命名</strong>时
+              （如扫描、列目录）仍然起作用。注意这两项作用于 OpenList 客户端的
+              <strong class="text-ink">全部</strong>请求，不只是重命名。
             </p>
           </div>
         </div>
