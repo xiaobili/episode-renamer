@@ -839,7 +839,12 @@ def test_move_plan_moves_then_renames():
     assert client.calls[0][0] == "mkdir"
     assert client.calls[1] == ("move", "/media/Show", "/media/Show/Season 01",
                                ("Show.S01E01.mkv",))
-    assert client.calls[2][0] == "rename"
+    # **整条元组**, 不只 `[0] == "rename"`: 这一行的正确性全在路径拼接上
+    # （openlist_renamer 用 PurePosixPath(new_dir) / original_filename 拼源路径）。
+    # 只断言方法名的话, 传 plan.original_path（移动**前**的路径）或 plan.new_filename
+    # 当源路径都照样绿 —— 那正是这个断言该拦住的错。
+    assert client.calls[2] == ("rename", "/media/Show/Season 01/Show.S01E01.mkv",
+                               "Show - S01E01.mkv")
 
 
 def test_rename_failure_is_reported_not_raised():
@@ -850,6 +855,30 @@ def test_rename_failure_is_reported_not_raised():
     assert result.success is False
     assert result.status == "failed"
     assert "重命名失败" in result.error
+
+
+def test_move_without_rename_skips_the_rename_call():
+    """名字已经正确、只有目录要变时, **不得**多发一次 rename。
+
+    `if not same_name:` 那道守卫在生产可达（用户把已正确命名的文件挪进季目录,
+    或模板改了季目录模板）。删掉守卫本用例必红: calls 里会多出一次 rename。
+    """
+    f = _file("Show - S01E01.mkv")
+    plan = build_openlist_rename_plan(
+        f, TEMPLATE, folder_template="Season {season_padded}",
+        create_season_folder=True,
+    )
+    assert plan.original_filename == plan.new_filename, plan.new_filename
+    assert plan.original_dir != plan.new_dir
+
+    client = FakeClient()
+    result = asyncio.run(execute_openlist_one(client, plan))
+
+    assert result.status == "renamed_moved"
+    assert client.calls == [
+        ("mkdir", "/media/Show", "Season 01"),
+        ("move", "/media/Show", "/media/Show/Season 01", ("Show - S01E01.mkv",)),
+    ]
 
 
 def test_never_calls_batch_rename():
@@ -940,7 +969,7 @@ Expected: 5 passed
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 226 passed（221 + 5）
+Expected: 227 passed（221 + 6）
 
 - [ ] **Step 7: 提交**
 
@@ -1176,7 +1205,7 @@ Expected: 5 passed
 - [ ] **Step 5: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 231 passed（226 + 5）
+Expected: 232 passed（227 + 5）
 
 - [ ] **Step 6: 提交**
 
@@ -1548,7 +1577,7 @@ Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 4 结束时的 231 + 新增 6 条 = 237，以实际为准）
+Expected: 全绿（数量 = Task 4 结束时的 232 + 新增 6 条 = 238，以实际为准）
 
 - [ ] **Step 7: 提交**
 
