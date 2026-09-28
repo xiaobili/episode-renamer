@@ -1205,6 +1205,38 @@ def test_no_nfo_request_writes_nothing(client):
     body = client.post("/api/rename/execute", json=payload(generate_nfo=False)).json()
     assert body["nfo_written"] == []
     assert body["nfo_carried"] == []
+
+
+def test_abort_marks_the_file_as_conflict(tmp_path):
+    """abort 在单文件下是「这一个文件不执行」, 不是「整批中止」。
+
+    计数沿用既有归法: abort 下的冲突行计入 **failed** 而非 skipped（batch_rename
+    里那段注释写明了这点）。这条判据钉住 execute_one 里**合成冲突结果**那条分支 ——
+    Task 2 结束时它还没有任何判据（夹具里没有冲突文件、也没有 abort 用例）。
+    把 `aborted` 判断删掉（让它照常走 execute_rename_plan）本用例必红: 那时
+    conflict_strategy="abort" 仍会给出 status="conflict", 但计数会落到 skipped。
+    """
+    video = tmp_path / "Test.Show.S01E02.mkv"
+    video.write_text("x", encoding="utf-8")
+    # 目标名已被占住 → 触发冲突
+    (tmp_path / "Test Show - S01E02.mkv").write_text("occupied", encoding="utf-8")
+    cache_files([FileInfo(
+        id="f1", source="local", path=str(video),
+        filename="Test.Show.S01E02.mkv", extension=".mkv",
+        parent_dir=str(tmp_path),
+    )])
+
+    res = TestClient(app).post("/api/rename/execute", json={
+        "file_id": "f1", "template": TEMPLATE, "source": "local",
+        "path": str(tmp_path), "override": OVERRIDE,
+        "conflict_strategy": "abort", "generate_nfo": True,
+    })
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["result"]["status"] == "conflict"
+    assert body["failed"] == 1
+    assert body["skipped"] == 0
+    assert body["nfo_written"] == []
 ```
 
 - [ ] **Step 2: 跑它，确认红**
@@ -1437,7 +1469,7 @@ Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 4 结束时的 230 + 新增 5 条 = 235，以实际为准）
+Expected: 全绿（数量 = Task 4 结束时的 230 + 新增 6 条 = 236，以实际为准）
 
 - [ ] **Step 7: 提交**
 
