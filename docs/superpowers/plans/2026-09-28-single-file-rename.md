@@ -1053,7 +1053,16 @@ def test_limit_can_be_lowered_at_runtime():
 
 
 def test_limit_can_be_raised_at_runtime():
-    """调高时必须唤醒等待者，否则它们会永远睡着（notify 漏掉的典型形态）。"""
+    """调高时必须把等待者**全部**唤醒，否则多出来的名额要等下一轮释放才生效。
+
+    判据是 `set_limit` 返回**那一刻**队列里还剩几个等待者 —— 同步可观测, 不依赖
+    时序: 调高到 3 而此刻只有 1 个在跑, 队列里的 2 个必须当场被全部摘走。
+    `_wake(1)` 会留下 1 个 → 红; 一个都不唤醒 → 留下 2 个 → 红。
+
+    **不用「峰值 == 3」当判据**: 那要求唤醒发生在持有者那 0.05s 睡眠之内, 被 OS
+    级调度停顿 50ms 以上就会偶发变成 2（实测 20/20 稳定, 但它依赖时序）。
+    峰值只留作附加的健全性检查。
+    """
     async def _run():
         limiter = _AdaptiveLimiter(1)
         active = 0
@@ -1072,20 +1081,42 @@ def test_limit_can_be_raised_at_runtime():
 
         tasks = [asyncio.create_task(worker()) for _ in range(3)]
         await started.wait()
+        # 让另外两个确定地排进等待队列（create_task 只是调度, 未必已运行）
+        await asyncio.sleep(0.01)
         limiter.set_limit(3)
+        # **同步观测**: 此处还没有 await, 被唤醒者尚未运行
+        remaining = len(limiter._waiters)
         await asyncio.wait_for(asyncio.gather(*tasks), timeout=1.0)
-        return peak
+        return peak, remaining
 
-    peak = asyncio.run(_run())
+    peak, remaining = asyncio.run(_run())
+    assert remaining == 0, f"调高后仍有 {remaining} 个等待者没被唤醒"
     assert peak >= 2, f"调高后峰值并发仍为 {peak}，等待者未被唤醒"
 
 
 def test_apply_limits_is_a_noop_when_unchanged():
-    """值没变就不动 —— 每次请求都替换限流器会摧毁限流本身（spec R13）。"""
+    """值没变就不动 —— 每次请求都替换限流器会摧毁限流本身（spec R13）。
+
+    **两个方向都要钉**:
+    · 字段为 None（未提供）→ 不动;
+    · 字段**等于当前值** → 也不动。
+
+    只钉前者的判据对「apply_limits 在值非 None 时重建 limiter」这一变异是
+    **失明的** —— 而那正是本任务存在的理由（spec R13）。实测: 去掉下面第二段,
+    把 `self._limiter.set_limit(...)` 写成 `self._limiter = _AdaptiveLimiter(...)`
+    时五条判据全绿。
+    """
     client = OpenListClient("http://x", "u", "p")
     before = client._limiter
     client.apply_limits(max_concurrent=None, request_interval=None)
-    assert client._limiter is before
+    assert client._limiter is before, "未提供时不该动 limiter"
+
+    # 传**当前值**（而非 None）—— 这一条才拦得住「重建」那种写法
+    client.apply_limits(
+        max_concurrent=before._limit,
+        request_interval=client._request_interval,
+    )
+    assert client._limiter is before, "值未变时不该重建 limiter"
 
 
 def test_apply_limits_sets_interval():
@@ -1109,35 +1140,74 @@ class _AdaptiveLimiter:
 
     为什么不用 asyncio.Semaphore 再「需要时换一个」: 替换对象会摧毁限流本身 ——
     在途持有者释放到旧对象, 新对象满额放行, 于是瞬时并发翻倍; 而「值没变就不
-    替换」的补丁仍在首个请求处留下抖动。计数器 + Condition 是十几行代码,
-    且上限可以在等待者入睡之后被调高（notify_all 唤醒它们重新判条件）。
+    替换」的补丁仍在首个请求处留下抖动。计数器 + 等待者队列是十几行代码,
+    且上限可以在等待者入睡之后被调高（被唤醒的等待者重新判条件）。
+
+    **等待者用 Future 而不是 asyncio.Condition**: `Condition.notify*` 必须在
+    **持有锁**时调用, 而 `set_limit` 是同步方法（`apply_limits` 也可以从同步
+    上下文调用, 见测试里的 `limiter.set_limit(1)`）—— 同步方法没有办法不阻塞
+    事件循环地拿到 asyncio.Lock, 直接 notify 会抛
+    `RuntimeError: cannot notify on un-acquired lock`。Future 由事件循环线程
+    直接 set_result, 同步、即时, 且在没有等待者（也就没有运行中的循环）时天然
+    是安全的空操作。
     """
 
     def __init__(self, limit: int):
         self._limit = max(1, int(limit))
         self._active = 0
-        self._cond = asyncio.Condition()
+        self._waiters: list[asyncio.Future] = []
 
     async def __aenter__(self):
-        async with self._cond:
-            while self._active >= self._limit:
-                await self._cond.wait()
-            self._active += 1
+        while self._active >= self._limit:
+            waiter = asyncio.get_running_loop().create_future()
+            self._waiters.append(waiter)
+            try:
+                await waiter
+            except BaseException:
+                # 被取消。若这个等待者已经吃掉了 _wake 发出的唤醒名额（它已被
+                # 摘出队列 = 名额已发到它手上）, 必须把名额转交给下一个等待者,
+                # 否则名额空着而后面的人还在睡 —— 这是真实可复现的丢唤醒, 不是
+                # 理论担忧。asyncio.Lock 在取消路径上做的也是同一件事。
+                if waiter not in self._waiters:
+                    self._wake(1)
+                raise
+            finally:
+                # 正常唤醒时已被 _wake 摘掉; 未被唤醒（取消）时还留在队列里, 自己摘。
+                if waiter in self._waiters:
+                    self._waiters.remove(waiter)
+        # 判断与自增之间没有 await ⇒ 与其它任务之间是原子的。
+        self._active += 1
         return self
 
     async def __aexit__(self, *exc_info):
-        async with self._cond:
-            self._active -= 1
-            self._cond.notify(1)
+        self._active -= 1
+        self._wake(1)
 
     def set_limit(self, limit: int) -> None:
         limit = max(1, int(limit))
+        # 值未变就直接返回。这道早退**行为上不可观测**: 队列非空时必然
+        # _active >= _limit, 故 limit == _limit 时下面的 `limit > _active` 恒为假,
+        # 不会误唤醒任何人。留着是让「值没变」这件事在代码里看得见 ——
+        # 别为它写判据（写不出能红的）。
         if limit == self._limit:
             return
         self._limit = limit
         # 调高后必须唤醒等待者: 它们在旧的（更小的）上限下已入睡, 不会再自己醒。
         if limit > self._active:
-            self._cond.notify_all()
+            self._wake(limit - self._active)
+
+    def _wake(self, count: int) -> None:
+        """唤醒至多 count 个等待者。
+
+        被唤醒者会重新判条件, 抢不到名额的会再排队 —— 而每次释放都会再唤醒
+        一个, 所以不存在「有人睡着但名额空着」的窗口。
+        """
+        while count > 0 and self._waiters:
+            waiter = self._waiters.pop(0)
+            if waiter.done():
+                continue  # 已被取消
+            waiter.set_result(None)
+            count -= 1
 ```
 
 把 `OpenListClient.__init__` 里的
