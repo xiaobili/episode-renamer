@@ -3141,6 +3141,17 @@ export function finalizeRename(data) {
     executing.value = !dryRun
     executeDryRun.value = dryRun
 
+    // **归零必须在 `executing` 赋值这同一拍**, 不能放到 `items` 建好之后:
+    // 中间那段（buildRenamePayload 的互斥校验 / resolveConcurrency / 读 settingsStore）
+    // **全是同步且都可能抛**, 同步抛错会走 catch 后淡出 —— 那时 progress 仍是
+    // **上一次执行的终值**, 会把上一次的「12 / 12、100%」定格给一次根本没跑起来的
+    // 执行。与「淡出定格 0 / 0」是同一类谎, 只是窗口窄得多。
+    // 三条路径现在都诚实: 同步抛错 →「已完成 0 / N」; 中途抛错 → 真实的部分进度;
+    // 成功 → N / N、100%。
+    progress.done = 0
+    progress.total = selected.length
+    progress.current = ''
+
     // **在 await 之前**读进局部变量：这是「执行那一刻」的事实，要与载荷说的
     // 一致。放在 await 之后读的话，干跑在途时用户重选剧集（pickShow 会置位
     // scraped）会让记录下来的标志与刚发出去的载荷对不上 —— 结果对话框于是把
@@ -3205,9 +3216,8 @@ export function finalizeRename(data) {
         ? Math.round(settingsStore.openlist.requestInterval * 1000)
         : 0
 
-      progress.done = 0
-      progress.total = items.length
-      progress.current = ''
+      // （progress 已在进入 try 之前归零 —— 见那里的注释。这里**不要**再来一遍:
+      // 同一个函数里出现两次 `progress.done = 0`, 后人很可能删错那处承重的。）
 
       const { results, failures } = await runWithConcurrency(
         items, limit,
