@@ -282,15 +282,16 @@ async def execute_openlist_one(
         return result
 
     dir_cache: dict[str, bool] = {}
+    # move 成功之后文件的**真实位置**。它是下面那段补偿的源路径: 移动已经发生,
+    # original_path 那个位置**已经空了**。
+    moved_to: Optional[str] = None
     try:
         if not same_dir:
             await _ensure_dir(client, plan.new_dir, dir_cache)
             await client.move(plan.original_dir, plan.new_dir, [plan.original_filename])
+            moved_to = str(PurePosixPath(plan.new_dir) / plan.original_filename)
             if not same_name:
-                await client.rename(
-                    str(PurePosixPath(plan.new_dir) / plan.original_filename),
-                    plan.new_filename,
-                )
+                await client.rename(moved_to, plan.new_filename)
             result.success = True
             result.status = "renamed_moved"
         else:
@@ -298,8 +299,28 @@ async def execute_openlist_one(
             result.success = True
             result.status = "renamed"
     except Exception as exc:
-        result.success = False
-        result.error = str(exc)
-        result.status = "failed"
+        if moved_to is None:
+            # 移动本身就没做成（或压根没有移动这一步）—— 文件还在原处, 如实报失败。
+            result.success = False
+            result.error = str(exc)
+            result.status = "failed"
+        else:
+            # **移动已成功、改名失败**: 文件此刻在 new_dir/original_filename。
+            # 批量路径在这里会退回 `client.rename(p.original_path, ...)` —— 那是
+            # **移动前**的位置, 在本情形下已经空了, 注定失败; 单文件路径用真实位置
+            # 报告, 而不是报 failed。
+            #
+            # 为什么不能报 failed: landed_path_of 对 failed 返回 None, 于是这个
+            # **已经离开原处**的文件从落地表里消失 —— OpenList 的 NFO 与批次收尾
+            # 一旦启用, 它就会被当成「没落地」（spec §9.4 的判据全部建立在真实落点
+            # 之上）。宁可少一个状态名, 不能报一个假位置。
+            #
+            # new_path 改成真实落点、new_filename 改回原名: 用户看到的是「它现在在
+            # 这里」, 而不是一个它并不在的目标路径。
+            result.new_path = moved_to
+            result.new_filename = plan.original_filename
+            result.success = False
+            result.error = f"{exc} | 文件已移动到 {moved_to}, 但未能改名为 {plan.new_filename}"
+            result.status = "moved_not_renamed"
 
     return result

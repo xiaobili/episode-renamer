@@ -211,6 +211,70 @@ def test_login_endpoint_401_does_not_recurse(monkeypatch):
     assert calls == 2, f"期望 2 次请求 (fs/get + login), 实际 {calls}"
 
 
+def test_fresh_token_rejected_by_other_endpoints_does_not_recurse(monkeypatch):
+    """login 拿到的**新** token 被别的端点拒绝时**不得**无限递归。
+
+    这是「清 token」那道修复**够不着**的一格 —— 上一条用例堵住的是「login 端点
+    自己回 401」, 而这里 login **成功**了, 只是服务器不接受它发的 token:
+
+        fs/get(旧 token) → 401 → 重连(清 token) → login 成功(新 token)
+        → login 结尾的 _discover_mounts 带着**新 token** → /api/fs/list → 401
+        → 又重连 → login → 又一个新 token → list → 401 → ……
+
+    每一层都把 token 重新填满, 于是 _request 里 `not self.token` 那道守卫**永不
+    触发**, 嵌套没有上限（实测: 探针在自行掐断前已发出 61 次请求且仍在爬; 不掐断
+    就是 RecursionError）。这正是 _MAX_RECONNECT_ATTEMPTS 存在的理由。
+
+    判据是**异常类型 + 请求次数**: 修好后是 ConnectionError（硬失败, 带可读的
+    提示）且恰好 3 次请求（fs/get + login + fs/list）; 把封顶删掉本用例会一直
+    递归, 撞上响应脚本耗尽的那句 AssertionError 或 RecursionError → 红。
+    """
+    import app.core.openlist_client as mod
+
+    class _FakeAsyncClient:
+        responses: list = []
+        calls: list = []
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def request(self, method, url, **kwargs):
+            _FakeAsyncClient.calls.append(url)
+            if not _FakeAsyncClient.responses:
+                # 递归时脚本会被耗尽 —— 让失败**看得懂**, 而不是转到 RecursionError。
+                raise AssertionError(f"响应脚本耗尽, 已发 {len(_FakeAsyncClient.calls)} 次请求")
+            status, payload = _FakeAsyncClient.responses.pop(0)
+            return httpx.Response(status, json=payload, request=httpx.Request(method, url))
+
+    async def _run():
+        client = mod.OpenListClient("http://x", "u", "p")
+        client.token = "expired-token"
+        # 间隔归零: 递归时这条路径会发很多请求, 默认 0.5s 会让变异实验跑成分钟级。
+        client.apply_limits(max_concurrent=2, request_interval=0.0)
+        _FakeAsyncClient.calls = []
+        _FakeAsyncClient.responses = [
+            (401, {}),                                       # 1. fs/get: 旧 token 过期
+            (200, {"code": 200, "data": {"token": "new"}}),   # 2. auth/login: **成功**
+            (401, {}),                                       # 3. fs/list: 新 token 也被拒
+        ] + [(401, {})] * 50                                 # 递归的话继续喂, 直到脚本耗尽
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
+        try:
+            await client._request("POST", "/api/fs/get")
+        except BaseException as exc:  # noqa: BLE001 — 本用例要断言异常的**类型**
+            return type(exc), len(_FakeAsyncClient.calls)
+        raise AssertionError("_request 不该正常返回")
+
+    exc_type, calls = asyncio.run(_run())
+    assert exc_type is ConnectionError, f"期望 ConnectionError, 得到 {exc_type}"
+    assert calls == 3, f"期望 3 次请求 (fs/get + login + fs/list), 实际 {calls}"
+
+
 def test_apply_limits_is_a_noop_when_unchanged():
     """值没变就不动 —— 每次请求都替换限流器会摧毁限流本身（spec R13）。
 

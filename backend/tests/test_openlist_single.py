@@ -129,6 +129,52 @@ def test_move_without_rename_skips_the_rename_call():
     ]
 
 
+def test_move_succeeds_rename_fails_reports_real_location():
+    """移动成功、改名失败时**不得**报 failed, 且落点必须是文件真实所在处。
+
+    批量路径的补偿是 `client.rename(p.original_path, ...)`（移动**前**的位置,
+    本情形下已经空了, 注定失败）; 单文件路径没有可退的第二次调用, 于是它曾经的
+    形状是「move 成功、rename 抛错 → status=failed」—— 而文件**已经在
+    new_dir/original_filename 了**: 用户被告知失败, 实际却已经搬走。
+
+    后果不止是文案: `landed_path_of` 对 failed 返回 None, 这个已经移动的文件于是
+    从落地表里消失 —— OpenList 的 NFO 一旦启用, 组级判据（spec §9.4）就会把它
+    当成没落地。
+
+    判据三件一起: 状态不再是 failed、new_path 是**真实**位置、且 landed_path_of
+    认它落地。只改状态名而仍把 new_path 留在目标路径上, 后两条里会红一条。
+    """
+    from app.core.local_renamer import landed_path_of
+
+    f = _file("Show.S01E01.mkv")
+    plan = build_openlist_rename_plan(
+        f, TEMPLATE, folder_template="Season {season_padded}",
+        create_season_folder=True,
+    )
+    moved_to = "/media/Show/Season 01/Show.S01E01.mkv"
+    client = FakeClient(fail_rename=True)      # move 照常成功, rename 必失败
+    result = asyncio.run(execute_openlist_one(client, plan))
+
+    assert result.status == "moved_not_renamed", result.status
+    assert result.success is False
+    assert result.new_path == moved_to, result.new_path
+    assert result.new_filename == "Show.S01E01.mkv", result.new_filename
+    assert "重命名失败" in result.error and moved_to in result.error, result.error
+    # 关键的一条: 它**算落地**（否则 OpenList 接上 NFO 那天它会被判成没落地）。
+    assert landed_path_of(result) == moved_to
+    # 调用序列不变: 一次 mkdir + 一次 move + 一次失败的 rename。
+    assert [c[0] for c in client.calls] == ["mkdir", "move", "rename"], client.calls
+
+    # 反向钉住: 同目录改名失败（没有任何移动）时仍是**普通的 failed** ——
+    # 文件确实没动, 把它报成「已移动」是另一种假话。
+    f2 = _file("Show.S01E02.mkv")
+    plan2 = build_openlist_rename_plan(f2, TEMPLATE)
+    client2 = FakeClient(fail_rename=True)
+    result2 = asyncio.run(execute_openlist_one(client2, plan2))
+    assert result2.status == "failed", result2.status
+    assert landed_path_of(result2) is None
+
+
 def test_never_calls_batch_rename():
     """单文件路径不得退化成批量 API —— 那会把「一个文件一次请求」的语义悄悄改掉。"""
     f = _file("Show.S01E01.mkv")

@@ -86,6 +86,16 @@ class _AdaptiveLimiter:
             count -= 1
 
 
+_MAX_RECONNECT_ATTEMPTS = 1
+"""一条重连链条上允许的重连次数。
+
+1 是刻意的: 正常情形只需要「旧 token 过期 → 换一个 → 重试成功」这一次。第二次
+重连意味着**刚拿到的** token 又被拒绝了 —— 那不是过期, 是服务器不认这个账号或
+配置不对, 再转下去只会把栈耗干。判据见 tests/test_openlist_limiter.py 的
+test_fresh_token_rejected_by_fs_list_does_not_recurse。
+"""
+
+
 class OpenListClient:
     def __init__(self, server_url: str, username: str, password: str):
         self.server_url = server_url.rstrip("/")
@@ -108,8 +118,15 @@ class OpenListClient:
         if elapsed < self._request_interval:
             await asyncio.sleep(self._request_interval - elapsed)
 
-    async def _request(self, method: str, path: str, **kwargs) -> dict:
-        """发一次请求（401 时自动重连后重试一次）。
+    async def _request(
+        self, method: str, path: str, *, _reconnect_attempt: int = 0, **kwargs
+    ) -> dict:
+        """发一次请求（401 时自动重连后重试; 一条链条最多重连
+        _MAX_RECONNECT_ATTEMPTS 次, 越限抛 ConnectionError 硬失败）。
+
+        `_reconnect_attempt` 是**内部参数**, 调用方一律不传: 它记录当前这条重连
+        链条上已经重连过几次, 由 `_reconnect` → `login` → `_discover_mounts`
+        逐层带下来, 越限即硬失败（理由见 _MAX_RECONNECT_ATTEMPTS）。
 
         **限流器只包住单次 HTTP 尝试, 不包住重连** —— 这是刻意的, 也是本次
         重构的全部理由: `_reconnect` 会走 `login` → `_request`, 也就是**在持着
@@ -150,7 +167,17 @@ class OpenListClient:
 
             # 走到这里说明撞了 401 且 token 还在 —— **出了 limiter 再重连**。
             # 重连自己会发请求（login）, 在名额内做就会与外层争名额。
-            await self._reconnect()
+            #
+            # 封顶: 重连出来的**新 token 仍被拒绝**时必须硬失败, 否则
+            # login → _discover_mounts → _request → _reconnect → login … 无限
+            # 递归（每层都会把 token 重新填满, 那道 `not self.token` 守卫拦不住,
+            # 见 _reconnect 的 docstring）。
+            if _reconnect_attempt >= _MAX_RECONNECT_ATTEMPTS:
+                raise ConnectionError(
+                    f"OpenList 重连后仍返回 401（已重连 {_reconnect_attempt} 次）: "
+                    "新 token 被服务器拒绝, 请检查账号/密码或服务端配置"
+                )
+            await self._reconnect(_reconnect_attempt + 1)
 
     def apply_limits(
         self,
@@ -168,7 +195,9 @@ class OpenListClient:
         if request_interval is not None:
             self._request_interval = request_interval
 
-    async def login(self, otp_code: Optional[str] = None) -> OpenListConnection:
+    async def login(
+        self, otp_code: Optional[str] = None, *, _reconnect_attempt: int = 0
+    ) -> OpenListConnection:
         body = {
             "username": self.username,
             "password": self.password,
@@ -176,7 +205,9 @@ class OpenListClient:
         if otp_code:
             body["otp_code"] = otp_code
 
-        data = await self._request("POST", "/api/auth/login", json=body)
+        data = await self._request(
+            "POST", "/api/auth/login", json=body, _reconnect_attempt=_reconnect_attempt
+        )
 
         if data.get("code") != 200:
             raise Exception(f"登录失败: {data.get('message')}")
@@ -185,8 +216,11 @@ class OpenListClient:
         if not self.token:
             raise Exception("登录响应中无 token")
 
+        # **token 先赋值、connected 后置**：_discover_mounts 要带 Authorization
+        # （新 token 就是为它拿的）, 但 connected 只能在挂载点真的列出来之后才为真
+        # —— 否则一次失败的登录会把客户端留在「已连接、挂载点为空」的状态里。
+        await self._discover_mounts(_reconnect_attempt=_reconnect_attempt)
         self.connected = True
-        await self._discover_mounts()
 
         return OpenListConnection(
             server_url=self.server_url,
@@ -198,8 +232,12 @@ class OpenListClient:
             write_access=self.write_access,
         )
 
-    async def _discover_mounts(self) -> None:
-        data = await self._request("POST", "/api/fs/list", json={"path": "/", "password": "", "refresh": False})
+    async def _discover_mounts(self, *, _reconnect_attempt: int = 0) -> None:
+        data = await self._request(
+            "POST", "/api/fs/list",
+            json={"path": "/", "password": "", "refresh": False},
+            _reconnect_attempt=_reconnect_attempt,
+        )
 
         content = (data.get("data") or {}).get("content", [])
         self.mount_points = [
@@ -207,15 +245,29 @@ class OpenListClient:
             if c.get("is_dir", True) or c.get("type") == 1
         ]
 
-    async def _reconnect(self) -> None:
-        # 先清 token: 它正是引起这次重连的那个**已知无效**的值。不清的话,
-        # login 自己发出的那个请求还会带着它 —— 若 login 端点也回 401, 嵌套的
-        # _request 会再次触发重连, 无限递归到 RecursionError（实测 329 次调用
-        # 后崩）。旧实现在这里会**先死锁**, 所以这条路径此前从未被观察到 ——
-        # 是 _request 的重构（把重连移出限流器）把它暴露出来的。
+    async def _reconnect(self, attempt: int) -> None:
+        """重连一次。attempt = 本次链条里已经重连过几次（1 起）。
+
+        先清 token: 它正是引起这次重连的那个**已知无效**的值。不清的话, login
+        自己发出的那个请求还会带着它 —— 若 login 端点也回 401, 嵌套的 _request
+        会再次触发重连, 一直递归到 RecursionError（实测 329 次调用后崩）。旧实现
+        在这里会**先死锁**, 所以这条路径此前从未被观察到 —— 是 _request 的重构
+        （把重连移出限流器）把它暴露出来的。
+
+        **清 token 只堵住「login 端点回 401」这一条路, 链条本身并没有闭合**:
+        login 成功之后拿到的**新 token 可能被别的端点拒绝**（实测: 服务器接受
+        /api/auth/login 却对 /api/fs/list 回 401）, 而 login 结尾的
+        _discover_mounts 就是这样一个请求 —— 它带着刚拿到的新 token, 撞上 401
+        时会再次 _reconnect → login → 新 token → list → 401 …… 每一层都把 token
+        重新填满, 于是 `_request` 里 `not self.token` 那道守卫**永不触发**,
+        嵌套没有上限。故重连次数必须显式封顶（见 _MAX_RECONNECT_ATTEMPTS）,
+        attempt 沿「_request → _reconnect → login → _discover_mounts → _request」
+        这条调用链一路带下去 —— 计数器放实例上不行: 并发请求各自的重连是**不同
+        的链条**, 共用一个计数会让正常的并发刷新互相把对方判成超限。
+        """
         self.token = None
         self.connected = False
-        await self.login()
+        await self.login(_reconnect_attempt=attempt)
 
     async def test_connection(self) -> bool:
         try:
