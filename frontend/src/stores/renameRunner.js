@@ -4,6 +4,14 @@
 // `limit` **必须由调用方传入**: 函数内不设默认值, 未传直接抛错。兜底会让
 // 「调用点忘了传设置」静默退化成某个魔数, 而那正是本次要修的那类 bug ——
 // 设置项在页面上可改、实际不生效（spec 事实 10）。
+//
+// 调用方须知:
+// 1. `onProgress` 是**调用方提供的回调, 本模块不接管它的异常** —— 它抛出的异常会
+//    逃出 runOne 并让整批 reject（那是调用方自己的 bug, 我们**不**吞掉它: 静默
+//    吞掉会让一个坏回调看起来一切正常）。所以它必须是不会抛的纯赋值。
+// 2. 失败条目的槽位在 `results` 里是**空洞**（`new Array(n)` 从不赋值），
+//    `map` / `forEach` 会静默跳过它。要读失败信息一律查 `failures`, 不要遍历
+//    `results`。
 
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
