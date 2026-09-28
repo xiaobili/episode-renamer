@@ -25,6 +25,7 @@ const SCRIPTS = [
   'check-workspace-gating.mjs',
   'check-rename-runner.mjs',
   'check-rename-aggregate.mjs',
+  'check-execute-loop.mjs',
 ]
 
 let failed = 0
