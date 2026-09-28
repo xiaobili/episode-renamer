@@ -253,7 +253,7 @@ git commit -m "refactor(local_renamer): 抽出 plan_files / _entry_for / count_r
 - Produces:
   - `@dataclass OneOutcome`，字段：`result: RenameResult`、`landed_path: Optional[str]`、`dead_episode_path: Optional[str]`、`nfo_written: list[str]`、`nfo_carried: list[str]`、`nfo_skipped: list[tuple[str, str]]`、`executed: int`、`skipped: int`、`failed: int`
   - `landed_path_of(result: RenameResult) -> Optional[str]` —— 落地返回真实落点，未落地返回 `None`（公开，供 OpenList 路径复用，避免跨模块 import 私有名 `_NO_LANDING_STATUSES`）
-  - `execute_one(plan: RenamePlan, *, dry_run: bool = False, conflict_strategy: str = "skip", nfo_options: NfoOptions | None = None, nfo_matches: dict[str, EpisodeMatch] | None = None) -> OneOutcome`
+  - `execute_one(plan: RenamePlan, *, conflict_strategy: str = "skip", nfo_options: NfoOptions | None = None, nfo_matches: dict[str, EpisodeMatch] | None = None) -> OneOutcome`（**无 `dry_run`**，理由见实现处的注释）
   - `finalize_show_nfo(plans: list[RenamePlan], landed_paths: list[str], nfo_matches: dict[str, EpisodeMatch], options: NfoOptions) -> tuple[list[str], list[tuple[str, str]]]`
 
 - [ ] **Step 1: 写交叉判据测试（先红）**
@@ -289,6 +289,7 @@ OVERRIDES = {
     "Show.S01E01.mkv": {"show_name": "Show", "season": 1, "episode": 1},
     "Show.S01E02.mkv": {"show_name": "Show", "season": 1, "episode": 2},
     "Show.S01E02.chs.srt": {"show_name": "Show", "season": 1, "episode": 2},
+    "Show.S01E03.mkv": {"show_name": "Show", "season": 1, "episode": 3},
 }
 
 
@@ -305,6 +306,11 @@ def _matches():
             status=STATUS_MATCHED, show=show, season=season,
             episode=TmdbEpisode(episode_number=2, name="第二集"),
         ),
+        # E03 的源文件不存在 → 它不落地, 但**要有**决策才能验「报出来」那条规则
+        "Show.S01E03.mkv": EpisodeMatch(
+            status=STATUS_MATCHED, show=show, season=season,
+            episode=TmdbEpisode(episode_number=3, name="第三集"),
+        ),
     }
 
 
@@ -319,11 +325,23 @@ def _video(dir_path, name, is_subtitle=False):
 
 
 def _setup(dir_path):
-    """一个含「已存在」与「可跟随」两种情形的批次。"""
+    """一个含「已存在」「可跟随」「不落地」三种情形的批次。
+
+    第三种是**必须**的: 少了它, 两条路径在「文件未改名 → 不写 NFO 但必须报出来」
+    这条规则上的分叉完全不可见（execute_one 曾漏掉那条 nfo_skipped 记录, 而
+    三条断言全绿）。
+    """
     files = [
         _video(dir_path, "Show.S01E01.mkv"),
         _video(dir_path, "Show.S01E02.mkv"),
         _video(dir_path, "Show.S01E02.chs.srt", is_subtitle=True),
+        # 源文件**不存在** → status="failed" → 不落地。FileInfo 照造, 但不写盘。
+        FileInfo(
+            id="Show.S01E03.mkv", source="local",
+            path=str(dir_path / "Show.S01E03.mkv"),
+            filename="Show.S01E03.mkv", extension=".mkv",
+            parent_dir=str(dir_path),
+        ),
     ]
     # E02 的目标 NFO 先占住 → 生成侧报「已存在」
     (dir_path / "Show - S01E02.nfo").write_text("old", encoding="utf-8")
@@ -483,7 +501,6 @@ class OneOutcome:
 def execute_one(
     plan: RenamePlan,
     *,
-    dry_run: bool = False,
     conflict_strategy: str = "skip",
     nfo_options: NfoOptions | None = None,
     nfo_matches: dict[str, EpisodeMatch] | None = None,
@@ -492,6 +509,12 @@ def execute_one(
 
     与 batch_rename 的每文件循环逐字同源（叶子助手共用）。两处的等价性由
     tests/test_single_file_core.py 的交叉判据钉住 —— 改这里要同时跑它。
+
+    **没有 dry_run 形参**, 这是刻意的: 干跑在本设计里是**批次级**的（spec R9,
+    /rename/dry-run 仍是批量请求）。曾经照搬过 dry_run, 后果是
+    `status="dry_run"` 不在 _NO_LANDING_STATUSES 里 → landed 为真 → **真的把
+    每集 NFO 写下去**（实测: 视频没动、NFO 已写）。一个名为 dry_run 的分支会
+    改盘, 比没有这个参数糟得多。要加回来, 必须同时加一个能红的判据。
     """
     nfo_matches = nfo_matches or {}
     # 冲突行走 abort 时 result 是合成的, 但**不能提前 return**: 下面那段
@@ -510,9 +533,7 @@ def execute_one(
             status="conflict",
         )
     else:
-        result = execute_rename_plan(
-            plan, dry_run=dry_run, conflict_strategy=conflict_strategy
-        )
+        result = execute_rename_plan(plan, conflict_strategy=conflict_strategy)
 
     outcome = OneOutcome(result=result)
     is_video = not _is_subtitle_file(plan.file_info)
@@ -531,7 +552,7 @@ def execute_one(
     # 而放弃 —— 用户的内容被生成结果替掉, 旧文件还在原处当孤儿。
     if not aborted and is_video and result.status in _CARRY_STATUSES:
         carried_path, carry_reason = carry_same_stem_nfo(
-            plan.original_path, result.new_path, dry_run=dry_run
+            plan.original_path, result.new_path
         )
         if carried_path is not None:
             outcome.nfo_carried.append(carried_path)
@@ -544,8 +565,13 @@ def execute_one(
     if decision is not None:
         if not landed:
             # 它不写, 但必须**报出来**（nfo_skipped）—— 静默地少写一个 NFO 与
-            # 静默地写错一个一样不可见。
+            # 静默地写错一个一样不可见。batch_rename 在 :684 做同一件事
+            # （dead_episode_paths → _NOT_RENAMED_NFO_REASON）。**漏掉这一句
+            # 就是两条路径的分叉**: 交叉判据在夹具含不落地文件时会红。
             outcome.dead_episode_path = decision.path
+            outcome.nfo_skipped.append(
+                (decision.path, _NOT_RENAMED_NFO_REASON)
+            )
         else:
             # rename_dup（「自动编号」）下真实落点是 X_1.mkv, 而每集决策是按
             # plan.new_path 算的 —— 不跟着改指向的话, 改名后的视频拿不到与它同名
@@ -653,7 +679,7 @@ git commit -m "feat(local_renamer): 新增 execute_one 与 finalize_show_nfo，�
 
 **Interfaces:**
 - Consumes: 无
-- Produces: `async def execute_openlist_one(client: OpenListClient, plan: RenamePlan, dry_run: bool = False) -> RenameResult`
+- Produces: `async def execute_openlist_one(client: OpenListClient, plan: RenamePlan) -> RenameResult`（**无 `dry_run`**：干跑是批次级的，本函数在生产里只被 /rename/execute 以「真执行」调用；一个没有调用者的分支就是一处没有判据的分支）
 
 **背景**：`execute_openlist_batch` 用 `client.batch_rename(dir_path, objs)` 把同目录的多个重命名合并成**一次** API 调用。单文件化后每次请求只有一个文件，故改用 `client.rename(path, new_name)`（同目录改名）与 `client.move(src_dir, dst_dir, [name])`（跨目录）。
 
@@ -790,7 +816,6 @@ Expected: 看到 `asyncio_mode = auto` 或 `asyncio_mode = strict` + 已安装 `
 async def execute_openlist_one(
     client: OpenListClient,
     plan: RenamePlan,
-    dry_run: bool = False,
 ) -> RenameResult:
     """执行**一个** OpenList plan。
 
@@ -813,11 +838,6 @@ async def execute_openlist_one(
     if same_dir and same_name:
         result.success = True
         result.status = "skipped_same"
-        return result
-
-    if dry_run:
-        result.success = True
-        result.status = "dry_run"
         return result
 
     dir_cache: dict[str, bool] = {}
