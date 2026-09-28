@@ -161,9 +161,19 @@ dry-run 继续批量（它是纯计划操作，不写盘，不需要进度），
 | `execute_one(plan, *, dry_run, conflict_strategy, nfo_options, nfo_matches) -> OneOutcome` | 执行单个 plan + 每集 NFO 决策 + 跟随既有 NFO | 抽取现有 `:359-417` |
 | `finalize_show_nfo(plans, landed_paths, nfo_matches, options) -> (written, skipped)` | 只取 `kind in ("tvshow","season")` 的决策并落盘 | 抽取现有 `:448-520` 的组级部分 |
 
-`batch_rename(dry_run=True)` **保留**，改为组合上述三者 —— 干跑是用户执行前唯一的可见性，其行为必须逐字不变。
+`batch_rename` **保留为批量的参考实现**（干跑仍走它，且 `dry_run=False` 分支不删）。它改为调用上述叶子助手，但**不**改成「逐文件调 `execute_one`」的组合。
 
-**每集 NFO 的决策逻辑只允许有一份**（抽成 `_episode_decisions_for(plans, nfo_matches, options)`，被 `execute_one` 与 `batch_rename` 共用）。理由是 `renamePayload.js:1-9` 已经写明的那条：同一逻辑的两份副本必然漂移，且新增字段时漏改一处**没有任何机械判据能发现**。
+不组合的理由是硬的：干跑的跳过清单依赖**批次级**的 `planned_carried` —— 那个集合要在整批的 carry 全部算完之后才成立（`local_renamer.py:500` 附近的 `planned_carried = set(nfo_carried)` 在循环**之后**），逐文件调用时第一个文件根本不知道后面哪些路径会被占。强行组合要么改变干跑的报数（对话框把 N 个读成 1 个），要么给 `execute_one` 塞一个它自己算不出来的入参。
+
+代价是每文件的编排循环存在两份（`batch_rename` 的循环与 `execute_one`）。**叶子助手是共用的，漂移风险集中在编排层**，故补一条交叉判据钉住它：
+
+> 同一批输入分别走 `batch_rename`（批量）与 `execute_one` × N + `finalize_show_nfo`（单文件），聚合后的 `executed / skipped / failed / nfo_written / nfo_skipped / nfo_carried` 必须逐项相等。
+
+这条判据在两条路径的任何一处漂移时都会红 —— 它才是「两份副本」这个顾虑的答案，而不是靠「不写第二份」的愿望。
+
+**每集 NFO 的决策逻辑只允许有一份**（抽成 `_episode_decision_for(plan, nfo_matches, options)`，被 `execute_one` 与 `batch_rename` 共用）。理由是 `renamePayload.js:1-9` 已经写明的那条：同一逻辑的两份副本必然漂移，且新增字段时漏改一处**没有任何机械判据能发现**。
+
+`batch_rename` 的 `dry_run=False` 分支在生产路径上不再被调用（`/rename/execute` 走 `execute_one`），但**不删**：`tests/test_nfo_write.py` 有 37 处直接调它，那些用例是 NFO 全部语义（carry / 去重 / `_keep_decision` / rename_dup 改指向）的既有防线，删掉分支等于删掉防线。
 
 `finalize_show_nfo` 复用既有的 `_keep_decision`（`:112`）与 `dedupe_skipped_pairs`（`nfo_writer.py:301`），**不改判据**：`landed_paths` 由前端回传的 `landed` 表推导（取 `os.path.dirname` 去重），语义与批次内自算的完全一致。
 
@@ -407,3 +417,4 @@ class _AdaptiveLimiter:
 | R12 | 聚合抽成 `renameAggregate.js` 纯函数 | 本项目无前端测试设施，纯函数是唯一能被 node 直接断言的东西；R11 的约束需要机械判据 |
 | R13 | OpenList 限流器用计数器 + `Condition` 实现，不替换 `Semaphore` 对象 | 每请求替换会摧毁限流本身；「值没变就不替换」的补丁仍有瞬时抖动 |
 | R14 | 组级决策的 NfoEntry 用 `plan.new_path`，不加「用真实落点覆盖」的分支 | 推导链只消费 `dirname`、`rename_dup` 只改词干 —— 覆盖买不到任何东西（已核实，见 §5.1） |
+| R15 | `batch_rename` 保留为批量参考实现，**不**改为逐文件组合；改以交叉判据钉住两条路径 | 干跑的 `planned_carried` 是批次级事实，循环内算不出来；而删掉它的 `dry_run=False` 分支会摧毁 `test_nfo_write.py` 的 37 条既有防线 |
