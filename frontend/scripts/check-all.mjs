@@ -1,4 +1,4 @@
-// 一次跑齐所有前端机械判据（就是 scripts/ 下的那五个 check-*.mjs）。
+// 一次跑齐所有前端机械判据（就是 scripts/ 下的那六个 check-*.mjs）。
 //
 // 为什么需要它：本计划自查出的三个缺陷**全部**是同一形态 ——
 //   · 断言抓不到真实的错误实现（零鉴别力）；
@@ -23,6 +23,7 @@ const SCRIPTS = [
   'check-rename-payload.mjs',
   'check-sfc-compile.mjs',
   'check-workspace-gating.mjs',
+  'check-rename-runner.mjs',
 ]
 
 let failed = 0
