@@ -1531,13 +1531,23 @@ def test_contract_uses_singular_file_id(client):
 
 
 def test_singular_override_reaches_the_plan(client):
-    """override 必须真的进 plan —— 丢掉它会让文件名少一集/少一季且零报错。"""
-    res = client.post("/api/rename/execute", json=payload(episode_pad_digits=3))
+    """override 必须真的进 plan —— 丢掉它会让文件名少一集/少一季且零报错。
+
+    **用一份与文件名解析结果不同的 override**: 文件名 Test.Show.S01E02.mkv 解析出
+    (Test Show, 1, 2), override 把它改成 (Other Show, 5, 9)。文件名随之变成
+    Other Show - S05E09.mkv —— 只有 override 真的传到了 plan 才会这样。
+
+    两个 pad 字段**都不传**: 免得把补零也搅进来（那会让本判据分不清是 override
+    丢了还是 pad 算错了, 而补零已有自己的判据）。
+    """
+    res = client.post("/api/rename/execute", json=payload(
+        override={"show_name": "Other Show", "season": 5, "episode": 9},
+    ))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["file_id"] == "f1"
-    assert body["result"]["new_filename"] == "Test Show - S001E002.mkv"
-    assert body["result"]["new_path"] == "/media/Test Show/Test Show - S001E002.mkv"
+    assert body["result"]["new_filename"] == "Other Show - S05E09.mkv"
+    assert body["result"]["new_path"] == "/media/Test Show/Other Show - S05E09.mkv"
 
 
 def test_missing_source_file_counts_as_failed(client):
@@ -1556,10 +1566,44 @@ def test_unknown_file_id_is_rejected(client):
     assert "未找到" in res.json()["detail"]
 
 
-def test_no_nfo_request_writes_nothing(client):
-    body = client.post("/api/rename/execute", json=payload(generate_nfo=False)).json()
-    assert body["nfo_written"] == []
-    assert body["nfo_carried"] == []
+def test_generate_nfo_flag_controls_the_episode_decision(tmp_path):
+    """generate_nfo=False 时**不该**产生任何每集 NFO 决策; 开了就必须有。
+
+    判据用 `result.nfo_path`: None 表示「这条路径根本没进 NFO 管线」。
+
+    夹具必须让文件**真的改名成功**: 源文件不存在时那一行本来就是 `failed`、
+    本来就不写 NFO, 断言 `nfo_written == []` 近乎恒真 —— 实测把 `generate_nfo`
+    恒置 True 时六条判据全绿, 即原来那条对「忽略开关」这个变异是失明的。
+
+    两个方向各跑一个目录: 第一次 execute 会把文件改名, 同一目录再跑第二次就
+    找不到源文件了。
+    """
+    def _run(dir_name, generate_nfo):
+        d = tmp_path / dir_name
+        d.mkdir()
+        video = d / "Test.Show.S01E02.mkv"
+        video.write_text("x", encoding="utf-8")
+        cache_files([FileInfo(
+            id="f1", source="local", path=str(video),
+            filename="Test.Show.S01E02.mkv", extension=".mkv",
+            parent_dir=str(d),
+        )])
+        return TestClient(app).post("/api/rename/execute", json={
+            "file_id": "f1", "template": TEMPLATE, "source": "local",
+            "path": str(d), "override": OVERRIDE, "conflict_strategy": "skip",
+            "generate_nfo": generate_nfo,
+        }).json()
+
+    off = _run("off", False)
+    assert off["result"]["status"] == "renamed", off["result"]
+    assert off["result"]["nfo_path"] is None
+    assert off["nfo_written"] == []
+
+    # 对照: 开了就必须有决策。未配 TMDB → 内容为 None、写不出文件, 但**落点在**。
+    # 少了这一半, 「忽略 generate_nfo」的变异不会红。
+    on = _run("on", True)
+    assert on["result"]["status"] == "renamed", on["result"]
+    assert on["result"]["nfo_path"] is not None
 
 
 def test_abort_marks_the_file_as_conflict(tmp_path):
@@ -1717,7 +1761,25 @@ from ..core.openlist_renamer import (
 )
 ```
 
-在 `_show_key` 之后插入两个小助手：
+在 `_show_key` 之后插入三个小助手（第三个是适配器）：
+
+```python
+def _as_batch_request(
+    req: RenameExecuteRequest, overrides: dict[str, dict]
+) -> RenameBatchRequest:
+    """把单文件请求重打包成 `_with_tmdb_titles` 读的**批量形状**。
+
+    字段用 model_dump 透传而不是逐个抄写: 两个模型的字段集合除
+    `file_id`/`override` 与 `file_ids`/`overrides` 这一对外完全相同, 逐个抄写
+    必然在下次加字段时漂移 —— 那正是 RenameBatchRequest 被抽出来的理由。
+    """
+    return RenameBatchRequest(
+        **req.model_dump(exclude={"file_id", "override"}),
+        file_ids=[req.file_id],
+        overrides=overrides,
+    )
+```
+
 
 ```python
 def _apply_openlist_limits(client, req) -> None:
@@ -1751,10 +1813,16 @@ async def execute_rename(req: RenameExecuteRequest):
     source = req.source.lower()
     pad = _pad_from_request(req)
 
-    # 适配成 {file_id: override} 喂给既有的 _with_tmdb_titles —— 那个函数处理的是
-    # 列表, 不改它的签名, 免得预览/干跑两条路径跟着动。
+    # 适配成**批量形状**喂给既有的 _with_tmdb_titles: 它读的是 `req.overrides`
+    # （批量形状）, 而本接口收的是单数 `override`。
+    #
+    # **必须真的重打包, 不能只算一个局部变量**: 直接把 `req` 传进去会
+    # AttributeError —— RenameExecuteRequest 没有 overrides 字段。适配只发生在
+    # 这里, 预览 / 干跑 / 收尾三条路径读的仍是各自真实的批量请求, 一行不动。
     overrides = {req.file_id: req.override} if req.override else {}
-    merged, _summaries, matches_by_file = await _with_tmdb_titles(req, [file])
+    merged, _summaries, matches_by_file = await _with_tmdb_titles(
+        _as_batch_request(req, overrides), [file]
+    )
 
     plans = plan_files(
         [file], req.template, req.folder_template, req.create_season_folder,
@@ -1818,11 +1886,22 @@ async def execute_rename(req: RenameExecuteRequest):
 
 `nfo_written` / `nfo_carried` / `nfo_skipped` 在 `BatchRenameResult` 与 `SingleRenameResult` 里**都是顶层字段**，故 `res.json()["nfo_written"]` 这类写法不用改。
 
+**三条多文件用例必须改写语义，不是只改形状。** `tests/test_rename_nfo_route.py` 里有三条用例用**多个** `file_ids`，并断言 `/rename/execute` 写出 `tvshow.nfo` / `season.nfo`：
+
+| 用例（约在） | 原来的主张 | 改成 |
+|---|---|---|
+| `test_execute_with_tmdb_writes_all_three_kinds`（~331） | execute 写出三种 NFO | execute 只写**它负责的那一份**每集 NFO（落盘 + `result.nfo_path` 指向改名后的路径），并**显式断言组级 NFO 不由 execute 写**（`nfo_written` 里没有 `tvshow.nfo` / `season.nfo`） |
+| 两条字幕用例（~411、~501） | 精确集合里含两份组级 NFO | 执行侧**逐个文件各 POST 一次**（每个文件一次 execute），把 `body["result"]` 收进 `by_name`；精确集合断言缩成 `["Test Show - S01E02.nfo"]` |
+
+这不是「断言被迫改」，而是**契约变更本身**：组级 NFO 从 `/rename/execute` 移到了 `/rename/finalize`（spec R1）。改写后第一条还多出一条**能红的新判据** —— 把 `execute_one` 换成 `finalize_show_nfo` + 写盘会让它红。
+
+**还有第 10 处调用点**：`tests/test_nfo_write.py:191` 是**模型级构造**（不是 HTTP 调用），brief 的清单与 grep 都抓不到它，只有跑全套才会暴露。它按纯形状改（`file_ids=[X]` → `file_id=X`），断言不动。
+
 改完后跑一次 grep 确认没有漏网的批量调用：
 
-Run: `cd backend && grep -rn '"file_ids"' tests/test_rename_routes.py tests/test_rename_nfo_route.py | grep -v 'rename/preview' | grep -v 'dry-run'`
+Run: `cd backend && grep -rn '"file_ids"' tests/ | grep -v 'rename/preview' | grep -v 'dry-run'`
 
-Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，不得改）。若出现 execute 的用例，回到上表继续改。
+Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，不得改）以及 `RenameBatchRequest` 的模型级构造。若出现 execute 的**路由**用例，回到上表继续改。
 
 - [ ] **Step 6: 跑全套**
 
@@ -1944,7 +2023,31 @@ def test_finalize_skips_when_nfo_disabled(env):
     assert res.json()["nfo_written"] == []
 ```
 
-**注意**：这些用例不传 `tmdb_*`，conftest 已把 Key 钉成空串，故 TMDB 一律 disabled、`has_metadata` 为 False → 决策的 `content` 为 None → **不会有任何文件被写**。因此 `test_group_nfo_written_when_any_file_landed` 会红。
+**注意**：这些用例不传 `tmdb_*`，conftest 已把 Key 钉成空串，故 TMDB 一律 disabled、`has_metadata` 为 False → 决策的 `content` 为 False → **不会有任何文件被写**。因此 `test_group_nfo_written_when_any_file_landed` 会红。
+
+**必须再补一条端到端判据（否则覆盖会凭空消失）**：Task 5 把三条「TMDB 命中 → 盘上真的出现 `tvshow.nfo` / `season.nfo`」的用例改成了「execute 只写每集 NFO」，而上面这些用例跑在**未配 TMDB** 上、只断言 `nfo_skipped` —— 于是改完之后，**全套里再没有任何用例证明组级 NFO 会真的落到盘上**。
+
+补一条（用离线 TMDB 替身，照 `tests/test_rename_nfo_route.py` 里 `matched_client` / `_FakeTmdbClient` 的既有写法）：
+
+```python
+def test_finalize_writes_group_nfo_to_disk_when_tmdb_matched(matched_env):
+    """TMDB 命中时, 收尾必须把 tvshow.nfo / season.nfo **真的写到盘上**。
+
+    这是「组级 NFO 确实会落盘」在全套里唯一的端到端判据 —— Task 5 把原来那三条
+    从 execute 侧删掉了, 少了它, 这条覆盖就只剩 `nfo_skipped` 的间接证据。
+    把 finalize_show_nfo 的写盘删掉（只返回跳过）本用例必红。
+    """
+    res = matched_env["client"].post("/api/rename/finalize", json=_payload(
+        matched_env, landed=matched_env["landed"]))
+    assert res.status_code == 200, res.text
+    written = res.json()["nfo_written"]
+    assert os.path.join(matched_env["dir"], "tvshow.nfo") in written
+    assert os.path.join(matched_env["dir"], "season.nfo") in written
+    for path in written:
+        assert os.path.exists(path), path
+```
+
+`matched_env` 夹具请照 `test_rename_nfo_route.py` 的 `matched_client` 造（那里已有可用的离线 TMDB 替身与 `MATCHED_PAYLOAD`），不要新写一套。
 
 这正是本任务要暴露的事实：**没有 TMDB 元数据时，收尾一个文件都不写**。所以该用例要改成断言「决策被算出但报成跳过」，而不是断言文件落盘：
 
@@ -2028,12 +2131,12 @@ async def finalize_rename(req: RenameFinalizeRequest):
 - [ ] **Step 4: 跑测试**
 
 Run: `cd backend && python -m pytest tests/test_rename_finalize_route.py -q`
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: 跑全套并提交**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿
+Expected: 全绿（数量 = Task 5 结束时的 240 + 新增 6 条 = 246，以实际为准）
 
 ```bash
 git add backend/app/api/renamer.py backend/tests/test_rename_finalize_route.py
