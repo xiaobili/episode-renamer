@@ -750,8 +750,16 @@ git commit -m "feat(local_renamer): 新增 execute_one 与 finalize_show_nfo，�
 新建 `backend/tests/test_openlist_single.py`：
 
 ```python
-"""OpenList 单文件执行的判据。"""
-import pytest
+"""OpenList 单文件执行的判据。
+
+异步驱动用**标准库 asyncio.run**, 与 test_tmdb_client.py / test_tmdb_resolver.py
+一致 —— 本项目**未装 pytest-asyncio**（requirements-dev.txt 只有 pytest, 且
+test_tmdb_client.py 开头把这件事写成了明文的约定）。没有插件时
+`@pytest.mark.asyncio` 只是个未知标记, 用例会以「async def functions are not
+natively supported」失败, 而补 `asyncio_mode = auto` 也救不了（那个键会被报成
+Unknown config option, 只是多一条告警）。
+"""
+import asyncio
 
 from app.core.openlist_renamer import build_openlist_rename_plan, execute_openlist_one
 from app.models.file import FileInfo
@@ -793,33 +801,30 @@ def _file(name, parent="/media/Show"):
     )
 
 
-@pytest.mark.asyncio
-async def test_same_dir_rename_uses_rename_api():
+def test_same_dir_rename_uses_rename_api():
     f = _file("Show.S01E01.mkv")
     plan = build_openlist_rename_plan(
         f, TEMPLATE,
         override=None,
     )
     client = FakeClient()
-    result = await execute_openlist_one(client, plan)
+    result = asyncio.run(execute_openlist_one(client, plan))
     assert result.success is True
     assert result.status == "renamed"
     assert result.new_filename == "Show - S01E01.mkv"
     assert client.calls == [("rename", f.path, "Show - S01E01.mkv")]
 
 
-@pytest.mark.asyncio
-async def test_same_name_is_skipped_without_any_call():
+def test_same_name_is_skipped_without_any_call():
     f = _file("Show - S01E01.mkv")
     plan = build_openlist_rename_plan(f, TEMPLATE)
     client = FakeClient()
-    result = await execute_openlist_one(client, plan)
+    result = asyncio.run(execute_openlist_one(client, plan))
     assert result.status == "skipped_same"
     assert client.calls == []
 
 
-@pytest.mark.asyncio
-async def test_move_plan_moves_then_renames():
+def test_move_plan_moves_then_renames():
     f = _file("Show.S01E01.mkv")
     plan = build_openlist_rename_plan(
         f, TEMPLATE, folder_template="Season {season_padded}",
@@ -829,7 +834,7 @@ async def test_move_plan_moves_then_renames():
     # season_pad_digits = 2）。断言写成 "Season 1" 会红。
     assert plan.new_dir.endswith("Season 01"), plan.new_dir
     client = FakeClient()
-    result = await execute_openlist_one(client, plan)
+    result = asyncio.run(execute_openlist_one(client, plan))
     assert result.success is True
     assert client.calls[0][0] == "mkdir"
     assert client.calls[1] == ("move", "/media/Show", "/media/Show/Season 01",
@@ -837,24 +842,22 @@ async def test_move_plan_moves_then_renames():
     assert client.calls[2][0] == "rename"
 
 
-@pytest.mark.asyncio
-async def test_rename_failure_is_reported_not_raised():
+def test_rename_failure_is_reported_not_raised():
     f = _file("Show.S01E01.mkv")
     plan = build_openlist_rename_plan(f, TEMPLATE)
     client = FakeClient(fail_rename=True)
-    result = await execute_openlist_one(client, plan)
+    result = asyncio.run(execute_openlist_one(client, plan))
     assert result.success is False
     assert result.status == "failed"
     assert "重命名失败" in result.error
 
 
-@pytest.mark.asyncio
-async def test_never_calls_batch_rename():
+def test_never_calls_batch_rename():
     """单文件路径不得退化成批量 API —— 那会把「一个文件一次请求」的语义悄悄改掉。"""
     f = _file("Show.S01E01.mkv")
     plan = build_openlist_rename_plan(f, TEMPLATE)
     client = FakeClient()
-    await execute_openlist_one(client, plan)
+    asyncio.run(execute_openlist_one(client, plan))
     assert all(c[0] != "batch_rename" for c in client.calls)
 ```
 
@@ -863,12 +866,15 @@ async def test_never_calls_batch_rename():
 Run: `cd backend && python -m pytest tests/test_openlist_single.py -q`
 Expected: FAIL — `ImportError: cannot import name 'execute_openlist_one'`（若报 `asyncio_mode` 相关错误，见 Step 3 的 `pytest.ini` 说明）
 
-- [ ] **Step 3: 确认 pytest 支持 `@pytest.mark.asyncio`**
+- [ ] **Step 3: 确认异步测试的驱动方式（**不要**引入 pytest-asyncio）**
 
-Run: `cd backend && cat pytest.ini`
-Expected: 看到 `asyncio_mode = auto` 或 `asyncio_mode = strict` + 已安装 `pytest-asyncio`。
+Run: `cd backend && cat requirements-dev.txt && cat pytest.ini && python -c "import pytest_asyncio"`
 
-若 `pytest.ini` 里**没有** `asyncio_mode`，先加 `asyncio_mode = auto`，然后**再跑一次全套**确认既有测试仍全绿（`auto` 模式会改变所有 async 用例的收集方式）。
+Expected: `requirements-dev.txt` 里只有 `pytest`；`pytest.ini` 里**没有** `asyncio_mode`；`import pytest_asyncio` 报 `ModuleNotFoundError`。
+
+这就是本仓库的既有约定 —— `tests/test_tmdb_client.py:1` 写着「本项目未装 pytest-asyncio，用标准库 asyncio.run 驱动异步断言」。**照办**：不要安装新依赖，也不要往 `pytest.ini` 加 `asyncio_mode`（那个键没有插件时只会被报成 `Unknown config option`，多一条告警而救不了任何用例）。测试文件按 Step 1 给的 `asyncio.run(...)` 写法。
+
+若环境**意外**装了 pytest-asyncio（`import` 成功），先如实记录，再照 Step 1 的写法走 —— `asyncio.run` 在任何一种模式下都成立。
 
 - [ ] **Step 4: 实现 `execute_openlist_one`**
 
@@ -963,74 +969,85 @@ git commit -m "feat(openlist_renamer): 新增 execute_openlist_one，改用 rena
 新建 `backend/tests/test_openlist_limiter.py`：
 
 ```python
-"""限流器必须真的限流，且上限可运行时调整。"""
-import asyncio
+"""限流器必须真的限流，且上限可运行时调整。
 
-import pytest
+异步驱动用**标准库 asyncio.run** —— 本项目未装 pytest-asyncio（理由与写法见
+tests/test_openlist_single.py 的模块注释）。
+"""
+import asyncio
 
 from app.core.openlist_client import OpenListClient, _AdaptiveLimiter
 
 
-@pytest.mark.asyncio
-async def test_limiter_never_exceeds_limit():
-    limiter = _AdaptiveLimiter(2)
-    peak = 0
-    active = 0
+def test_limiter_never_exceeds_limit():
+    async def _run():
+        limiter = _AdaptiveLimiter(2)
+        peak = 0
+        active = 0
 
-    async def worker():
-        nonlocal peak, active
-        async with limiter:
-            active += 1
-            peak = max(peak, active)
-            await asyncio.sleep(0.01)
-            active -= 1
+        async def worker():
+            nonlocal peak, active
+            async with limiter:
+                active += 1
+                peak = max(peak, active)
+                await asyncio.sleep(0.01)
+                active -= 1
 
-    await asyncio.gather(*[worker() for _ in range(10)])
+        await asyncio.gather(*[worker() for _ in range(10)])
+        return peak
+
+    peak = asyncio.run(_run())
     assert peak == 2, f"峰值并发 {peak}，上限 2 未被遵守"
 
 
-@pytest.mark.asyncio
-async def test_limit_can_be_lowered_at_runtime():
+def test_limit_can_be_lowered_at_runtime():
     """调低之后必须**立刻**生效 —— 这是设置页「立即生效」的全部含义。"""
-    limiter = _AdaptiveLimiter(5)
-    limiter.set_limit(1)
-    peak = 0
-    active = 0
+    async def _run():
+        limiter = _AdaptiveLimiter(5)
+        limiter.set_limit(1)
+        peak = 0
+        active = 0
 
-    async def worker():
-        nonlocal peak, active
-        async with limiter:
-            active += 1
-            peak = max(peak, active)
-            await asyncio.sleep(0.01)
-            active -= 1
+        async def worker():
+            nonlocal peak, active
+            async with limiter:
+                active += 1
+                peak = max(peak, active)
+                await asyncio.sleep(0.01)
+                active -= 1
 
-    await asyncio.gather(*[worker() for _ in range(6)])
+        await asyncio.gather(*[worker() for _ in range(6)])
+        return peak
+
+    peak = asyncio.run(_run())
     assert peak == 1, f"调低后峰值并发 {peak}，期望 1"
 
 
-@pytest.mark.asyncio
-async def test_limit_can_be_raised_at_runtime():
+def test_limit_can_be_raised_at_runtime():
     """调高时必须唤醒等待者，否则它们会永远睡着（notify 漏掉的典型形态）。"""
-    limiter = _AdaptiveLimiter(1)
-    active = 0
-    peak = 0
-    started = asyncio.Event()
+    async def _run():
+        limiter = _AdaptiveLimiter(1)
+        active = 0
+        peak = 0
+        started = asyncio.Event()
 
-    async def worker():
-        nonlocal active, peak
-        async with limiter:
-            active += 1
-            peak = max(peak, active)
-            if active == 1:
-                started.set()
-            await asyncio.sleep(0.05)
-            active -= 1
+        async def worker():
+            nonlocal active, peak
+            async with limiter:
+                active += 1
+                peak = max(peak, active)
+                if active == 1:
+                    started.set()
+                await asyncio.sleep(0.05)
+                active -= 1
 
-    tasks = [asyncio.create_task(worker()) for _ in range(3)]
-    await started.wait()
-    limiter.set_limit(3)
-    await asyncio.wait_for(asyncio.gather(*tasks), timeout=1.0)
+        tasks = [asyncio.create_task(worker()) for _ in range(3)]
+        await started.wait()
+        limiter.set_limit(3)
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1.0)
+        return peak
+
+    peak = asyncio.run(_run())
     assert peak >= 2, f"调高后峰值并发仍为 {peak}，等待者未被唤醒"
 
 
@@ -1483,7 +1500,7 @@ async def execute_rename(req: RenameExecuteRequest):
         if not client or not client.connected:
             raise HTTPException(status_code=401, detail="请先连接 OpenList")
         _apply_openlist_limits(client, req)
-        result = await execute_openlist_one(client, plan)
+        result = asyncio.run(execute_openlist_one(client, plan))
         outcome = OneOutcome(result=result)
         # OpenList 路径没有 abort 合成结果, 恒传 aborted=False。
         outcome.executed, outcome.skipped, outcome.failed = count_result(result, False)
