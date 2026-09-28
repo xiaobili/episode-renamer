@@ -24,6 +24,7 @@ const SCRIPTS = [
   'check-sfc-compile.mjs',
   'check-workspace-gating.mjs',
   'check-rename-runner.mjs',
+  'check-rename-aggregate.mjs',
 ]
 
 let failed = 0
