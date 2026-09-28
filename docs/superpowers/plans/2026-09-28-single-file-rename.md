@@ -2474,6 +2474,18 @@ export async function runWithConcurrency(items, limit, worker, { onProgress, int
 }
 ```
 
+实现时在文件头注释里写明**两条调用方须知**（都是评审指出的、下游任务会踩的坑）：
+
+```js
+// 调用方须知:
+// 1. `onProgress` 是**调用方提供的回调, 本模块不接管它的异常** —— 它抛出的异常会
+//    逃出 runOne 并让整批 reject（那是调用方自己的 bug, 我们**不**吞掉它: 静默
+//    吞掉会让一个坏回调看起来一切正常）。所以它必须是不会抛的纯赋值。
+// 2. 失败条目的槽位在 `results` 里是**空洞**（`new Array(n)` 从不赋值），
+//    `map` / `forEach` 会静默跳过它。要读失败信息一律查 `failures`, 不要遍历
+//    `results`。
+```
+
 - [ ] **Step 4: 跑判据**
 
 Run: `cd frontend && node scripts/check-rename-runner.mjs`
@@ -2487,7 +2499,11 @@ Expected: 全部通过。
   'check-rename-runner.mjs',
 ```
 
-**同时改掉该文件头注释里的脚本数**（原文写「那**五个** check-*.mjs」）—— 加了脚本之后那句话立刻变成假陈述，而这个 runner 的存在意义正是「它们确实被执行了」。
+**同时处理该文件头注释里的脚本数**。它有**两处**（第 1 行「那五个 check-*.mjs」、第 7 行「故这里把五个脚本串起来」），只改一处会留下一句假陈述。
+
+**但不要改成「六个」—— 把数字从散文里删掉。** 理由：这个数字每加一个脚本就会再假一次（Task 8 还要加一个），而名单本身就在下面的 `SCRIPTS` 数组里，散文里的计数不提供任何信息。改成「scripts/ 下的那些 check-*.mjs」与「故这里把它们串起来」即可 —— 那样它永远是真的。
+
+改完 `grep -n '五个\|六个' frontend/scripts/check-all.mjs` 应当无命中。
 
 - [ ] **Step 6: 提交**
 
