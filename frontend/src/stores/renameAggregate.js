@@ -32,6 +32,9 @@ export function aggregateBatch({ items, finalize = null, nfoBlockedByScrape = fa
     if (item.nfo_skipped) nfoSkipped.push(...item.nfo_skipped)
   }
 
+  // 收尾响应只并这两项, **不并 nfo_carried**: 携带既有 NFO 是**每文件**的事
+  // （跟着那个视频一起搬走）, 由 /rename/execute 报在单文件响应上; 收尾响应里
+  // 根本没有这个字段。这不是「别的字段都并了、唯独漏一个」, 别顺手补上。
   if (finalize) {
     if (finalize.nfo_written) nfoWritten.push(...finalize.nfo_written)
     if (finalize.nfo_skipped) nfoSkipped.push(...finalize.nfo_skipped)

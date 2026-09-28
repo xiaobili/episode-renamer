@@ -87,6 +87,20 @@ function assert(label, actual, expected) {
   assert('空批次 success 为 true', agg.success, true)
 }
 
+// --- results 必须按输入顺序收齐 ---
+// 少了这条, 删掉 `results.push(item.result)` **没有任何断言会红** —— 后果是
+// ResultDialog 的明细表**静默消失**: 汇总数字还在, 每一行的详情没了。
+{
+  const agg = aggregateBatch({
+    items: [
+      { executed: 1, skipped: 0, failed: 0, result: { status: 'renamed', new_filename: 'a.mkv' } },
+      { executed: 0, skipped: 1, failed: 0, result: { status: 'skipped_conflict', new_filename: 'b.mkv' } },
+      { executed: 0, skipped: 0, failed: 1, result: { status: 'failed', new_filename: 'c.mkv' } },
+    ],
+  })
+  assert('results 按输入顺序收齐', agg.results.map(r => r.new_filename), ['a.mkv', 'b.mkv', 'c.mkv'])
+}
+
 // --- 执行结果恒不是干跑 ---
 {
   const agg = aggregateBatch({ items: [], nfoBlockedByScrape: true })
