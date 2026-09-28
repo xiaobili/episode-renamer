@@ -646,11 +646,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         })
         // **必须在 buildPreview() 之前调**：buildPreview 会重扫并刷新后端的
         // _cached_files，之后 finalize 就重建不出同一批 plan 了。
-        const fin = await finalizeRename(buildRenamePayload({
-          ...baseArgs, mode: 'finalize', fileIds: selected.map(r => r.id),
-          overrides: _collectOverrides(selected), landed,
-        }))
-        finalizeBody = fin.data
+        //
+        // **收尾失败绝不能吞掉整批结果**: 走到这里, 每个文件的改名**已经在盘上
+        // 完成了**。若让 finalizeRename 的异常冒到外层 catch, 用户看到的是一句
+        // 「操作失败」, 而破坏性操作其实已经做完 —— 他极可能再跑一次, 撞上
+        // 「目标已存在」的跳过。故这里单独 try/catch, 降级成「没有组级 NFO」,
+        // 并**如实告诉用户是哪一步没做成**（结果对话框里的 NFO 清单也会少掉
+        // 组级那几项, 这一点由这句 toast 兜住）。
+        try {
+          const fin = await finalizeRename(buildRenamePayload({
+            ...baseArgs, mode: 'finalize', fileIds: selected.map(r => r.id),
+            overrides: _collectOverrides(selected), landed,
+          }))
+          finalizeBody = fin.data
+        } catch (e) {
+          showToast(
+            '重命名已完成，但剧集级 NFO 未写出: ' +
+            (e.response?.data?.detail || e.message),
+            'warning',
+          )
+        }
       }
 
       lastResult.value = {

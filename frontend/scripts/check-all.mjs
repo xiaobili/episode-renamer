@@ -26,6 +26,7 @@ const SCRIPTS = [
   'check-rename-runner.mjs',
   'check-rename-aggregate.mjs',
   'check-execute-loop.mjs',
+  'check-execute-behaviour.mjs',
 ]
 
 let failed = 0
