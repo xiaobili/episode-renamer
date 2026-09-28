@@ -81,13 +81,11 @@
             class="flex items-start gap-2 rounded-[8px] bg-sunken px-3 py-2.5 text-[12px] text-ink-2"
           >
             <Info class="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <p>
-              这两项随重命名请求（执行 / 试运行）下发，<strong class="text-ink">立即生效</strong>，
-              优先于服务端的 <code class="font-mono">OPENLIST_MAX_CONCURRENT</code> /
-              <code class="font-mono">OPENLIST_REQUEST_INTERVAL</code>；后两者是客户端
-              构造时的初值，在<strong class="text-ink">尚未执行过重命名</strong>时
-              （如扫描、列目录）仍然起作用。注意这两项作用于 OpenList 客户端的
-              <strong class="text-ink">全部</strong>请求，不只是重命名。
+            <p>这两项随重命名请求（执行 / 试运行）下发，<strong class="text-ink">立即生效</strong>，
+              优先于服务端的 <code class="font-mono">OPENLIST_MAX_CONCURRENT</code> / <code class="font-mono">OPENLIST_REQUEST_INTERVAL</code>；
+              后两者是客户端构造时的初值，
+              在<strong class="text-ink">尚未执行过重命名</strong>时（如扫描、列目录）仍然起作用。
+              注意这两项作用于 OpenList 客户端的<strong class="text-ink">全部</strong>请求，不只是重命名。
             </p>
           </div>
         </div>
