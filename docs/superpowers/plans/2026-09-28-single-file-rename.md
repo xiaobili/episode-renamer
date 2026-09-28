@@ -2486,6 +2486,8 @@ export async function runWithConcurrency(items, limit, worker, { onProgress, int
 //    `results`。
 ```
 
+**实现时在 `finalize` 那一段加一句注释**：只并入 `nfo_written` / `nfo_skipped`，**不并入 `nfo_carried`** —— 收尾响应里根本没有这个字段（携带既有 NFO 是**每文件**的事，由 `/rename/execute` 报）。写明这一点，免得后人看到「别的字段都并了、唯独少一个」时把它当成遗漏去「补」。
+
 - [ ] **Step 4: 跑判据**
 
 Run: `cd frontend && node scripts/check-rename-runner.mjs`
@@ -2617,6 +2619,20 @@ function assert(label, actual, expected) {
   const agg = aggregateBatch({ items: [] })
   assert('空批次 total 为 0', agg.total, 0)
   assert('空批次 success 为 true', agg.success, true)
+}
+
+// --- results 必须按输入顺序收齐 ---
+// 少了这条, 删掉 `results.push(item.result)` **没有任何断言会红** —— 后果是
+// ResultDialog 的明细表**静默消失**: 汇总数字还在, 每一行的详情没了。
+{
+  const agg = aggregateBatch({
+    items: [
+      { executed: 1, skipped: 0, failed: 0, result: { status: 'renamed', new_filename: 'a.mkv' } },
+      { executed: 0, skipped: 1, failed: 0, result: { status: 'skipped_conflict', new_filename: 'b.mkv' } },
+      { executed: 0, skipped: 0, failed: 1, result: { status: 'failed', new_filename: 'c.mkv' } },
+    ],
+  })
+  assert('results 按输入顺序收齐', agg.results.map(r => r.new_filename), ['a.mkv', 'b.mkv', 'c.mkv'])
 }
 
 // --- 执行结果恒不是干跑 ---
