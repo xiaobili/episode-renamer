@@ -64,18 +64,22 @@ function check(name, cond, extra = '') {
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms))
 
 // ---------------------------------------------------------------------------
-// 夹具：4 个文件。f2 回 500（失败），f3 报 skipped_conflict（未落地，不进 landed），
-// f1 / f4 正常改名。四个目标名互不相同 —— 否则 resolveConcurrency 会（正确地）
-// 降级为串行，并发那条断言就测不到东西了。
+// 夹具：5 个文件。f2 回 500（失败），f3 报 skipped_conflict（未落地，不进 landed），
+// f1 / f4 正常改名, **f5 是 f2 那一集的字幕**（混合批次: 视频失败、字幕照旧落地）。
+// 五个目标名互不相同 —— 否则 resolveConcurrency 会（正确地）降级为串行，并发那条
+// 断言就测不到东西了（字幕的落点带 .ass 扩展名, 与 f2 的 .mkv 不同名）。
 // ---------------------------------------------------------------------------
 const FILES = [
   { id: 'f1', path: '/m/S/Show.S01E01.mkv', filename: 'Show.S01E01.mkv' },
   { id: 'f2', path: '/m/S/Show.S01E02.mkv', filename: 'Show.S01E02.mkv' },
   { id: 'f3', path: '/m/S/Show.S01E03.mkv', filename: 'Show.S01E03.mkv' },
   { id: 'f4', path: '/m/S/Show.S01E04.mkv', filename: 'Show.S01E04.mkv' },
+  { id: 'f5', path: '/m/S/Show.S01E02.chs.ass', filename: 'Show.S01E02.chs.ass',
+    is_subtitle: true, subtitle_of: 'Show.S01E02.mkv' },
 ]
 const byId = id => FILES.find(f => f.id === id)
-const newPathOf = f => `/m/S/Show - ${f.filename.slice(5, 11)}.mkv`   // S01E01 → 各不同
+// 落点按真实规则拼（含各自扩展名）—— 目标名互不相同, 见上面夹具注释。
+const newPathOf = f => `/m/S/Show - ${f.filename.slice(5, 11)}.${f.filename.split('.').pop()}`
 const GROUP_NFO = '/m/S/Show/tvshow.nfo'
 
 let calls = []
@@ -83,6 +87,7 @@ let inFlight = 0
 let peak = 0
 let failExecuteIds = new Set()
 let failFinalize = false
+let failPreview = false
 
 const reply = (config, data) => ({ data, status: 200, statusText: 'OK', headers: {}, config })
 const reject = (config, status, detail) => {
@@ -100,6 +105,7 @@ request.defaults.adapter = async (config) => {
   }
 
   if (config.url === '/rename/preview') {
+    if (failPreview) throw reject(config, 500, '重扫炸了')
     return reply(config, {
       results: FILES.map(f => ({
         original_path: f.path,
@@ -130,7 +136,11 @@ request.defaults.adapter = async (config) => {
       source: 'local',
       file_id: body.file_id,
       result: {
-        id: f.id,
+        // **故意不等于 file_id**: 生产里 result.id 是 plan.id（generate_id() 的
+        // 随机串）。夹具曾经把它写成 f.id, 于是前端 `landed[s.result.id]` 恰好
+        // 得到正确结果 —— 断言在**真实的键错**下照样全绿（那正是它没能拦住
+        // 「landed 用错键」的原因）。这里照生产形状给一个与 file_id 不同的值。
+        id: `plan-${f.id}`,
         original_path: f.path,
         new_path: landed ? newPathOf(f) : f.path,
         original_filename: f.filename,
@@ -139,6 +149,12 @@ request.defaults.adapter = async (config) => {
         status: landed ? 'renamed' : 'skipped_conflict',
         error: null,
       },
+      // **由后端判定的真实落点**（未落地为 null）。字幕恒为 null —— 它与视频
+      // 共用同一套 status, 但后端刻意不把字幕的落点算作落地（见
+      // local_renamer._is_subtitle_file 与 spec §9.4）。**这一项不能省**:
+      // 夹具若只给「status 正常」而不给 landed_path, 前端就测不出「不按 status
+      // 自己判落地」这条修复。
+      landed_path: landed && !f.is_subtitle ? newPathOf(f) : null,
       executed: landed ? 1 : 0,
       skipped: landed ? 0 : 1,
       failed: 0,
@@ -176,10 +192,10 @@ failExecuteIds = new Set(['f2'])
 await ws.executeAction(false)
 
 // --- 1. 逐文件请求：N 个文件 N 次 /rename/execute，每次带**单数** file_id ---
-check('4 个文件发出 4 次 /rename/execute', executes().length === 4, String(executes().length))
+check('5 个文件发出 5 次 /rename/execute', executes().length === 5, String(executes().length))
 check('每次执行都带单数 file_id',
   executes().every(c => typeof c.body.file_id === 'string' && c.body.file_id) &&
-    executes().map(c => c.body.file_id).join(',') === 'f1,f2,f3,f4',
+    executes().map(c => c.body.file_id).join(',') === 'f1,f2,f3,f4,f5',
   JSON.stringify(executes().map(c => c.body.file_id)))
 // `every` 对空数组恒真 —— 前面那条计数断言已经挡住「一个请求都没发」的情形，
 // 这里再显式要求非空，免得这条自身在空集上恒绿。
@@ -189,10 +205,10 @@ check('每次执行都不带 fileIds（批量形态）',
 
 // --- 2. 部分失败不吞整批 ---
 check('部分失败时结果仍然产出（对话框打开）', ws.resultDialog === true)
-check('失败计 1、执行计 2、跳过计 1',
-  ws.lastResult?.failed === 1 && ws.lastResult?.executed === 2 && ws.lastResult?.skipped === 1,
+check('失败计 1、执行计 3、跳过计 1',
+  ws.lastResult?.failed === 1 && ws.lastResult?.executed === 3 && ws.lastResult?.skipped === 1,
   `failed=${ws.lastResult?.failed} executed=${ws.lastResult?.executed} skipped=${ws.lastResult?.skipped}`)
-check('结果里仍列出全部 4 个文件', ws.lastResult?.results?.length === 4,
+check('结果里仍列出全部 5 个文件', ws.lastResult?.results?.length === 5,
   String(ws.lastResult?.results?.length))
 check('失败那一行报的是**它自己**的文件名',
   ws.lastResult?.results?.find(r => r.status === 'failed')?.original_filename === 'Show.S01E02.mkv',
@@ -209,12 +225,20 @@ check('收尾只发一次', finalizes().length === 1, String(finalizes().length)
 check('收尾排在所有执行之后',
   calls.findIndex(c => c.url === '/rename/finalize') >
     calls.map(c => c.url).lastIndexOf('/rename/execute'))
-check('landed 恰好是落地文件的真实落点（f1/f4，不含失败的 f2 与跳过的 f3）',
+// 这条是 landed 表**三件事**的合体判据, 每一件都单独能红:
+//   · 键必须是 file_id —— 写成 result.id 时键会变成 plan-f1…, 与下面的对象不等;
+//   · 值必须是**后端给的** landed_path —— 自己拿 result.new_path 填也一样, 但
+//     下一步就错了:
+//   · **字幕 f5 不得进来** —— f5 的 status 是 'renamed'（它真的落地了）, 按
+//     status 判落地会把它算进来, 于是键集变成 f1/f4/f5。f5 是「视频 f2 失败、
+//     字幕照旧落地」那个混合批次的代表 —— 它一旦进表, 后端 _keep_decision 就会
+//     在没有任何剧集文件的目录里写出 tvshow.nfo（spec §9.4 禁止的污染）。
+check('landed 是 file_id → 后端给的真实落点（f1/f4，不含失败的 f2、跳过的 f3、字幕 f5）',
   JSON.stringify(finalizes()[0]?.body?.landed) ===
     JSON.stringify({ f1: newPathOf(byId('f1')), f4: newPathOf(byId('f4')) }),
   JSON.stringify(finalizes()[0]?.body?.landed))
 check('收尾的 file_ids 是全部选中文件',
-  JSON.stringify(finalizes()[0]?.body?.file_ids) === JSON.stringify(['f1', 'f2', 'f3', 'f4']),
+  JSON.stringify(finalizes()[0]?.body?.file_ids) === JSON.stringify(['f1', 'f2', 'f3', 'f4', 'f5']),
   JSON.stringify(finalizes()[0]?.body?.file_ids))
 check('组级 NFO 并入结果（收尾真的接了）',
   (ws.lastResult?.nfo_written || []).some(n => n.path === GROUP_NFO),
@@ -251,8 +275,8 @@ ws.lastResult = null
 await ws.executeAction(false)
 
 check('收尾失败时结果对话框仍然打开', ws.resultDialog === true)
-check('收尾失败时改名结果完好（2 执行 / 1 失败 / 1 跳过）',
-  ws.lastResult?.executed === 2 && ws.lastResult?.failed === 1 && ws.lastResult?.skipped === 1,
+check('收尾失败时改名结果完好（3 执行 / 1 失败 / 1 跳过）',
+  ws.lastResult?.executed === 3 && ws.lastResult?.failed === 1 && ws.lastResult?.skipped === 1,
   `executed=${ws.lastResult?.executed} failed=${ws.lastResult?.failed} skipped=${ws.lastResult?.skipped}`)
 check('收尾失败时降级为「没有组级 NFO」',
   (ws.lastResult?.nfo_written || []).length === 0,
@@ -261,6 +285,38 @@ check('收尾失败时如实告知是哪一步没做成（不是「操作失败�
   ws.toast.type === 'warning' && ws.toast.msg.startsWith('重命名已完成，但剧集级 NFO 未写出'),
   `${ws.toast.type} / ${ws.toast.msg}`)
 check('收尾失败时 executing 已复位', ws.executing === false && ws.executeDryRun === false)
+
+// ---------------------------------------------------------------------------
+// 场景 C：收尾成功、但**执行后的重扫**回 500 —— 断言 6（F5）
+//
+// buildPreview 把异常吞在自己内部（它有两个自动触发的调用点, 不能在那里弹
+// Toast）, 失败时返回 false。调用点若只写 `await buildPreview()` 而不接返回值,
+// 重扫失败就是**完全无声**的: 用户盯着一张指向已不存在路径的旧表, 再点一次
+// 「执行」撞上「目标已存在」的跳过。本场景钉住那个返回值真的被接了。
+// ---------------------------------------------------------------------------
+failExecuteIds = new Set()
+failFinalize = false
+await ws.doScan()
+await tick(30)
+calls = []
+ws.resultDialog = false
+ws.lastResult = null
+failPreview = true          // **只在这个场景里**让重扫失败
+// buildPreview 失败时会 console.error 一次（预期内）—— 压掉它, 免得一屏堆栈把
+// 下面的 PASS/FAIL 清单淹掉。只压这一小段, 其余场景照旧。
+const realConsoleError = console.error
+console.error = () => {}
+await ws.executeAction(false)
+console.error = realConsoleError
+failPreview = false
+
+check('重扫失败时如实告知（不是无声、也不是「操作失败」）',
+  ws.toast.type === 'warning' && ws.toast.msg.startsWith('重命名已完成，但文件列表刷新失败'),
+  `${ws.toast.type} / ${ws.toast.msg}`)
+check('重扫失败时结果对话框仍然打开', ws.resultDialog === true)
+check('重扫失败时改名结果完好（4 执行 / 0 失败）',
+  ws.lastResult?.executed === 4 && ws.lastResult?.failed === 0,
+  `executed=${ws.lastResult?.executed} failed=${ws.lastResult?.failed}`)
 
 console.log(results.join('\n'))
 const failed = results.filter(r => r.startsWith('FAIL')).length

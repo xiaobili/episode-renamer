@@ -635,6 +635,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // Array.from 走迭代器（空洞取到 undefined）并**逐个下标**回调，正是要的语义。
       const settled = Array.from(results, (r, i) => r ?? {
         executed: 0, skipped: 0, failed: 1,
+        // 与成功响应同形状: landed_path 为 null = 未落地（请求都没成, 必然没落地）。
+        // 缺这两个字段时下面 `if (s.landed_path)` 取到 undefined 也是假的, 不会崩;
+        // 补上是为了让「失败条目」不是一个隐式的第三种形状。
+        file_id: items[i].id,
+        landed_path: null,
         result: {
           id: items[i].id,
           original_path: selected[i].path,
@@ -654,11 +659,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (source === 'local' && generateNfo.value) {
         const landed = {}
         settled.forEach((s) => {
-          const st = s.result?.status
-          // 与后端 _NO_LANDING_STATUSES 同一套判据 —— 未落地的文件不进 landed 表。
-          if (st && !['skipped_conflict', 'conflict', 'failed'].includes(st)) {
-            landed[s.result.id] = s.result.new_path
-          }
+          // 键是 **file_id**（后端 SingleRenameResult.file_id）, 不是 result.id ——
+          // result.id 是 plan.id（generate_id() 的随机串）, 拿它当键在今天的后端
+          // 上「能跑」纯属后端只读 values()、把键丢掉的巧合; 后端一旦按契约拿
+          // file_id 查表就全部落空, 组级 NFO 静默地一份都不写。
+          //
+          // 值取**后端给的** s.landed_path（未落地为 null）: 不再自己按
+          // result.status 判落地。那份判据是「哪些状态算落地」的第二份副本
+          // （与 local_renamer._NO_LANDING_STATUSES 必然漂移）, 而且判不出字幕 ——
+          // 字幕与视频共用同一套 status, 但字幕的落点**不算**组级 NFO 的依据。
+          // 混合批次里「视频失败、字幕落地」时, 按 status 判会让字幕的落点留在
+          // landed 表里, 后端 _keep_decision 于是保留组级决策, 在没有任何剧集
+          // 文件的目录里写出 tvshow.nfo —— 正是 spec §9.4 禁止的污染。
+          if (s.landed_path) landed[s.file_id] = s.landed_path
         })
         // **必须在 buildPreview() 之前调**：buildPreview 会重扫并刷新后端的
         // _cached_files，之后 finalize 就重建不出同一批 plan 了。
@@ -691,7 +704,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }),
       }
       resultDialog.value = true
-      await buildPreview()
+      // **重扫失败不得静默** —— 判据是**返回值**, 不是 catch。buildPreview 把异常
+      // 吞在自己内部（它有两个自动触发的调用点 —— 模板 watch 与设置变更回刷 ——
+      // 在那里弹 Toast 会在用户打字时刷屏）, 失败时返回 false 并把原因留在
+      // previewError。此前这里连返回值都没接: 重扫失败于是**完全无声**, 用户盯着
+      // 一张指向已不存在路径的旧表, 再点一次「执行」就撞上「目标已存在」的跳过。
+      //
+      // 口径与上面 finalize 那段一致: 走到这里, 每个文件的改名都已在盘上完成、
+      // 结果对话框也已经打开, 所以这句话不能说成「操作失败」（那是在指控一次根本
+      // 没失败的破坏性操作, 用户极可能据此再跑一遍）。与
+      // refreshPreviewReportingFailure 同一处置, 只是判据取返回值、语气降一级。
+      if (!await buildPreview()) {
+        showToast(
+          '重命名已完成，但文件列表刷新失败: ' + (previewError.value || '未知错误'),
+          'warning',
+        )
+      }
     } catch (e) {
       showToast('操作失败: ' + (e.response?.data?.detail || e.message), 'error')
     } finally {
