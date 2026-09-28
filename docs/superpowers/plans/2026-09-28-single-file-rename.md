@@ -2797,7 +2797,7 @@ git commit -m "feat(frontend): 新增结果聚合 renameAggregate 及其判据�
 ```js
 // --- 单文件模式：出 file_id 与 override（单数），不出 file_ids / overrides ---
 {
-  const one = buildRenamePayload({ ...base, mode: 'execute' })
+  const one = buildRenamePayload({ ...base, mode: 'execute', fileIds: undefined })
   assert('execute 载荷带 file_id', one.file_id, 'f1')
   assertKey('execute 载荷不含 file_ids', one, 'file_ids', false)
   assert('execute 载荷带 override', one.override, { title: '我的标题' })
@@ -2837,7 +2837,7 @@ git commit -m "feat(frontend): 新增结果聚合 renameAggregate 及其判据�
 
 // --- OpenList 限流随请求下发（不下发 → 设置页那两项又是死的）---
 {
-  const one = buildRenamePayload({ ...base, mode: 'execute' })
+  const one = buildRenamePayload({ ...base, mode: 'execute', fileIds: undefined })
   assert('下发 OpenList 并发', one.openlist_max_concurrent, 2)
   assert('下发 OpenList 间隔', one.openlist_request_interval, 0.5)
 }
