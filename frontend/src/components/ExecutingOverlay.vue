@@ -12,12 +12,37 @@
         aria-live="polite"
         class="flex w-[320px] flex-col items-center gap-3 rounded-[12px] bg-surface p-6 shadow-overlay"
       >
-        <Loader2 class="h-6 w-6 animate-spin text-accent" aria-hidden="true" />
-        <div class="text-center">
+        <Loader2 v-if="dryRun" class="h-6 w-6 animate-spin text-accent" aria-hidden="true" />
+        <div class="w-full text-center">
           <div class="text-[14px] font-semibold text-ink">
             {{ dryRun ? '试运行中…' : '正在执行重命名…' }}
           </div>
-          <div class="mt-1 text-[12px] text-ink-2">请稍候，操作进行中请勿关闭</div>
+          <div v-if="!dryRun" class="mt-3">
+            <div
+              class="h-1.5 w-full overflow-hidden rounded-full bg-sunken"
+              role="progressbar"
+              :aria-valuenow="progress.done"
+              aria-valuemin="0"
+              :aria-valuemax="progress.total"
+            >
+              <div
+                class="h-full rounded-full bg-accent transition-[width] duration-200 ease-out"
+                :style="{ width: percent + '%' }"
+              />
+            </div>
+            <div class="mt-2 flex items-center justify-between text-[12px] text-ink-2">
+              <span>已完成 {{ progress.done }} / {{ progress.total }}</span>
+              <span>{{ percent }}%</span>
+            </div>
+            <div
+              v-if="progress.current"
+              class="mt-1 truncate text-[11px] text-ink-2"
+              :title="progress.current"
+            >
+              {{ progress.current }}
+            </div>
+          </div>
+          <div v-else class="mt-1 text-[12px] text-ink-2">请稍候，操作进行中请勿关闭</div>
         </div>
       </div>
     </div>
@@ -25,18 +50,30 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
 
 const props = defineProps({
   modelValue: Boolean,
   dryRun: Boolean,
+  // 逐文件执行的进度。dryRun 时不显示（干跑是单次批量请求, 没有进度可言 ——
+  // 给一个永远 0% 的进度条就是撒谎）。
+  progress: {
+    type: Object,
+    default: () => ({ done: 0, total: 0, current: '' }),
+  },
 })
 
-// 唯一的进度指示：一个旋转的 Loader2。删掉了原来的三层动画堆叠
+const percent = computed(() => {
+  if (!props.progress.total) return 0
+  return Math.round((props.progress.done / props.progress.total) * 100)
+})
+
+// 干跑时唯一的进度指示：一个旋转的 Loader2。删掉了原来的三层动画堆叠
 // （静态圆环 + 旋转圆环 + 弹跳火箭）—— 三者不传达任何额外信息
 // （spec §11）。animate-spin 与 AppButton 的 loading 态用的是同一个图标，
 // 全站「正在处理」只有一个视觉语汇。
+// 执行时转圈让位给下面的进度条（干跑没有进度可言，故保留转圈）。
 const overlayRef = ref(null)
 
 // 遮罩打开时把焦点收进来，配合 @keydown.tab.prevent 让键盘也无法

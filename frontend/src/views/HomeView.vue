@@ -99,7 +99,12 @@
     @cancel="ws.resolveConfirm(false)"
   />
 
-  <ExecutingOverlay v-if="!ws.executeDryRun" v-model="ws.executing" :dry-run="ws.executeDryRun" />
+  <ExecutingOverlay
+    v-if="!ws.executeDryRun"
+    v-model="ws.executing"
+    :dry-run="ws.executeDryRun"
+    :progress="ws.progress"
+  />
 
   <ResultDialog v-model="ws.resultDialog" :result="ws.lastResult" />
 
