@@ -109,27 +109,48 @@ class OpenListClient:
             await asyncio.sleep(self._request_interval - elapsed)
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
-        async with self._limiter:
-            await self._wait_interval()
+        """发一次请求（401 时自动重连后重试一次）。
 
-            url = f"{self.server_url}{path}"
-            headers = kwargs.pop("headers", {})
-            if self.token:
-                headers["Authorization"] = self.token
+        **限流器只包住单次 HTTP 尝试, 不包住重连** —— 这是刻意的, 也是本次
+        重构的全部理由: `_reconnect` 会走 `login` → `_request`, 也就是**在持着
+        名额的情况下再要一个名额**。在途请求数已达上限时（每个都撞上 401）
+        外层名额永不释放、内层永远拿不到 —— 死锁。
 
-            try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), verify=False) as client:
-                    resp = await client.request(method, url, headers=headers, **kwargs)
-                    self.last_request_time = time.monotonic()
-                    resp.raise_for_status()
-                    return resp.json()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 401 and self.token:
-                    await self._reconnect()
-                    return await self._request(method, path, **kwargs)
-                raise
-            except httpx.RequestError as e:
-                raise ConnectionError(f"OpenList 请求失败: {e}") from e
+        这不是新引入的: 旧版 `asyncio.Semaphore(settings.openlist_max_concurrent)`
+        持着名额递归调用自己, 同样会死锁（默认 3 时, 3 个在途请求同时 401 即
+        触发）。但本函数此前**没有任何测试**, 这条路径至今没有判据 —— 本次
+        顺带补上（见 Step 1 的 test_reconnect_does_not_deadlock_at_limit_one）。
+
+        与旧实现唯一的行为差异: 调用方传进来的 `headers` 现在**每次重试都会
+        带上**（旧版 `kwargs.pop` 之后递归, 重试时只剩 Authorization）。仓库里
+        没有任何调用方传 headers, 且新行为才是对的。
+        """
+        url = f"{self.server_url}{path}"
+        headers = kwargs.pop("headers", {})
+
+        while True:
+            async with self._limiter:
+                await self._wait_interval()
+
+                req_headers = dict(headers)
+                if self.token:
+                    req_headers["Authorization"] = self.token
+
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), verify=False) as client:
+                        resp = await client.request(method, url, headers=req_headers, **kwargs)
+                        self.last_request_time = time.monotonic()
+                        resp.raise_for_status()
+                        return resp.json()
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 401 or not self.token:
+                        raise
+                except httpx.RequestError as e:
+                    raise ConnectionError(f"OpenList 请求失败: {e}") from e
+
+            # 走到这里说明撞了 401 且 token 还在 —— **出了 limiter 再重连**。
+            # 重连自己会发请求（login）, 在名额内做就会与外层争名额。
+            await self._reconnect()
 
     def apply_limits(
         self,

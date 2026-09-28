@@ -5,6 +5,8 @@ tests/test_openlist_single.py 的模块注释）。
 """
 import asyncio
 
+import httpx
+
 from app.core.openlist_client import OpenListClient, _AdaptiveLimiter
 
 
@@ -92,6 +94,61 @@ def test_limit_can_be_raised_at_runtime():
     peak, remaining = asyncio.run(_run())
     assert remaining == 0, f"调高后仍有 {remaining} 个等待者没被唤醒"
     assert peak >= 2, f"调高后峰值并发仍为 {peak}，等待者未被唤醒"
+
+
+def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
+    """401 重连时**不得**持着名额再要名额 —— limit=1 下那会永久挂住。
+
+    这是 `_request` 这条路径的**第一个**判据。把实现改回「持着名额递归调用
+    自己」（旧版形状）本用例会挂到 `wait_for` 超时 —— 超时即红, 不是断言失败。
+
+    用假的 `httpx.AsyncClient` 喂**四次**响应, 按 `_request` 的真实调用序列:
+    401（token 过期）→ login 成功 → **login 内部的 `_discover_mounts` 列根目录**
+    → 带新 token 重试成功。`login` 读取 token 的字段名以 `openlist_client.py`
+    为准（`data["data"]["token"]`, 回退 `data["token"]`）。
+
+    （第四次调用是实测出来的: 骨架只列了三次, 漏掉 `login` 结尾那句
+    `await self._discover_mounts()` —— 少列会在第四次 `pop` 时 IndexError,
+    红的原因就不是死锁了。）
+    """
+    import app.core.openlist_client as mod
+
+    class _FakeAsyncClient:
+        responses: list = []
+        calls: list = []
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def request(self, method, url, **kwargs):
+            _FakeAsyncClient.calls.append((method, url))
+            status, payload = _FakeAsyncClient.responses.pop(0)
+            return httpx.Response(status, json=payload, request=httpx.Request(method, url))
+
+    async def _run():
+        client = mod.OpenListClient("http://x", "u", "p")
+        client.token = "expired-token"
+        client.apply_limits(max_concurrent=1)
+        _FakeAsyncClient.calls = []
+        _FakeAsyncClient.responses = [
+            (401, {}),                                       # 1. 第一次: token 过期
+            (200, {"code": 200, "data": {"token": "new"}}),  # 2. login
+            (200, {"code": 200, "data": {"content": []}}),   # 3. login 内的 _discover_mounts
+            (200, {"code": 200, "data": {"ok": True}}),      # 4. 重试
+        ]
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
+        # 超时即红: 死锁时这个 await 永远不会返回
+        return await asyncio.wait_for(client._request("POST", "/api/fs/get"), timeout=2.0)
+
+    data = asyncio.run(_run())
+    assert data == {"code": 200, "data": {"ok": True}}
+    assert len(_FakeAsyncClient.calls) == 4, _FakeAsyncClient.calls
 
 
 def test_apply_limits_is_a_noop_when_unchanged():
