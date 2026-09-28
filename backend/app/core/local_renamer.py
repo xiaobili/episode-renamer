@@ -457,6 +457,21 @@ def execute_one(
 
     # --- 写每集 NFO（在跟随之后）---
     if decision is not None:
+        # rename_dup（「自动编号」）下真实落点是 X_1.mkv, 而每集决策是按
+        # plan.new_path 算的 —— 不跟着改指向的话, 改名后的视频拿不到与它同名
+        # 的 X_1.nfo（Emby 靠同名配对）, 而 NFO 会落到 X.nfo: 那是**冲突那一
+        # 集**的位置, 覆盖模式下还会把它改写掉。
+        #
+        # **改指向必须在 landed 判断之前**, 这是与 batch_rename 的逐字一致:
+        # execute_rename_plan 是在**尝试重命名之前**就把 result.new_path 改成
+        # X_1 的, 所以重命名**失败**时它也指向 X_1, 而 batch_rename 的
+        # nfo_path_by_file 对任何 `new_path != plan.new_path` 的行都做这个改指向
+        # —— 于是未落地那一行报的也是 X_1.nfo。只在 landed 分支里改会让两条路径
+        # 对同一个失败行报出不同的落点（实测分叉: batch 报 X_1.nfo, 单文件报
+        # X.nfo）, 而夹具里没有「冲突 + 重命名失败」的行, 交叉判据看不见它。
+        if result.new_path != plan.new_path:
+            decision.path = episode_nfo_path(result.new_path)
+
         if not landed:
             # 它不写, 但必须**报出来**（nfo_skipped）—— 静默地少写一个 NFO 与
             # 静默地写错一个一样不可见。batch_rename 里 `dead_episode_paths` 那段做
@@ -467,12 +482,6 @@ def execute_one(
                 (decision.path, _NOT_RENAMED_NFO_REASON)
             )
         else:
-            # rename_dup（「自动编号」）下真实落点是 X_1.mkv, 而每集决策是按
-            # plan.new_path 算的 —— 不跟着改指向的话, 改名后的视频拿不到与它同名
-            # 的 X_1.nfo（Emby 靠同名配对）, 而 NFO 会落到 X.nfo: 那是**冲突那一
-            # 集**的位置, 覆盖模式下还会把它改写掉。
-            if result.new_path != plan.new_path:
-                decision.path = episode_nfo_path(result.new_path)
             # nfo_path 报的是**计划落点**, 与是否真的写下去无关 —— 与
             # batch_rename 里 nfo_path_by_file 的语义一致（内容为 None 时它也设）。
             result.nfo_path = decision.path
