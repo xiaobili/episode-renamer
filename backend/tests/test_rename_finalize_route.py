@@ -202,3 +202,27 @@ def test_no_landed_files_drops_the_group_decision(env):
     # （local_renamer._DROPPED_GROUP_NFO_REASON）—— 两处报的是同一件事。
     reasons = {d["path"]: d["reason"] for d in body["nfo_skipped"]}
     assert reasons[tvshow] == "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
+
+
+def test_openlist_source_returns_empty_without_error(env):
+    """OpenList 本期不写 NFO（spec §2）—— 收尾必须**如实返回空**, 而不是报错。
+
+    前端本来就只在 local 时调它, 这里防的是手工调用。去掉路由里
+    `_nfo_supported` 那道守卫本用例必红: 它会走到 local 的落盘逻辑。
+    """
+    res = env["client"].post("/api/rename/finalize", json=_payload(
+        env, landed={"f1": "/x"}, source="openlist"))
+    assert res.status_code == 200, res.text
+    assert res.json() == {"success": True, "nfo_written": [], "nfo_skipped": []}
+
+
+def test_unknown_file_ids_are_rejected(env):
+    """file_ids 一个都找不到时如实报 400, 不要静默返回空。
+
+    静默返回空会让前端以为「收尾成功、只是没有组级 NFO 可写」—— 那是假话。
+    """
+    body = _payload(env, landed={})
+    body["file_ids"] = ["nope"]
+    res = env["client"].post("/api/rename/finalize", json=body)
+    assert res.status_code == 400, res.text
+    assert "未找到" in res.json()["detail"]
