@@ -629,7 +629,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           new_filename: '',
           success: false,
           status: 'failed',
-          error: failures.find(f => f.index === i)?.error?.message || '请求失败',
+          error: failures.find(f => f.index === i)?.error?.response?.data?.detail
+            || failures.find(f => f.index === i)?.error?.message
+            || '请求失败',
         },
       })
 

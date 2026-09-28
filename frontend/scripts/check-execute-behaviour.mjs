@@ -197,6 +197,12 @@ check('结果里仍列出全部 4 个文件', ws.lastResult?.results?.length ===
 check('失败那一行报的是**它自己**的文件名',
   ws.lastResult?.results?.find(r => r.status === 'failed')?.original_filename === 'Show.S01E02.mkv',
   JSON.stringify(ws.lastResult?.results?.find(r => r.status === 'failed')?.original_filename))
+// 后端真正有用的说明在 error.response.data.detail —— 同一个函数的 catch 分支用的就是
+// 这个约定（`e.response?.data?.detail || e.message`），这里不能只取 axios 的
+// 「Request failed with status code 500」。夹具里后端给的 detail 是「磁盘炸了」。
+check('失败那一行带后端给的 detail（不是 axios 的 500 文案）',
+  ws.lastResult?.results?.find(r => r.status === 'failed')?.error === '磁盘炸了',
+  JSON.stringify(ws.lastResult?.results?.find(r => r.status === 'failed')?.error))
 
 // --- 3. 收尾在全部执行之后，且 landed 恰好是落地文件的真实落点 ---
 check('收尾只发一次', finalizes().length === 1, String(finalizes().length))
