@@ -1130,7 +1130,11 @@ def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
     async def _run():
         client = mod.OpenListClient("http://x", "u", "p")
         client.token = "expired-token"
-        client.apply_limits(max_concurrent=1)
+        # **请求间隔归零**: 默认 0.5s × 3 次请求 = 1.5s, 而下面的 wait_for 超时
+        # 是 2.0s —— 余量只剩 0.5s, 机器一停顿就会**假红**。而假红的信号
+        # （TimeoutError）与真死锁**一模一样**, 会把人骗去查一个不存在的死锁。
+        # 请求间隔与死锁无关, 归零后耗时降到毫秒级。
+        client.apply_limits(max_concurrent=1, request_interval=0.0)
         _FakeAsyncClient.calls = []
         # **四次**, 不是三次: `login()` 结尾还会 `await self._discover_mounts()`,
         # 那又是一次请求。按 `openlist_client.py` 里 login / _discover_mounts 的
@@ -1190,7 +1194,8 @@ def test_login_endpoint_401_does_not_recurse(monkeypatch):
     async def _run():
         client = mod.OpenListClient("http://x", "u", "p")
         client.token = "expired-token"
-        client.apply_limits(max_concurrent=2)
+        # 同上: 间隔归零, 免得这条用例在变异实验里跑出 20 多秒
+        client.apply_limits(max_concurrent=2, request_interval=0.0)
         _FakeAsyncClient.calls = []
         # 全部回 401 —— **包括 login 那一次**
         _FakeAsyncClient.responses = [(401, {})] * 50
