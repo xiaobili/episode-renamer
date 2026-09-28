@@ -38,6 +38,19 @@
         </div>
       </AppPanel>
 
+      <AppPanel title="重命名执行">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <AppInput
+            v-model="draft.localConcurrency"
+            type="number"
+            label="本地并发"
+            :min="1"
+            :max="10"
+            hint="同时在途的重命名请求数。本地是磁盘操作，默认 4。"
+          />
+        </div>
+      </AppPanel>
+
       <AppPanel title="OpenList 设置">
         <div class="flex flex-col gap-4">
           <AppInput
@@ -69,10 +82,11 @@
           >
             <Info class="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <p>
-              这两项当前由<strong class="text-ink">服务端</strong>的
-              <code class="font-mono">openlist_max_concurrent</code> 与
-              <code class="font-mono">openlist_request_interval</code> 决定。
-              此处保存的值会被保留，但尚未下发到后端。
+              这两项随每次重命名请求下发，<strong class="text-ink">立即生效</strong>。
+              服务端的 <code class="font-mono">OPENLIST_MAX_CONCURRENT</code> /
+              <code class="font-mono">OPENLIST_REQUEST_INTERVAL</code> 只在这两项
+              未设置时作为初值。注意它们作用于 OpenList 客户端的<strong class="text-ink">全部</strong>请求
+              （含扫描与列目录），不只是重命名。
             </p>
           </div>
         </div>
