@@ -3349,6 +3349,18 @@ assert('失败条目用 Array.from 补记录（map 会跳过空洞）',
 // --- 聚合 ---
 assert('用 aggregateBatch 聚合结果', /aggregateBatch\(/.test(src), true)
 
+// --- 另外两条（实现期追加，理由随附）---
+// 这两条在「上面七条全绿」时仍能各自打红一个真实变异, 故留下:
+//   · `limit 不是字面量` 打红「调用点第二参改成 4」—— 那正是 Step 5b 点名要实测的
+//     变异, 而 Step 5b 那三条查的是 resolveConcurrency 的实参、不是 runWithConcurrency
+//     的第二参, 所以它抓不到;
+//   · `预览行带 new_path` 打红「删掉行构造里那句」—— 与 Step 3b 是同一个死设置缺口
+//     的第二道防线。
+assert('limit 不是字面量（第二参不是数字）',
+  /runWithConcurrency\([\s\S]{0,120}?\n\s*limit,/.test(src), true)
+assert('预览行带 new_path',
+  /new_path:\s*pv\.new_path/.test(src), true)
+
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
 process.exitCode = failed === 0 ? 0 : 1
 ```
