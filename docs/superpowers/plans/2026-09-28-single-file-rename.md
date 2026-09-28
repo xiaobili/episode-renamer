@@ -3431,7 +3431,13 @@ Expected: 全部通过。
 4. **并发遵守设置**：把 `localConcurrency` 设为 2、选 4 个文件，观测到的在途峰值 **`== 2`**
    （钉住两参对调那个变异）。**不要写 `<= 2`** —— 它对「永远降级为串行」（峰值 1）
    照样为真，而那正是本任务刚修掉的死设置 bug：判据的宽松方向恰好指向被修掉的缺陷；
-5. **收尾失败仍出结果**：让 `/rename/finalize` 回 500，结果对话框**仍然打开**且改名结果完好（钉住 F1）。
+5. **收尾失败仍出结果**：让 `/rename/finalize` 回 500，结果对话框**仍然打开**且改名结果完好（钉住 F1）；
+6. **运行结束后 `progress` 保留终值、不得被清零**：一次成功执行之后断言
+   `ws.progress.done === ws.progress.total && ws.progress.total > 0`。
+   这条钉的是 Task 11 修掉的那个缺陷 —— 遮罩还有 200ms 淡出，而清零会让**仍在屏幕上**
+   的那一帧渲染成「已完成 0 / 0」。**它是本计划里唯一能红着抓到这个缺陷的判据**：
+   不加它，把清零改回去 runner 照样全绿（实现期实测：`frontend/scripts/` 对 `progress`
+   零引用，回滚那个提交 runner 不变色）。
 
 并把它加进 `check-all.mjs` 的 `SCRIPTS`（**头注释里不要写脚本数**）。
 
@@ -3572,7 +3578,11 @@ const percent = computed(() => {
           <div class="text-[14px] font-semibold text-ink">
             {{ dryRun ? '试运行中…' : '正在执行重命名…' }}
           </div>
-          <div v-if="!dryRun" class="mt-3">
+          <!-- aria-live="off" 罩住**整块**进度区（条 + 计数 + 文件名），不是只罩计数那行:
+               这三样都每文件变一次, 只罩一行等于没罩 —— 读屏照样会对每个文件播报。
+               注意它**不能**提到更外层: 上面那句「正在执行重命名…」在 role="status"
+               aria-live="polite" 区域内, 需要被播报一次。 -->
+          <div v-if="!dryRun" class="mt-3" aria-live="off">
             <div
               class="h-1.5 w-full overflow-hidden rounded-full bg-sunken"
               role="progressbar"
@@ -3586,10 +3596,7 @@ const percent = computed(() => {
                 :style="{ width: percent + '%' }"
               />
             </div>
-            <div
-              class="mt-2 flex items-center justify-between text-[12px] text-ink-2"
-              aria-live="off"
-            >
+            <div class="mt-2 flex items-center justify-between text-[12px] text-ink-2">
               <span>已完成 {{ progress.done }} / {{ progress.total }}</span>
               <span>{{ percent }}%</span>
             </div>
@@ -3608,7 +3615,7 @@ const percent = computed(() => {
 **关于两处 aria 属性**（评审指出，本任务引入的缺陷）：
 
 - `aria-label="执行进度"` —— `role="progressbar"` 没有可访问名时，辅助技术只会念出「进度条 3 0 12」，用户不知道这是什么。
-- `aria-live="off"` —— 进度条整块位于既有的 `role="status" aria-live="polite"` 区域内，而**本任务让这块文本每个文件都变一次**（改动前卡片只有一句静态文字）。不加这一句，读屏会对**每一个文件**播报一次「已完成 n / 共 m」—— 300 个文件就是 300 次播报。
+- `aria-live="off"` —— 进度区位于既有的 `role="status" aria-live="polite"` 区域内，而**本任务让这块内容每个文件都变一次**（改动前卡片只有一句静态文字）。不加这一句，读屏会对**每一个文件**播报一次 —— 300 个文件就是 300 次播报。**它必须罩住整块进度区（进度条 + 计数 + 文件名），不能只罩计数那一行**：文件名行同样每文件变一次，只罩一行等于没罩（这是实现期发现的，当时只罩了计数行）。
 
 - [ ] **Step 2: 传入 progress**
 
