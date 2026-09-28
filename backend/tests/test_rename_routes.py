@@ -21,6 +21,8 @@ TEMPLATE = "{show} - S{season_padded}E{episode_padded}{extension}"
 
 # 用 overrides 钉死解析结果, 让断言不依赖文件名解析器的行为
 OVERRIDES = {"f1": {"show_name": "Test Show", "season": 1, "episode": 2}}
+# 单文件契约下 override 是单数 —— 与 OVERRIDES["f1"] 是同一份值, 不另抄一遍
+OVERRIDE = OVERRIDES["f1"]
 
 
 @pytest.fixture
@@ -125,14 +127,31 @@ def test_dry_run_route_honours_pad_fields(client):
     assert res.json()["results"][0]["new_filename"] == "Test Show - S001E002.mkv"
 
 
+def _execute_payload(**extra):
+    """单文件执行载荷 —— /rename/execute 是单数契约, 与干跑那份批量载荷分开。
+
+    `_write_payload` 仍留给干跑（它仍是批量, spec R9）。
+    """
+    payload = {
+        "file_id": "f1",
+        "template": TEMPLATE,
+        "source": "local",
+        "path": "/media/Test Show",
+        "override": OVERRIDE,
+        "conflict_strategy": "skip",
+    }
+    payload.update(extra)
+    return payload
+
+
 def test_execute_route_honours_pad_fields(client):
     # execute 会真写盘, 但 fixture 的源文件 /media/Test Show/... 并不存在于磁盘,
     # 所以只会得到一个 success=False 的结果 —— 文件名与路径仍按 pad 算好了,
     # 因此可以在不接触文件系统的前提下断言。
-    res = client.post("/api/rename/execute", json=_write_payload(
+    res = client.post("/api/rename/execute", json=_execute_payload(
         episode_pad_digits=3, season_pad_digits=3))
     assert res.status_code == 200, res.text
-    row = res.json()["results"][0]
+    row = res.json()["result"]
     assert row["new_filename"] == "Test Show - S001E002.mkv"
     assert row["new_path"] == "/media/Test Show/Test Show - S001E002.mkv"
 
@@ -366,6 +385,19 @@ def _tmdb_write_payload(**extra):
     return payload
 
 
+def _tmdb_execute_payload(**extra):
+    """execute 的单数版 —— 与 `_tmdb_write_payload`（干跑/预览仍是批量）成对。"""
+    payload = {
+        "file_id": "f1",
+        "template": TITLE_TEMPLATE,
+        "source": "local",
+        "path": "",
+        "override": OVERRIDE,
+    }
+    payload.update(extra)
+    return payload
+
+
 def test_execute_route_merges_the_tmdb_title(disk_client, fake_tmdb, tmp_path):
     # 本仓库有前科的缺陷形态（见 2026-09-25-backend-pad-digits 的注释:
     # 「只加 buildPreview 一处…写出的文件名与预览不一致」）—— 预览显示一套、
@@ -373,9 +405,9 @@ def test_execute_route_merges_the_tmdb_title(disk_client, fake_tmdb, tmp_path):
     # overrides=effective_overrides, 预览里仍有标题而写出的文件名没有,
     # 上面所有用例照样全绿。本条钉住它: TMDB 标题必须真的进入被执行的文件名,
     # 而不只是进入预览响应。
-    res = disk_client.post("/api/rename/execute", json=_tmdb_write_payload())
+    res = disk_client.post("/api/rename/execute", json=_tmdb_execute_payload())
     assert res.status_code == 200, res.text
-    row = res.json()["results"][0]
+    row = res.json()["result"]
     assert row["new_filename"] == "Test Show - S01E02 - Breakage.mkv"
     assert row["new_path"] == str(tmp_path / "Test Show - S01E02 - Breakage.mkv")
     # 真的落到盘上, 不只是算出了一个字符串
@@ -453,9 +485,9 @@ def test_tmdb_outage_does_not_block_the_rename(
         assert row["tmdb_match"] is None
     assert row["new_filename"] == "Test Show - S01E02 - .mkv"
 
-    res = disk_client.post("/api/rename/execute", json=_tmdb_write_payload())
+    res = disk_client.post("/api/rename/execute", json=_tmdb_execute_payload())
     assert res.status_code == 200, res.text
-    row = res.json()["results"][0]
+    row = res.json()["result"]
     # 重命名照做, 且真的落到盘上 —— 没有 {title} 的回落文件名
     assert row["success"] is True
     assert row["new_filename"] == "Test Show - S01E02 - .mkv"

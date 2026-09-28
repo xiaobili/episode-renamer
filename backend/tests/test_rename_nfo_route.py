@@ -47,8 +47,25 @@ def payload(**extra):
     return data
 
 
+def one(**extra):
+    """单文件执行载荷 —— /rename/execute 已改为单数契约（file_id + override）。
+
+    `payload()` 仍留给预览与干跑: 两者**仍是批量**（spec R9）。
+    """
+    data = {
+        "file_id": "f1",
+        "template": TEMPLATE,
+        "source": "local",
+        "path": "",
+        "override": OVERRIDES["f1"],
+        "conflict_strategy": "skip",
+    }
+    data.update(extra)
+    return data
+
+
 def test_generate_nfo_off_writes_nothing(client, tmp_path):
-    res = client.post("/api/rename/execute", json=payload(generate_nfo=False))
+    res = client.post("/api/rename/execute", json=one(generate_nfo=False))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["nfo_written"] == []
@@ -57,7 +74,7 @@ def test_generate_nfo_off_writes_nothing(client, tmp_path):
     # 即使把 generate_nfo 读成恒真, 上面两条也照样成立（决策全是无内容）。
     # 断言跳过清单与落点为空, 才把「选项真的传下去了」这件事钉住。
     assert body["nfo_skipped"] == []
-    assert body["results"][0]["nfo_path"] is None
+    assert body["result"]["nfo_path"] is None
 
 
 def test_dry_run_lists_nfo_plan_without_writing(client, tmp_path):
@@ -76,11 +93,11 @@ def test_dry_run_lists_nfo_plan_without_writing(client, tmp_path):
 
 def test_generate_nfo_without_tmdb_key_produces_no_files(client, tmp_path):
     # Review Focus 4：无 TMDB 数据时不写残缺 NFO, 但重命名照常完成
-    res = client.post("/api/rename/execute", json=payload(generate_nfo=True))
+    res = client.post("/api/rename/execute", json=one(generate_nfo=True))
     assert res.status_code == 200, res.text
     body = res.json()
 
-    assert body["results"][0]["success"] is True
+    assert body["result"]["success"] is True
     assert body["nfo_written"] == []
     assert list(tmp_path.rglob("*.nfo")) == []
     assert any("TMDB" in item["reason"] for item in body["nfo_skipped"])
@@ -322,27 +339,32 @@ def test_dry_run_with_tmdb_lists_the_plan_but_writes_nothing(matched_client, tmp
     assert body["results"][0]["nfo_path"].endswith("Test Show - S01E02.nfo")
 
 
-def test_execute_with_tmdb_writes_all_three_kinds(matched_client, tmp_path):
-    """执行路径的端到端钉子: 三份 NFO 都真的落到盘上。
+def test_execute_with_tmdb_writes_only_its_own_episode_nfo(matched_client, tmp_path):
+    """执行路径的端到端钉子: **它负责的那一份**每集 NFO 真的落到盘上。
 
     路由若漏传 nfo_options / nfo_matches（或传成空字典）, 上面所有用例照样全绿,
     盘上却什么都没有 —— 这正是本仓库有前科的「预览说一套、执行做另一套」。
+
+    组级 NFO（tvshow / season）**不由本接口写**: 它们描述的是整批, 由
+    /rename/finalize 汇总（spec R1）。这里反向钉住这件事 —— 把本接口的实现换成
+    `finalize_show_nfo` + 写盘（或让它顺手把组级决策也写下去）下面两条断言必红。
     """
-    res = matched_client.post("/api/rename/execute", json=MATCHED_PAYLOAD)
+    res = matched_client.post("/api/rename/execute", json=one(generate_nfo=True))
     assert res.status_code == 200, res.text
     body = res.json()
 
     written = set(body["nfo_written"])
     show_dir = tmp_path / "Test Show"
     assert str(show_dir / "Test Show - S01E02.nfo") in written
-    assert str(show_dir / "Test Show - S01E03.nfo") in written
-    assert str(show_dir / "tvshow.nfo") in written
-    assert str(show_dir / "season.nfo") in written
     for path in written:
         assert os.path.isfile(path), path
 
     # 每集 NFO 跟着**改名后**的视频路径走
-    assert body["results"][0]["nfo_path"] == str(show_dir / "Test Show - S01E02.nfo")
+    assert body["result"]["nfo_path"] == str(show_dir / "Test Show - S01E02.nfo")
+
+    # 组级 NFO 一份都不该由单文件接口写出来（它们归 /rename/finalize）
+    assert not any(p.endswith("tvshow.nfo") for p in written), written
+    assert not any(p.endswith("season.nfo") for p in written), written
 
 
 def test_subtitle_is_excluded_from_both_preview_and_execute(tmp_path, monkeypatch):
@@ -408,19 +430,28 @@ def test_subtitle_is_excluded_from_both_preview_and_execute(tmp_path, monkeypatc
     assert rows[video.name]["nfo_scope"] == "full"
     assert rows[subtitle.name]["nfo_scope"] == "full"
 
-    res = client.post("/api/rename/execute", json=payload)
-    assert res.status_code == 200, res.text
-    body = res.json()
+    # 执行侧是**单文件契约**: 逐个文件各 POST 一次, 把每条 result 收进 by_name。
+    # 组级 NFO 不再由这里写（它们归 /rename/finalize, spec R1）, 所以下面那个
+    # 精确集合只剩视频那一份每集 NFO。
+    by_name: dict[str, dict] = {}
+    written: list[str] = []
+    for file_id, override in (
+        ("f1", {"show_name": "Test Show", "season": 1, "episode": 2}),
+        ("f2", {"show_name": "Test Show", "season": 1, "episode": 2}),
+    ):
+        res = client.post("/api/rename/execute", json=one(
+            file_id=file_id, override=override, generate_nfo=True,
+        ))
+        assert res.status_code == 200, res.text
+        body = res.json()
+        written.extend(body["nfo_written"])
+        by_name[body["result"]["original_filename"]] = body["result"]
 
-    # 字幕旁 0 个 .nfo: 目录里恰好只有该有的三个
-    # （sorted 按码位: 'T'(84) < 's'(115), 故 "Test Show - …" 排在最前）
-    assert sorted(p.name for p in show_dir.glob("*.nfo")) == [
-        "Test Show - S01E02.nfo", "season.nfo", "tvshow.nfo",
-    ]
-    assert str(show_dir / "Test Show - S01E02.chs.nfo") not in body["nfo_written"]
+    # 字幕旁 0 个 .nfo: 目录里恰好只有视频那一份每集 NFO
+    assert sorted(p.name for p in show_dir.glob("*.nfo")) == ["Test Show - S01E02.nfo"]
+    assert str(show_dir / "Test Show - S01E02.chs.nfo") not in written
     # 过滤只作用于 NFO: 字幕照常重命名
     assert sorted(p.name for p in show_dir.glob("*.srt")) == ["Test Show - S01E02.srt"]
-    by_name = {row["original_filename"]: row for row in body["results"]}
     assert by_name[subtitle.name]["success"] is True
     assert by_name[subtitle.name]["nfo_path"] is None
     assert by_name[video.name]["nfo_path"] == str(show_dir / "Test Show - S01E02.nfo")
@@ -498,14 +529,31 @@ def test_subtitle_sorted_before_the_video_does_not_take_the_show_level_row(tmp_p
     # 视频扩展名 + is_subtitle=True: 一个落点都没有（判据不是扩展名）
     assert rows[mislabeled.name]["nfo"] is None
 
-    res = client.post("/api/rename/execute", json=payload)
-    assert res.status_code == 200, res.text
+    # 执行侧是**单文件契约**: 逐个文件各 POST 一次（组级 NFO 已归
+    # /rename/finalize, spec R1, 故精确集合里只剩视频那一份每集 NFO）。
+    by_name: dict[str, dict] = {}
+    for file_id, override in (
+        ("f1", {"show_name": "Test Show", "season": 1, "episode": 2}),
+        ("f2", {"show_name": "Test Show", "season": 1, "episode": 2}),
+        ("f3", {"show_name": "Test Show", "season": 1, "episode": 3}),
+    ):
+        res = client.post("/api/rename/execute", json=one(
+            file_id=file_id, template=SUB_LANG_TEMPLATE, override=override,
+            generate_nfo=True,
+        ))
+        assert res.status_code == 200, res.text
+        by_name[res.json()["result"]["original_filename"]] = res.json()["result"]
+
     assert sorted(p.name for p in show_dir.glob("*.nfo")) == [
-        "Test Show - S01E02.nfo", "season.nfo", "tvshow.nfo",
+        "Test Show - S01E02.nfo",
     ], "字幕旁 0 个、伪字幕（.mkv + is_subtitle）也 0 个"
     # 两者都照常重命名（过滤只作用于 NFO）
     assert sorted(p.name for p in show_dir.glob("*.srt")) == ["Test Show - S01E02.chs.srt"]
     assert (show_dir / "Test Show - S01E03.mkv").is_file()
+    # 落点也只落在视频那一行: 字幕与伪字幕都没有 nfo_path
+    assert by_name[video.name]["nfo_path"] == str(show_dir / "Test Show - S01E02.nfo")
+    assert by_name[subtitle.name]["nfo_path"] is None
+    assert by_name[mislabeled.name]["nfo_path"] is None
 
 
 def test_preview_reports_no_nfo_plan_for_a_batch_without_videos(tmp_path, monkeypatch):
@@ -545,9 +593,7 @@ def test_preview_reports_no_nfo_plan_for_a_batch_without_videos(tmp_path, monkey
     assert row["nfo_scope"] == "disabled"
 
     # 同一个批次的执行侧: 一个 NFO 文件都不该出现（判据一致性）
-    res = client.post("/api/rename/execute", json=payload(
-        file_ids=["f1"], generate_nfo=True,
-    ))
+    res = client.post("/api/rename/execute", json=one(generate_nfo=True))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["nfo_written"] == [] and body["nfo_skipped"] == []

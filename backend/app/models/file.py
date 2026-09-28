@@ -89,3 +89,22 @@ class BatchRenameResult(BaseModel):
     # nfo_written 分开, 因为被搬走的那个文件不是本程序**生成**的: 混在一起会让
     # 「生成 3 个」把用户自己（或别的工具）写的元数据算进去。
     nfo_carried: list[str] = Field(default_factory=list)
+
+
+class SingleRenameResult(BaseModel):
+    """单文件执行的结果。
+
+    计数（executed / skipped / failed，各为 0 或 1）由**后端**给出, 前端只求和 ——
+    让前端按 result.status 重判会把 count_result 那套规则复制成第二份。
+    """
+    success: bool = False
+    source: str = "local"
+    file_id: str = ""
+    result: RenameResult
+    executed: int = 0
+    skipped: int = 0
+    failed: int = 0
+    # 该文件的每集 NFO（生成）。剧集级/季级不属于单个文件, 由 /rename/finalize 汇总。
+    nfo_written: list[str] = Field(default_factory=list)
+    nfo_carried: list[str] = Field(default_factory=list)
+    nfo_skipped: list[dict] = Field(default_factory=list)

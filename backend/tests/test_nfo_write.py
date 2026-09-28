@@ -188,8 +188,13 @@ def named_options(overwrite=False):
 
 def test_request_models_expose_the_two_nfo_switches_defaulting_off():
     # 「覆盖已存在」必须默认关闭 —— 名字写错或默认值写成 True 都不会有别的东西发现
-    for model in (RenamePreviewRequest, RenameExecuteRequest):
-        request = model(file_ids=[], template="{show}")
+    # 两个模型的**形状不同**: 预览仍是批量（file_ids）, 执行已改为单文件（file_id）。
+    # 断言一字未改, 只有构造那一行的入参跟着契约走。
+    for model, shape in (
+        (RenamePreviewRequest, {"file_ids": [], "template": "{show}"}),
+        (RenameExecuteRequest, {"file_id": "f1", "template": "{show}"}),
+    ):
+        request = model(**shape)
         assert request.generate_nfo is False
         assert request.nfo_overwrite is False
 

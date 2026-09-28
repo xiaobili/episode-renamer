@@ -1,14 +1,22 @@
 from fastapi import APIRouter, HTTPException
 from typing import Optional
 
-from ..models.api import RenamePreviewRequest, RenameExecuteRequest
+from ..models.api import (
+    RenameBatchRequest, RenameDryRunRequest, RenameExecuteRequest,
+    RenameFinalizeRequest, RenamePreviewRequest,
+)
 from ..models.file import (
     FileInfo, ParsedInfo, RenamePlan, BatchRenameResult, OverrideInfo,
+    SingleRenameResult,
 )
 from ..models.nfo import NfoEntry, NfoOptions
-from ..core.local_renamer import batch_rename as local_batch_rename
+from ..core.local_renamer import (
+    batch_rename as local_batch_rename,
+    OneOutcome, count_result, execute_one, finalize_show_nfo,
+    landed_path_of, plan_files,
+)
 from ..core.openlist_renamer import (
-    build_openlist_rename_plan, execute_openlist_batch,
+    build_openlist_rename_plan, execute_openlist_batch, execute_openlist_one,
 )
 from ..config import settings
 from ..core.template import PadConfig
@@ -144,6 +152,37 @@ def _nfo_supported(source: str) -> bool:
 def _show_key(plan: RenamePlan) -> str:
     """plan 的剧名（解析失败时为 ""）。剧集级 NFO 按剧分组, 判定也按剧 —— 见 preview。"""
     return plan.parsed.show_name if plan.parsed else ""
+
+
+def _as_batch_request(
+    req: RenameExecuteRequest, overrides: dict[str, dict]
+) -> RenameBatchRequest:
+    """把单文件请求重打包成 `_with_tmdb_titles` 读的**批量形状**。
+
+    字段用 model_dump 透传而不是逐个抄写: 两个模型的字段集合除
+    `file_id`/`override` 与 `file_ids`/`overrides` 这一对外完全相同, 逐个抄写
+    必然在下次加字段时漂移 —— 那正是 RenameBatchRequest 被抽出来的理由。
+    """
+    return RenameBatchRequest(
+        **req.model_dump(exclude={"file_id", "override"}),
+        file_ids=[req.file_id],
+        overrides=overrides,
+    )
+
+
+def _apply_openlist_limits(client, req) -> None:
+    """把请求里的限流设置应用到客户端。两个字段都没传时保持现状。"""
+    client.apply_limits(
+        max_concurrent=req.openlist_max_concurrent,
+        request_interval=req.openlist_request_interval,
+    )
+
+
+def _find_one(file_id: str) -> FileInfo:
+    files = find_files_by_ids([file_id])
+    if not files:
+        raise HTTPException(status_code=400, detail="未找到对应的文件")
+    return files[0]
 
 
 _cached_files: dict[str, list[FileInfo]] = {}
@@ -303,69 +342,75 @@ async def preview_rename(req: RenamePreviewRequest):
 
 @router.post("/rename/execute")
 async def execute_rename(req: RenameExecuteRequest):
-    files = find_files_by_ids(req.file_ids)
-    if not files:
-        raise HTTPException(status_code=400, detail="未找到对应的文件")
+    """执行**一个**文件的重命名。
 
+    **单进程内存依赖**: find_files_by_ids 读的是模块级 _cached_files（见文件末尾
+    的注释）, 所以本接口与 /rename/finalize 必须落在同一个进程里。当前部署是
+    单 worker uvicorn（Dockerfile 的 CMD 没有 --workers）, 加 --workers 会让
+    finalize 拿不到这里的缓存。
+    """
+    file = _find_one(req.file_id)
     source = req.source.lower()
     pad = _pad_from_request(req)
 
-    merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
-    effective_overrides = merged
+    # 适配成**批量形状**喂给既有的 _with_tmdb_titles: 它读的是 `req.overrides`
+    # （批量形状）, 而本接口收的是单数 `override`。
+    #
+    # **必须真的重打包, 不能只算一个局部变量**: 直接把 `req` 传进去会
+    # AttributeError —— RenameExecuteRequest 没有 overrides 字段。适配只发生在
+    # 这里, 预览 / 干跑 / 收尾三条路径读的仍是各自真实的批量请求, 一行不动。
+    overrides = {req.file_id: req.override} if req.override else {}
+    merged, _summaries, matches_by_file = await _with_tmdb_titles(
+        _as_batch_request(req, overrides), [file]
+    )
+
+    plans = plan_files(
+        [file], req.template, req.folder_template, req.create_season_folder,
+        merged, pad=pad,
+    )
+    plan = plans[0]
 
     if source == "local":
-        result = local_batch_rename(
-            files=files,
-            template=req.template,
-            folder_template=req.folder_template,
-            create_season_folder=req.create_season_folder,
-            overrides=effective_overrides,
-            dry_run=False,
+        outcome = execute_one(
+            plan,
             conflict_strategy=req.conflict_strategy,
-            pad=pad,
-            # _nfo_supported 为假时传**未启用**的 options 而不是 None: 两者在
-            # batch_rename 里走同一分支, 但显式传让「OpenList 不写 NFO」这条规则
-            # 在调用点就看得见, 而不是依赖 batch_rename 内部的空值判断。
-            nfo_options=_nfo_options_from_request(req) if _nfo_supported(source) else NfoOptions(),
+            nfo_options=(
+                _nfo_options_from_request(req) if _nfo_supported(source) else NfoOptions()
+            ),
             nfo_matches=matches_by_file,
         )
-
     elif source == "openlist":
         client = get_default_client()
         if not client or not client.connected:
             raise HTTPException(status_code=401, detail="请先连接 OpenList")
-
-        plans: list[RenamePlan] = []
-        for f in files:
-            ov = effective_overrides.get(f.id)
-            override = OverrideInfo(**ov) if ov else None
-            plan = build_openlist_rename_plan(
-                f, req.template, req.folder_template,
-                req.create_season_folder, override, pad=pad,
-            )
-            plans.append(plan)
-
-        print(f"[RENAME] OpenList execute: {len(plans)} plans, client={client.server_url}")
-        for p in plans[:5]:
-            print(f"[RENAME]   {p.original_dir}/{p.original_filename} -> {p.new_dir}/{p.new_filename}")
-        if len(plans) > 5:
-            print(f"[RENAME]   ... +{len(plans)-5} more")
-
-        result = await execute_openlist_batch(client, plans, dry_run=False)
-
-        print(f"[RENAME] OpenList result: executed={result.executed} skipped={result.skipped} failed={result.failed}")
-        for r in result.results:
-            if not r.success:
-                print(f"[RENAME]   ❌ {r.original_filename} -> {r.new_filename} error={r.error} status={r.status}")
-
+        _apply_openlist_limits(client, req)
+        # 这里必须 `await`, 不能 asyncio.run —— 本函数是 async 的, 而
+        # asyncio.run 在运行中的事件循环里会抛 RuntimeError。
+        # （asyncio.run 那条约定只适用于**测试文件**, 见 Task 3 Step 3。）
+        result = await execute_openlist_one(client, plan)
+        outcome = OneOutcome(result=result)
+        # OpenList 路径没有 abort 合成结果, 恒传 aborted=False。
+        outcome.executed, outcome.skipped, outcome.failed = count_result(result, False)
+        outcome.landed_path = landed_path_of(result)
     else:
         raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
 
-    return result.model_dump()
+    return SingleRenameResult(
+        success=outcome.failed == 0,
+        source=req.source,
+        file_id=file.id,
+        result=outcome.result,
+        executed=outcome.executed,
+        skipped=outcome.skipped,
+        failed=outcome.failed,
+        nfo_written=outcome.nfo_written,
+        nfo_carried=outcome.nfo_carried,
+        nfo_skipped=[{"path": p, "reason": r} for p, r in outcome.nfo_skipped],
+    ).model_dump()
 
 
 @router.post("/rename/dry-run")
-async def dry_run_rename(req: RenameExecuteRequest):
+async def dry_run_rename(req: RenameDryRunRequest):
     files = find_files_by_ids(req.file_ids)
 
     source = req.source.lower()
