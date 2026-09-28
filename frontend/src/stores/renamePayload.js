@@ -1,6 +1,6 @@
-// 预览 / 执行 / 干跑的请求载荷**只有这一处**构造。
+// 预览 / 干跑 / 执行 / 收尾的请求载荷**只有这一处**构造。
 //
-// 为什么必须收敛到一处：这 16 个字段原先在 workspace.js 里有两份副本
+// 为什么必须收敛到一处：这些字段原先在 workspace.js 里有两份副本
 // （buildPreview 一份、executeAction 一份），而「两处都要下发 TMDB 设置」
 // 正是本功能设计里的头号风险（ledger R46）—— 漏一处会让预览显示标题、执行却
 // 写出别的文件名，全程零报错（本仓库有前科）。两份副本还会各自漂移：新增字段时
@@ -8,11 +8,24 @@
 //
 // 与 settingsSchema.js 同规格：纯函数 + node 断言（scripts/check-rename-payload.mjs）。
 // 本模块**不得** import 任何东西 —— 否则 node 加载不了它。
+// 四种形态:
+//   preview   —— 批量计划（RenamePreviewRequest）
+//   dry-run   —— 批量计划 + 冲突策略（RenameDryRunRequest）。**干跑仍是批量**:
+//                它是纯计划操作, 不写盘, 没有进度可言。
+//   execute   —— **单个文件**（RenameExecuteRequest）。file_id / override 用单数。
+//   finalize  —— 批量收尾（RenameFinalizeRequest）, 额外带 landed 真实落点。
 export function buildRenamePayload({
-  // 'preview' 走 RenamePreviewRequest；'execute' 走 RenameExecuteRequest。
-  // **干跑也用 'execute'** —— 它与真执行共用同一个请求模型，只是换个端点。
   mode,
+  // execute 用单数 fileId / override；preview / dry-run / finalize 用批量。
+  fileId,
   fileIds,
+  override,
+  // 已收集好的逐行覆盖。**由调用方收集**：预览从全部预览行收集、执行只从选中行
+  // 收集 —— 两者的行集合不同（首次预览时 previewRows 还是空的，而 file_ids 来自
+  // filesStore.files），把它收进这里只会把这件事实藏起来。
+  overrides,
+  // finalize 专用：file_id → 真实落点。
+  landed,
   // 批次路径。两种调用点各自算好传进来：预览用扫描到的首行、执行用选中的首行
   // （递归扫描下两者可能不同）。后端目前**不读** path（api/renamer.py 只用到
   // file_ids / source / conflict_strategy），故这里不做「改进」，逐字保留原行为。
@@ -21,12 +34,8 @@ export function buildRenamePayload({
   template,
   folderTemplate,
   createSeasonFolder,
-  // 仅 mode === 'execute' 进入载荷：RenamePreviewRequest 没有这个字段。
+  // 仅 mode === 'execute' / 'dry-run' 进入载荷：RenamePreviewRequest 没有这个字段。
   conflictStrategy,
-  // 已收集好的逐行覆盖。**由调用方收集**：预览从全部预览行收集、执行只从选中行
-  // 收集 —— 两者的行集合不同（首次预览时 previewRows 还是空的，而 file_ids 来自
-  // filesStore.files），把它收进这里只会把这件事实藏起来。
-  overrides,
   episodePadDigits,
   seasonPadDigits,
   tmdb,
@@ -35,19 +44,39 @@ export function buildRenamePayload({
   scraped,
   generateNfo,
   nfoOverwrite,
+  // 设置页的 OpenList 限流。只随**真会做文件操作**的形态下发（execute / dry-run）:
+  // 预览是纯计划、收尾只写 NFO, 后端那两个模型也不读它们（见 api/renamer.py）。
+  openlistMaxConcurrent,
+  openlistRequestInterval,
 }) {
-  return {
-    file_ids: fileIds,
+  // 形状互斥**必须显式校验**: 传错形状时静默取其一, 会得到「预览 2 个文件、
+  // 执行 0 个」这种零报错的错行为（本仓库有前科）。
+  if (mode === 'execute') {
+    if (!fileId) throw new Error('buildRenamePayload: execute 模式必须传 fileId')
+    if (Array.isArray(fileIds) && fileIds.length) {
+      throw new Error('buildRenamePayload: execute 模式不得传 fileIds')
+    }
+  } else if (mode === 'preview' || mode === 'dry-run' || mode === 'finalize') {
+    if (!Array.isArray(fileIds)) {
+      throw new Error(`buildRenamePayload: ${mode} 模式必须传 fileIds`)
+    }
+  } else {
+    throw new Error(`buildRenamePayload: 未知 mode ${mode}`)
+  }
+  if (mode === 'finalize' && (!landed || typeof landed !== 'object')) {
+    throw new Error('buildRenamePayload: finalize 模式必须传 landed')
+  }
+
+  const common = {
     source,
     path,
     template,
     folder_template: folderTemplate,
     create_season_folder: createSeasonFolder,
-    overrides,
-    ...(mode === 'execute' ? { conflict_strategy: conflictStrategy } : {}),
     episode_pad_digits: episodePadDigits,
     season_pad_digits: seasonPadDigits,
     // 未刮削时**只发 tmdb_enabled: false**，且不发 Key / 语言 / 重选表。
+    // 详见下面的长注释, 三条错误实现都由本文件的判据钉住。
     //
     // 「不查 TMDB」的唯一有效表达就是显式 false。另两种写法都是错的：
     //   · 省略字段 → 后端拿到 None → 回退到 .env 的 Key → **照样出网**；
@@ -67,4 +96,33 @@ export function buildRenamePayload({
     generate_nfo: generateNfo,
     nfo_overwrite: nfoOverwrite,
   }
+
+  if (mode === 'execute') {
+    return {
+      file_id: fileId,
+      override: override ?? null,
+      ...common,
+      conflict_strategy: conflictStrategy,
+      openlist_max_concurrent: openlistMaxConcurrent,
+      openlist_request_interval: openlistRequestInterval,
+    }
+  }
+
+  if (mode === 'finalize') {
+    // finalize 不做文件操作, 故**不带** conflict_strategy（后端模型也没有它）。
+    return { file_ids: fileIds, overrides, landed: { ...landed }, ...common }
+  }
+
+  if (mode === 'dry-run') {
+    return {
+      file_ids: fileIds,
+      overrides,
+      ...common,
+      conflict_strategy: conflictStrategy,
+      openlist_max_concurrent: openlistMaxConcurrent,
+      openlist_request_interval: openlistRequestInterval,
+    }
+  }
+
+  return { file_ids: fileIds, overrides, ...common }
 }

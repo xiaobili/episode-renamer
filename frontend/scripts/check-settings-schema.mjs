@@ -51,12 +51,24 @@ assert('非数字字符串回落默认', normalizeSettings({ episodePadDigits: '
 const partial = normalizeSettings({ conflictStrategy: 'overwrite' })
 assert('只给一个字段时补零位数仍是默认', partial.episodePadDigits, 2)
 assert('只给一个字段时 openlist 仍是完整对象', partial.openlist, {
-  serverUrl: '', concurrency: 3, requestInterval: 0.5,
+  serverUrl: '', concurrency: 2, requestInterval: 0.5,
 })
 assert('openlist 半残缺也能补全', normalizeSettings({ openlist: { concurrency: 5 } }).openlist, {
   serverUrl: '', concurrency: 5, requestInterval: 0.5,
 })
 assert('非法冲突策略回落默认', normalizeSettings({ conflictStrategy: 'nuke' }).conflictStrategy, 'skip')
+
+// --- localConcurrency：新增项，区间 [1,10]，默认 4 ---
+assert('localConcurrency 默认 4', defaultSettings().localConcurrency, 4)
+assert('localConcurrency 钳到上界 10', normalizeSettings({ localConcurrency: 99 }).localConcurrency, 10)
+assert('localConcurrency 钳到下界 1', normalizeSettings({ localConcurrency: 0 }).localConcurrency, 1)
+assert('localConcurrency 清空回落默认 4', normalizeSettings({ localConcurrency: null }).localConcurrency, 4)
+
+// --- openlist.concurrency 默认值 3 → 2（spec §7.1）---
+assert('openlist.concurrency 默认 2', defaultSettings().openlist.concurrency, 2)
+// 老用户已显式存过的值必须保留（不做迁移）—— 静默改掉用户设过的值是另一类 bug
+assert('已存的 openlist.concurrency 不被默认值覆盖',
+  normalizeSettings({ openlist: { concurrency: 3 } }).openlist.concurrency, 3)
 
 // --- TMDB 分组 ---
 assert('tmdb 默认未配置', defaultSettings().tmdb, { apiKey: '', language: 'zh-CN', enabled: true })

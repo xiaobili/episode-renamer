@@ -18,6 +18,9 @@ export function defaultSettings() {
     episodePadDigits: 2,
     seasonPadDigits: 2,
     conflictStrategy: 'skip',
+    // 本地源的并发在途上限。**默认 4**：本地是磁盘操作，瓶颈在 IO 而不在服务端；
+    // OpenList 默认 2 是因为它每次请求都要出网打远端 API。
+    localConcurrency: 4,
     // TMDB 未配置时 enabled 仍为 true —— 后端在 api_key 为空时自行降级为 disabled。
     // 前端把「未配置」与「已禁用」当成两件事，用户才知道该去填 Key 还是该去打开开关。
     tmdb: {
@@ -27,7 +30,9 @@ export function defaultSettings() {
     },
     openlist: {
       serverUrl: '',
-      concurrency: 3,
+      // 默认 2（spec §7.1）。它是**下发到后端**的 —— OpenListClient 用它构造并发
+      // 限流器, 见 backend/app/core/openlist_client.py。
+      concurrency: 2,
       requestInterval: 0.5,
     },
   }
@@ -73,6 +78,9 @@ export function normalizeSettings(raw) {
     conflictStrategy: CONFLICT_STRATEGIES.includes(raw.conflictStrategy)
       ? raw.conflictStrategy
       : def.conflictStrategy,
+    localConcurrency: clampNumber(
+      raw.localConcurrency, 1, 10, def.localConcurrency, true
+    ),
     tmdb: {
       // Key 从网页复制常带尾部空白或换行。不 trim 的话用户看到的是「API Key 无效」，
       // 却查不出原因。Key 本身不含空白字符，trim 是无损的。

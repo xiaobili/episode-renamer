@@ -28,6 +28,11 @@ function assertKey(label, obj, key, present) {
 const base = {
   mode: 'preview',
   fileIds: ['f1', 'f2'],
+  fileId: 'f1',
+  override: { title: '我的标题' },
+  landed: { f1: '/media/绝命毒师/Season 02/绝命毒师 - S02E01.mkv' },
+  openlistMaxConcurrent: 2,
+  openlistRequestInterval: 0.5,
   path: '/media/绝命毒师/Season 02/',
   source: 'local',
   template: '{show} - S{season_padded}E{episode_padded}{extension}',
@@ -95,10 +100,78 @@ assert('只关 TMDB 时 tmdb_enabled 变 false', tmdbOffPayload.tmdb_enabled, fa
 assert('只关 TMDB 时 generate_nfo 不受影响', tmdbOffPayload.generate_nfo, true)
 assert('只关 TMDB 时 create_season_folder 不受影响', tmdbOffPayload.create_season_folder, false)
 
-// --- conflict_strategy 只属于 execute（RenamePreviewRequest 没有这个字段）---
-assertKey('preview 载荷不含 conflict_strategy', off, 'conflict_strategy', false)
-assert('execute 载荷带 conflict_strategy',
-  buildRenamePayload({ ...base, mode: 'execute' }).conflict_strategy, 'skip')
+// --- 单文件模式：出 file_id 与 override（单数），不出 file_ids / overrides ---
+// `fileIds: undefined` 是**必须的**：base 里的 fileIds 是给批量形态用的，直接
+// `{ ...base, mode: 'execute' }` 会让它一并继承过去，撞上形状互斥校验而抛错。
+// 于是「不带 fileIds 的 execute」与下面「带 fileIds 的 execute 必须抛错」成了
+// 两条真正不同的路径 —— 删掉互斥校验时，红的正是后者。
+{
+  const one = buildRenamePayload({ ...base, mode: 'execute', fileIds: undefined })
+  assert('execute 载荷带 file_id', one.file_id, 'f1')
+  assertKey('execute 载荷不含 file_ids', one, 'file_ids', false)
+  assert('execute 载荷带 override', one.override, { title: '我的标题' })
+  assertKey('execute 载荷不含 overrides', one, 'overrides', false)
+  assert('execute 载荷带 conflict_strategy', one.conflict_strategy, 'skip')
+}
+
+// --- 干跑仍是批量 ---
+{
+  const dry = buildRenamePayload({ ...base, mode: 'dry-run' })
+  assert('dry-run 载荷带 file_ids', dry.file_ids, ['f1', 'f2'])
+  assertKey('dry-run 载荷不含 file_id', dry, 'file_id', false)
+  assert('dry-run 载荷带 overrides', dry.overrides, { f1: { title: '我的标题' } })
+  assert('dry-run 载荷带 conflict_strategy', dry.conflict_strategy, 'skip')
+}
+
+// --- 收尾：批量 + landed，且**不带** conflict_strategy（它不做文件操作）---
+{
+  const fin = buildRenamePayload({ ...base, mode: 'finalize' })
+  assert('finalize 载荷带 file_ids', fin.file_ids, ['f1', 'f2'])
+  assert('finalize 载荷带 landed', fin.landed, base.landed)
+  assertKey('finalize 载荷不含 conflict_strategy', fin, 'conflict_strategy', false)
+}
+
+// --- landed 是浅拷贝而非同一引用（改它不得污染调用方的对象）---
+{
+  const fin = buildRenamePayload({ ...base, mode: 'finalize' })
+  assert('landed 是浅拷贝', fin.landed === base.landed, false)
+}
+
+// --- 预览仍是批量，且不带 conflict_strategy ---
+{
+  const pv = buildRenamePayload({ ...base, mode: 'preview' })
+  assert('preview 载荷带 file_ids', pv.file_ids, ['f1', 'f2'])
+  assertKey('preview 载荷不含 conflict_strategy', pv, 'conflict_strategy', false)
+}
+
+// --- OpenList 限流随请求下发（不下发 → 设置页那两项又是死的）---
+{
+  const one = buildRenamePayload({ ...base, mode: 'execute', fileIds: undefined })
+  assert('下发 OpenList 并发', one.openlist_max_concurrent, 2)
+  assert('下发 OpenList 间隔', one.openlist_request_interval, 0.5)
+}
+
+// --- 形状互斥：execute 传了 fileIds 必须抛错，而不是静默取其一 ---
+{
+  let threw = false
+  try {
+    buildRenamePayload({ ...base, mode: 'execute', fileIds: ['f1', 'f2'] })
+  } catch {
+    threw = true
+  }
+  assert('execute 模式传 fileIds 抛错', threw, true)
+}
+
+// --- 形状互斥：批量模式不传 fileIds 必须抛错 ---
+{
+  let threw = false
+  try {
+    buildRenamePayload({ ...base, mode: 'finalize', fileIds: undefined })
+  } catch {
+    threw = true
+  }
+  assert('finalize 模式缺 fileIds 抛错', threw, true)
+}
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
 process.exitCode = failed === 0 ? 0 : 1
