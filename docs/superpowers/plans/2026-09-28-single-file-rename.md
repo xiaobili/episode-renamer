@@ -1468,7 +1468,7 @@ git commit -m "feat(openlist_client): 限流上限与请求间隔改为可运行
 **Files:**
 - Modify: `backend/app/models/api.py`
 - Modify: `backend/app/api/renamer.py`
-- Modify: `backend/tests/test_rename_routes.py`、`backend/tests/test_rename_nfo_route.py`
+- Modify: `backend/tests/test_rename_routes.py`、`backend/tests/test_rename_nfo_route.py`、`backend/tests/test_nfo_write.py`（模型级构造，见 Step 5）
 - Test: `backend/tests/test_rename_single_route.py`（新建）
 
 **Interfaces:**
@@ -1913,7 +1913,7 @@ Expected: 全绿（数量 = Task 4 结束时的 234 + 新增 6 条 = 240，以�
 ```bash
 git add backend/app/models/api.py backend/app/models/file.py backend/app/api/renamer.py \
         backend/tests/test_rename_routes.py backend/tests/test_rename_nfo_route.py \
-        backend/tests/test_rename_single_route.py
+        backend/tests/test_nfo_write.py backend/tests/test_rename_single_route.py
 git commit -m "feat(api): /rename/execute 改为单文件契约，请求模型拆出 RenameBatchRequest"
 ```
 
