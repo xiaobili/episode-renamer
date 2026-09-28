@@ -1993,7 +1993,7 @@ Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 4 结束时的 234 + 新增 6 条 = 240，以实际为准）
+Expected: 全绿（数量 = Task 4 结束时的 234 + 新增 7 条 = 241，以实际为准）
 
 - [ ] **Step 7: 提交**
 
@@ -2223,7 +2223,7 @@ Expected: 6 passed
 - [ ] **Step 5: 跑全套并提交**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 5 结束时的 240 + 新增 6 条 = 246，以实际为准）
+Expected: 全绿（数量 = Task 5 结束时的 241 + 新增 6 条 = 247，以实际为准）
 
 ```bash
 git add backend/app/api/renamer.py backend/tests/test_rename_finalize_route.py
