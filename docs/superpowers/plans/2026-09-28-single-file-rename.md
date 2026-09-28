@@ -1616,7 +1616,10 @@ def test_openlist_execute_agrees_with_preview_on_the_target_path(monkeypatch):
     client = TestClient(app)
     common = {
         "template": TEMPLATE,
-        "source": "openlist",
+        # **故意发大写**: 单文件响应里的 source 必须与批量路径一样是**规范化后**
+        # 的 "openlist"（批量路径在 BatchRenameResult 里硬编码小写）。直接透传
+        # req.source 时本断言红 —— 那是这条字段唯一的判据。
+        "source": "OpenList",
         "path": "/media/Show/Season 02",
         "folder_template": "Season {season_padded}",
         "create_season_folder": True,
@@ -1636,6 +1639,7 @@ def test_openlist_execute_agrees_with_preview_on_the_target_path(monkeypatch):
     assert executed.json()["result"]["new_path"] == expected, (
         "执行落点与预览不一致 —— 两个 builder 被混用了"
     )
+    assert executed.json()["source"] == "openlist", "响应里的 source 必须是规范化后的小写"
 
 
 def test_generate_nfo_flag_controls_the_episode_decision(tmp_path):
