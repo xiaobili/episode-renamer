@@ -607,9 +607,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         ? Math.round(settingsStore.openlist.requestInterval * 1000)
         : 0
 
-      progress.done = 0
-      progress.total = items.length
-      progress.current = ''
+      // （progress 已在进入 try 之前归零 —— 见那里的注释。这里**不要**再来一遍:
+      // 同一个函数里出现两次 `progress.done = 0`, 后人很可能删错那处承重的。）
 
       const { results, failures } = await runWithConcurrency(
         items, limit,
