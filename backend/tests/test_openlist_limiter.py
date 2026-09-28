@@ -102,14 +102,10 @@ def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
     这是 `_request` 这条路径的**第一个**判据。把实现改回「持着名额递归调用
     自己」（旧版形状）本用例会挂到 `wait_for` 超时 —— 超时即红, 不是断言失败。
 
-    用假的 `httpx.AsyncClient` 喂**四次**响应, 按 `_request` 的真实调用序列:
-    401（token 过期）→ login 成功 → **login 内部的 `_discover_mounts` 列根目录**
-    → 带新 token 重试成功。`login` 读取 token 的字段名以 `openlist_client.py`
-    为准（`data["data"]["token"]`, 回退 `data["token"]`）。
-
-    （第四次调用是实测出来的: 骨架只列了三次, 漏掉 `login` 结尾那句
-    `await self._discover_mounts()` —— 少列会在第四次 `pop` 时 IndexError,
-    红的原因就不是死锁了。）
+    用假的 `httpx.AsyncClient` 喂三次响应: 401（token 过期）→ login 成功 →
+    重试成功。`_reconnect` 会调 `login`, 而 `login` 期望的响应形状请照
+    `openlist_client.py` 里 `login` 的实际读取路径造（读 token 的字段名以那里
+    为准, 本用例不该猜）。
     """
     import app.core.openlist_client as mod
 
@@ -136,11 +132,15 @@ def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
         client.token = "expired-token"
         client.apply_limits(max_concurrent=1)
         _FakeAsyncClient.calls = []
+        # **四次**, 不是三次: `login()` 结尾还会 `await self._discover_mounts()`,
+        # 那又是一次请求。按 `openlist_client.py` 里 login / _discover_mounts 的
+        # 实际读取路径造响应; 少一条会在第四次 pop 时 IndexError, 红的理由就不是
+        # 死锁了（判据红得对但红得没意义）。
         _FakeAsyncClient.responses = [
-            (401, {}),                                       # 1. 第一次: token 过期
-            (200, {"code": 200, "data": {"token": "new"}}),  # 2. login
-            (200, {"code": 200, "data": {"content": []}}),   # 3. login 内的 _discover_mounts
-            (200, {"code": 200, "data": {"ok": True}}),      # 4. 重试
+            (401, {}),                                        # 1. fs/get: token 过期
+            (200, {"code": 200, "data": {"token": "new"}}),    # 2. auth/login
+            (200, {"code": 200, "data": {"content": []}}),     # 3. fs/list (discover_mounts)
+            (200, {"code": 200, "data": {"ok": True}}),        # 4. 重试 fs/get
         ]
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
         # 超时即红: 死锁时这个 await 永远不会返回
@@ -149,6 +149,61 @@ def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
     data = asyncio.run(_run())
     assert data == {"code": 200, "data": {"ok": True}}
     assert len(_FakeAsyncClient.calls) == 4, _FakeAsyncClient.calls
+
+
+def test_login_endpoint_401_does_not_recurse(monkeypatch):
+    """login 端点自己回 401 时**不得**无限递归。
+
+    `_reconnect` 若不清 token, login 发出的那个请求仍带着已知无效的旧 token;
+    login 端点回 401 就会再次触发重连 —— 无限递归, 实测 329 次调用后
+    RecursionError。旧实现在这里会**先死锁**, 所以这条路径此前从未被观察到,
+    是本设计的 `_request` 重构把它暴露出来的。
+
+    判据是**异常类型 + 请求次数**: 修好后是 `httpx.HTTPStatusError`（login 的
+    401 直接冒到调用方）且只发 2 次请求（fs/get + login）; 不清 token 时会一直
+    递归, 撞上响应脚本耗尽的 AssertionError 或 RecursionError → 本用例红。
+    """
+    import app.core.openlist_client as mod
+
+    class _FakeAsyncClient:
+        responses: list = []
+        calls: list = []
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def request(self, method, url, **kwargs):
+            _FakeAsyncClient.calls.append((method, url))
+            if not _FakeAsyncClient.responses:
+                # 递归时脚本会被耗尽 —— 这个 raise 让失败**看得懂**, 而不是
+                # 一直转到 RecursionError 才崩。
+                raise AssertionError(f"响应脚本耗尽, 已发 {len(_FakeAsyncClient.calls)} 次请求")
+            status, payload = _FakeAsyncClient.responses.pop(0)
+            return httpx.Response(status, json=payload, request=httpx.Request(method, url))
+
+    async def _run():
+        client = mod.OpenListClient("http://x", "u", "p")
+        client.token = "expired-token"
+        client.apply_limits(max_concurrent=2)
+        _FakeAsyncClient.calls = []
+        # 全部回 401 —— **包括 login 那一次**
+        _FakeAsyncClient.responses = [(401, {})] * 50
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
+        try:
+            await client._request("POST", "/api/fs/get")
+        except BaseException as exc:  # noqa: BLE001 — 本用例要断言异常的**类型**
+            return type(exc), len(_FakeAsyncClient.calls)
+        raise AssertionError("_request 不该正常返回")
+
+    exc_type, calls = asyncio.run(_run())
+    assert exc_type is httpx.HTTPStatusError, f"期望 HTTPStatusError, 得到 {exc_type}"
+    assert calls == 2, f"期望 2 次请求 (fs/get + login), 实际 {calls}"
 
 
 def test_apply_limits_is_a_noop_when_unchanged():

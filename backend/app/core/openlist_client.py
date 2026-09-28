@@ -208,6 +208,12 @@ class OpenListClient:
         ]
 
     async def _reconnect(self) -> None:
+        # 先清 token: 它正是引起这次重连的那个**已知无效**的值。不清的话,
+        # login 自己发出的那个请求还会带着它 —— 若 login 端点也回 401, 嵌套的
+        # _request 会再次触发重连, 无限递归到 RecursionError（实测 329 次调用
+        # 后崩）。旧实现在这里会**先死锁**, 所以这条路径此前从未被观察到 ——
+        # 是 _request 的重构（把重连移出限流器）把它暴露出来的。
+        self.token = None
         self.connected = False
         await self.login()
 
