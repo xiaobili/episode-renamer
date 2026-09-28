@@ -1,9 +1,11 @@
 """OpenList 单文件执行的判据。
 
-异步驱动用标准库 asyncio.run，与 test_tmdb_client.py / test_tmdb_resolver.py
-一致 —— 本项目**未装 pytest-asyncio**（见 test_tmdb_client.py 开头的说明），
-所以这里不写 @pytest.mark.asyncio：没有插件时它只是个未知标记，用例会被
-pytest 判为 "async def functions are not natively supported" 而失败。
+异步驱动用**标准库 asyncio.run**, 与 test_tmdb_client.py / test_tmdb_resolver.py
+一致 —— 本项目**未装 pytest-asyncio**（requirements-dev.txt 只有 pytest, 且
+test_tmdb_client.py 开头把这件事写成了明文的约定）。没有插件时
+`@pytest.mark.asyncio` 只是个未知标记, 用例会以「async def functions are not
+natively supported」失败, 而补 `asyncio_mode = auto` 也救不了（那个键会被报成
+Unknown config option, 只是多一条告警）。
 """
 import asyncio
 
@@ -85,7 +87,12 @@ def test_move_plan_moves_then_renames():
     assert client.calls[0][0] == "mkdir"
     assert client.calls[1] == ("move", "/media/Show", "/media/Show/Season 01",
                                ("Show.S01E01.mkv",))
-    assert client.calls[2][0] == "rename"
+    # **整条元组**, 不只 `[0] == "rename"`: 这一行的正确性全在路径拼接上
+    # （openlist_renamer 用 PurePosixPath(new_dir) / original_filename 拼源路径）。
+    # 只断言方法名的话, 传 plan.original_path（移动**前**的路径）或 plan.new_filename
+    # 当源路径都照样绿 —— 那正是这个断言该拦住的错。
+    assert client.calls[2] == ("rename", "/media/Show/Season 01/Show.S01E01.mkv",
+                               "Show - S01E01.mkv")
 
 
 def test_rename_failure_is_reported_not_raised():
@@ -96,6 +103,30 @@ def test_rename_failure_is_reported_not_raised():
     assert result.success is False
     assert result.status == "failed"
     assert "重命名失败" in result.error
+
+
+def test_move_without_rename_skips_the_rename_call():
+    """名字已经正确、只有目录要变时, **不得**多发一次 rename。
+
+    `if not same_name:` 那道守卫在生产可达（用户把已正确命名的文件挪进季目录,
+    或模板改了季目录模板）。删掉守卫本用例必红: calls 里会多出一次 rename。
+    """
+    f = _file("Show - S01E01.mkv")
+    plan = build_openlist_rename_plan(
+        f, TEMPLATE, folder_template="Season {season_padded}",
+        create_season_folder=True,
+    )
+    assert plan.original_filename == plan.new_filename, plan.new_filename
+    assert plan.original_dir != plan.new_dir
+
+    client = FakeClient()
+    result = asyncio.run(execute_openlist_one(client, plan))
+
+    assert result.status == "renamed_moved"
+    assert client.calls == [
+        ("mkdir", "/media/Show", "Season 01"),
+        ("move", "/media/Show", "/media/Show/Season 01", ("Show - S01E01.mkv",)),
+    ]
 
 
 def test_never_calls_batch_rename():
