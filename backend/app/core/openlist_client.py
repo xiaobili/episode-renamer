@@ -11,6 +11,77 @@ from ..config import settings
 from ..models.openlist import OpenListConnection, OpenListFile, RenameObject
 
 
+class _AdaptiveLimiter:
+    """上限可变的并发限流器。
+
+    为什么不用 asyncio.Semaphore 再「需要时换一个」: 替换对象会摧毁限流本身 ——
+    在途持有者释放到旧对象, 新对象满额放行, 于是瞬时并发翻倍; 而「值没变就不
+    替换」的补丁仍在首个请求处留下抖动。计数器 + 等待者队列是十几行代码,
+    且上限可以在等待者入睡之后被调高（被唤醒的等待者重新判条件）。
+
+    等待者用 Future 而不是 asyncio.Condition: Condition.notify* 必须在**持有
+    锁**时调用, 而 set_limit 是同步方法（apply_limits 也可以从同步上下文调用,
+    见 tests 里 `limiter.set_limit(1)` 这种写法）, 同步方法没有办法不阻塞事件
+    循环地拿到 asyncio.Lock —— 直接 notify 会抛
+    `RuntimeError: cannot notify on un-acquired lock`。Future 由事件循环线程
+    直接 set_result, 同步、即时, 且在没有等待者（也就没有运行中的循环）时天然
+    是安全的空操作。
+    """
+
+    def __init__(self, limit: int):
+        self._limit = max(1, int(limit))
+        self._active = 0
+        self._waiters: list[asyncio.Future] = []
+
+    async def __aenter__(self):
+        while self._active >= self._limit:
+            waiter = asyncio.get_running_loop().create_future()
+            self._waiters.append(waiter)
+            try:
+                await waiter
+            except BaseException:
+                # 被取消。若这个等待者已经吃掉了 _wake 发出的唤醒名额（它已被
+                # 摘出队列 = 名额已发到它手上），必须把名额转交给下一个等待者,
+                # 否则名额空着而后面的人还在睡 —— 这是真实可复现的丢唤醒, 不是
+                # 理论担忧。asyncio.Lock 在取消路径上做的也是同一件事。
+                if waiter not in self._waiters:
+                    self._wake(1)
+                raise
+            finally:
+                # 正常唤醒时已被 _wake 摘掉; 未被唤醒（取消）时还留在队列里, 自己摘。
+                if waiter in self._waiters:
+                    self._waiters.remove(waiter)
+        # 判断与自增之间没有 await ⇒ 与其它任务之间是原子的。
+        self._active += 1
+        return self
+
+    async def __aexit__(self, *exc_info):
+        self._active -= 1
+        self._wake(1)
+
+    def set_limit(self, limit: int) -> None:
+        limit = max(1, int(limit))
+        if limit == self._limit:
+            return
+        self._limit = limit
+        # 调高后必须唤醒等待者: 它们在旧的（更小的）上限下已入睡, 不会再自己醒。
+        if limit > self._active:
+            self._wake(limit - self._active)
+
+    def _wake(self, count: int) -> None:
+        """唤醒至多 count 个等待者。
+
+        被唤醒者会重新判条件, 抢不到名额的会再排队 —— 而每次释放都会再唤醒
+        一个, 所以不存在「有人睡着但名额空着」的窗口。
+        """
+        while count > 0 and self._waiters:
+            waiter = self._waiters.pop(0)
+            if waiter.done():
+                continue  # 已被取消
+            waiter.set_result(None)
+            count -= 1
+
+
 class OpenListClient:
     def __init__(self, server_url: str, username: str, password: str):
         self.server_url = server_url.rstrip("/")
@@ -21,17 +92,20 @@ class OpenListClient:
         self.mount_points: list[str] = []
         self.write_access: bool = True
         self.last_request_time = 0.0
-        self._semaphore = asyncio.Semaphore(settings.openlist_max_concurrent)
+        self._limiter = _AdaptiveLimiter(settings.openlist_max_concurrent)
+        # 间隔值放在**实例**上（原来是每次读全局 settings）, 否则设置页的值无法
+        # 在运行时生效 —— 见 spec §7.2。
+        self._request_interval = settings.openlist_request_interval
         self._lock = asyncio.Lock()
 
     async def _wait_interval(self) -> None:
         now = time.monotonic()
         elapsed = now - self.last_request_time
-        if elapsed < settings.openlist_request_interval:
-            await asyncio.sleep(settings.openlist_request_interval - elapsed)
+        if elapsed < self._request_interval:
+            await asyncio.sleep(self._request_interval - elapsed)
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
-        async with self._semaphore:
+        async with self._limiter:
             await self._wait_interval()
 
             url = f"{self.server_url}{path}"
@@ -52,6 +126,22 @@ class OpenListClient:
                 raise
             except httpx.RequestError as e:
                 raise ConnectionError(f"OpenList 请求失败: {e}") from e
+
+    def apply_limits(
+        self,
+        max_concurrent: Optional[int] = None,
+        request_interval: Optional[float] = None,
+    ) -> None:
+        """把设置页的值应用到本客户端。None = 该字段未提供, 保持当前值。
+
+        **已知副作用**: 限流参数设在进程级单例客户端上, 所以一次执行设下的值会
+        持续生效到下次被覆盖 —— 之后的预览、扫描、列目录同样受它约束。单用户
+        场景下可接受（设置页的值本就是用户想要的稳态）, 但它是隐性状态。
+        """
+        if max_concurrent is not None:
+            self._limiter.set_limit(max_concurrent)
+        if request_interval is not None:
+            self._request_interval = request_interval
 
     async def login(self, otp_code: Optional[str] = None) -> OpenListConnection:
         body = {
