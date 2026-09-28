@@ -61,6 +61,10 @@ class _AdaptiveLimiter:
 
     def set_limit(self, limit: int) -> None:
         limit = max(1, int(limit))
+        # 值未变就直接返回。这道早退行为上不可观测: 队列非空时必然
+        # _active >= _limit, 故 limit == _limit 时下面的 limit > _active 恒为假,
+        # 不会误唤醒任何人。留着是让「值没变」这件事在代码里看得见 ——
+        # 别为它写判据（写不出能红的）。
         if limit == self._limit:
             return
         self._limit = limit
