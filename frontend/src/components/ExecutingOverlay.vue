@@ -17,7 +17,11 @@
           <div class="text-[14px] font-semibold text-ink">
             {{ dryRun ? '试运行中…' : '正在执行重命名…' }}
           </div>
-          <div v-if="!dryRun" class="mt-3">
+          <!-- aria-live="off" 罩住**整块**进度区（条 + 计数 + 文件名），不是只罩计数那行:
+               这三样都每文件变一次, 只罩一行等于没罩 —— 读屏照样会对每个文件播报。
+               注意它**不能**提到更外层: 上面那句「正在执行重命名…」在 role="status"
+               aria-live="polite" 区域内, 需要被播报一次。 -->
+          <div v-if="!dryRun" class="mt-3" aria-live="off">
             <div
               class="h-1.5 w-full overflow-hidden rounded-full bg-sunken"
               role="progressbar"
@@ -31,10 +35,7 @@
                 :style="{ width: percent + '%' }"
               />
             </div>
-            <div
-              class="mt-2 flex items-center justify-between text-[12px] text-ink-2"
-              aria-live="off"
-            >
+            <div class="mt-2 flex items-center justify-between text-[12px] text-ink-2">
               <span>已完成 {{ progress.done }} / {{ progress.total }}</span>
               <span>{{ percent }}%</span>
             </div>
