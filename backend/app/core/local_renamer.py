@@ -211,6 +211,87 @@ def check_conflict(plan: RenamePlan, all_plans: list[RenamePlan]) -> list[str]:
     return conflicts
 
 
+def plan_files(
+    files: list[FileInfo],
+    template: str,
+    folder_template: str = "",
+    create_season_folder: bool = False,
+    overrides: dict[str, dict] | None = None,
+    pad: PadConfig | None = None,
+) -> list[RenamePlan]:
+    """建 plan 并算冲突 —— 批量与单文件两条路径共用。
+
+    `check_conflict(plan, [])` 的第二参**逐字保留空列表**: 现有实现就是传空,
+    于是 `duplicate_in_batch` 这条分支从不触发 —— 同一批次内两个文件算出同一个
+    目标名时, 后端**不会**报冲突。这是改动前的既有行为, 本次不得改变它
+    （前端会在发起前用预览的 new_path 自行检测重名并降级为串行, 见 spec §10.1）。
+    """
+    overrides = overrides or {}
+    plans: list[RenamePlan] = []
+    for f in files:
+        ov = overrides.get(f.id)
+        override = OverrideInfo(**ov) if ov else None
+        plan = build_rename_plan(
+            f, template, folder_template, create_season_folder, override, pad=pad
+        )
+        plan.conflicts = check_conflict(plan, [])
+        plans.append(plan)
+    return plans
+
+
+def _entry_for(plan: RenamePlan, nfo_matches: dict[str, EpisodeMatch]) -> NfoEntry:
+    """把 plan 转成一条 NFO 条目。
+
+    nfo_matches 里没有对应项时 .get() 返回 None, getattr(None, "show", None) 也是
+    None —— 三者同时为 None, NfoEntry.has_metadata 即为 False, 于是不写残缺 NFO。
+    """
+    return NfoEntry(
+        file_id=plan.file_id,
+        new_path=plan.new_path,
+        show_name=plan.parsed.show_name if plan.parsed else "",
+        season=plan.parsed.season if plan.parsed else None,
+        episode=plan.parsed.episode if plan.parsed else None,
+        show=getattr(nfo_matches.get(plan.file_id), "show", None),
+        season_data=getattr(nfo_matches.get(plan.file_id), "season", None),
+        episode_data=getattr(nfo_matches.get(plan.file_id), "episode", None),
+    )
+
+
+def count_result(result: RenameResult, aborted: bool) -> tuple[int, int, int]:
+    """(executed, skipped, failed) —— 逐字沿用 batch_rename 里那套判据。
+
+    抽出来是因为单文件响应也要给出这三个计数（spec §4.1 / R11）：让前端按
+    result.status 自己重判会把规则复制成第二份, 两份必然漂移。
+    """
+    if aborted:
+        # abort 下的冲突行计入 failed（与改动前一致）—— 走下面的通用分支会按
+        # status="conflict" 把它记成 skipped。
+        return 0, 0, 1
+    if result.success and result.status not in ("skipped_conflict", "skipped_same"):
+        return 1, 0, 0
+    if result.status in ("skipped_conflict", "skipped_same", "conflict"):
+        return 0, 1, 0
+    return 0, 0, 1
+
+
+def _episode_decision_for(
+    plan: RenamePlan,
+    nfo_matches: dict[str, EpisodeMatch],
+    options: NfoOptions,
+) -> Optional[NfoDecision]:
+    """该文件的**每集** NFO 决策；字幕与未启用时返回 None。
+
+    走 build_nfo_decisions 而不是自己拼路径与内容: 内容是否该写（TMDB 未匹配时
+    不写残缺 NFO）是 nfo_writer 的规则, 在这里重写一遍就是第二份副本。
+    单条目调用时它同时会产出一条 tvshow / 一条 season 决策（那一条目自成一
+    组）—— 那两条是**批次级**的, 由 finalize_show_nfo 负责, 这里只取 episode。
+    """
+    if not options.enabled or _is_subtitle_file(plan.file_info):
+        return None
+    decisions = build_nfo_decisions([_entry_for(plan, nfo_matches)], options)
+    return next((d for d in decisions if d.kind == "episode"), None)
+
+
 def execute_rename_plan(
     plan: RenamePlan,
     dry_run: bool = False,
@@ -294,19 +375,10 @@ def batch_rename(
     nfo_options: NfoOptions | None = None,
     nfo_matches: Optional[dict[str, EpisodeMatch]] = None,
 ) -> BatchRenameResult:
-    plans: list[RenamePlan] = []
-    overrides = overrides or {}
     nfo_matches = nfo_matches or {}
-
-    for f in files:
-        ov = overrides.get(f.id)
-        override = OverrideInfo(**ov) if ov else None
-        plan = build_rename_plan(
-            f, template, folder_template, create_season_folder, override, pad=pad
-        )
-        conflicts = check_conflict(plan, [])
-        plan.conflicts = conflicts
-        plans.append(plan)
+    plans = plan_files(
+        files, template, folder_template, create_season_folder, overrides, pad=pad
+    )
 
     results: list[RenameResult] = []
     executed = skipped = failed = 0
@@ -318,19 +390,7 @@ def batch_rename(
     if nfo_options and nfo_options.enabled:
         nfo_decisions = build_nfo_decisions(
             [
-                NfoEntry(
-                    file_id=plan.file_id,
-                    new_path=plan.new_path,
-                    show_name=plan.parsed.show_name if plan.parsed else "",
-                    season=plan.parsed.season if plan.parsed else None,
-                    episode=plan.parsed.episode if plan.parsed else None,
-                    # nfo_matches 里没有对应项时 .get() 返回 None,
-                    # getattr(None, "show", None) 也是 None —— 三者同时为 None,
-                    # NfoEntry.has_metadata 即为 False, 于是不写残缺 NFO。
-                    show=getattr(nfo_matches.get(plan.file_id), "show", None),
-                    season_data=getattr(nfo_matches.get(plan.file_id), "season", None),
-                    episode_data=getattr(nfo_matches.get(plan.file_id), "episode", None),
-                )
+                _entry_for(plan, nfo_matches)
                 # 字幕不进 NFO（理由见 _is_subtitle_file）。这个过滤只作用于 NFO 的
                 # 构造 —— 字幕照常参与下面的重命名。
                 for plan in plans
@@ -419,16 +479,10 @@ def batch_rename(
         result.nfo_path = nfo_path_by_file.get(plan.file_id)
         results.append(result)
 
-        if aborted:
-            # abort 下的冲突行计入 failed（与改动前一致）—— 走下面的通用分支会按
-            # status="conflict" 把它记成 skipped。
-            failed += 1
-        elif result.success and result.status not in ("skipped_conflict", "skipped_same"):
-            executed += 1
-        elif result.status in ("skipped_conflict", "skipped_same", "conflict"):
-            skipped += 1
-        else:
-            failed += 1
+        one_executed, one_skipped, one_failed = count_result(result, aborted)
+        executed += one_executed
+        skipped += one_skipped
+        failed += one_failed
 
     nfo_written: list[str] = []
     nfo_skipped: list[dict] = []
