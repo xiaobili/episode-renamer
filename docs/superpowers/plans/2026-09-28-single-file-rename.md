@@ -2358,6 +2358,18 @@ function assert(label, actual, expected) {
   assert('onProgress 次数 == 条目数（含失败）', calls, 3)
 }
 
+// --- failures 必须按输入下标排序，而不是完成顺序 ---
+// **这条断言需要两个以上的失败才可观测**: 只有一个失败时任何顺序都一样, 所以
+// 原来那几条用例对 `failures.sort(...)` 这一行是失明的（实测: 删掉排序, 12 个
+// 变异里只有它存活）。
+{
+  const { failures } = await runWithConcurrency([0, 1, 2, 3], 4, async (n) => {
+    await sleep((4 - n) * 5)   // 下标小的先睡 → 完成顺序与输入顺序**相反**
+    throw new Error('boom')
+  })
+  assert('failures 按输入下标排序', failures.map(f => f.index), [0, 1, 2, 3])
+}
+
 // --- limit 未传必须抛错，不得兜底（加默认值 → 本断言红）---
 {
   let threw = false
@@ -2474,6 +2486,8 @@ Expected: 全部通过。
 ```js
   'check-rename-runner.mjs',
 ```
+
+**同时改掉该文件头注释里的脚本数**（原文写「那**五个** check-*.mjs」）—— 加了脚本之后那句话立刻变成假陈述，而这个 runner 的存在意义正是「它们确实被执行了」。
 
 - [ ] **Step 6: 提交**
 
