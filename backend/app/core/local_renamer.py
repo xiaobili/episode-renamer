@@ -395,7 +395,6 @@ class OneOutcome:
 def execute_one(
     plan: RenamePlan,
     *,
-    dry_run: bool = False,
     conflict_strategy: str = "skip",
     nfo_options: NfoOptions | None = None,
     nfo_matches: dict[str, EpisodeMatch] | None = None,
@@ -404,6 +403,12 @@ def execute_one(
 
     与 batch_rename 的每文件循环逐字同源（叶子助手共用）。两处的等价性由
     tests/test_single_file_core.py 的交叉判据钉住 —— 改这里要同时跑它。
+
+    **没有 dry_run 形参**, 这是刻意的: 干跑在本设计里是**批次级**的（spec R9,
+    /rename/dry-run 仍是批量请求）。曾经照搬过 dry_run, 后果是
+    `status="dry_run"` 不在 _NO_LANDING_STATUSES 里 → landed 为真 → **真的把
+    每集 NFO 写下去**（实测: 视频没动、NFO 已写）。一个名为 dry_run 的分支会
+    改盘, 比没有这个参数糟得多。要加回来, 必须同时加一个能红的判据。
     """
     nfo_matches = nfo_matches or {}
     # 冲突行走 abort 时 result 是合成的, 但**不能提前 return**: 下面那段
@@ -422,9 +427,7 @@ def execute_one(
             status="conflict",
         )
     else:
-        result = execute_rename_plan(
-            plan, dry_run=dry_run, conflict_strategy=conflict_strategy
-        )
+        result = execute_rename_plan(plan, conflict_strategy=conflict_strategy)
 
     outcome = OneOutcome(result=result)
     is_video = not _is_subtitle_file(plan.file_info)
@@ -443,7 +446,7 @@ def execute_one(
     # 「目标已存在」而放弃 —— 用户的内容被生成结果替掉, 旧文件还在原处当孤儿。
     if not aborted and is_video and result.status in _CARRY_STATUSES:
         carried_path, carry_reason = carry_same_stem_nfo(
-            plan.original_path, result.new_path, dry_run=dry_run
+            plan.original_path, result.new_path
         )
         if carried_path is not None:
             outcome.nfo_carried.append(carried_path)
@@ -456,8 +459,13 @@ def execute_one(
     if decision is not None:
         if not landed:
             # 它不写, 但必须**报出来**（nfo_skipped）—— 静默地少写一个 NFO 与
-            # 静默地写错一个一样不可见。
+            # 静默地写错一个一样不可见。batch_rename 里 `dead_episode_paths` 那段做
+            # 同一件事（→ _NOT_RENAMED_NFO_REASON）。**漏掉这一句就是两条路径的
+            # 分叉**: 交叉判据在夹具含不落地文件时会红。
             outcome.dead_episode_path = decision.path
+            outcome.nfo_skipped.append(
+                (decision.path, _NOT_RENAMED_NFO_REASON)
+            )
         else:
             # rename_dup（「自动编号」）下真实落点是 X_1.mkv, 而每集决策是按
             # plan.new_path 算的 —— 不跟着改指向的话, 改名后的视频拿不到与它同名

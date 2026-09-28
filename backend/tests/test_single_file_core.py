@@ -26,6 +26,7 @@ OVERRIDES = {
     "Show.S01E01.mkv": {"show_name": "Show", "season": 1, "episode": 1},
     "Show.S01E02.mkv": {"show_name": "Show", "season": 1, "episode": 2},
     "Show.S01E02.chs.srt": {"show_name": "Show", "season": 1, "episode": 2},
+    "Show.S01E03.mkv": {"show_name": "Show", "season": 1, "episode": 3},
 }
 
 
@@ -42,6 +43,11 @@ def _matches():
             status=STATUS_MATCHED, show=show, season=season,
             episode=TmdbEpisode(episode_number=2, name="第二集"),
         ),
+        # E03 的源文件不存在 → 它不落地, 但**要有**决策才能验「报出来」那条规则
+        "Show.S01E03.mkv": EpisodeMatch(
+            status=STATUS_MATCHED, show=show, season=season,
+            episode=TmdbEpisode(episode_number=3, name="第三集"),
+        ),
     }
 
 
@@ -56,11 +62,23 @@ def _video(dir_path, name, is_subtitle=False):
 
 
 def _setup(dir_path):
-    """一个含「已存在」与「可跟随」两种情形的批次。"""
+    """一个含「已存在」「可跟随」「不落地」三种情形的批次。
+
+    第三种是**必须**的: 少了它, 两条路径在「文件未改名 → 不写 NFO 但必须报出来」
+    这条规则上的分叉完全不可见（execute_one 曾漏掉那条 nfo_skipped 记录, 而
+    三条断言全绿）。
+    """
     files = [
         _video(dir_path, "Show.S01E01.mkv"),
         _video(dir_path, "Show.S01E02.mkv"),
         _video(dir_path, "Show.S01E02.chs.srt", is_subtitle=True),
+        # 源文件**不存在** → status="failed" → 不落地。FileInfo 照造, 但不写盘。
+        FileInfo(
+            id="Show.S01E03.mkv", source="local",
+            path=str(dir_path / "Show.S01E03.mkv"),
+            filename="Show.S01E03.mkv", extension=".mkv",
+            parent_dir=str(dir_path),
+        ),
     ]
     # E02 的目标 NFO 先占住 → 生成侧报「已存在」
     (dir_path / "Show - S01E02.nfo").write_text("old", encoding="utf-8")
