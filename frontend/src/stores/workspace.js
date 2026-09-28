@@ -534,6 +534,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     executing.value = !dryRun
     executeDryRun.value = dryRun
 
+    // 进度归零放在**执行开始**这一拍，而不是 finally 里。遮罩有 200ms 淡出
+    // （ExecutingOverlay 的 .overlay-leave-active），它定格的是拿到的**最后一帧**：
+    // 若在 finally 里与 executing=false 同拍清零，一次成功的重命名最后会显示
+    // 「已完成 0 / 0」+「0%」+ 空条 —— 用户看到的结论是「什么都没做」。
+    // 归零挪到这里，淡出期间显示的就是真实终值（N / N、100%）。
+    //
+    // 必须与 executing=true 同拍、而不是等 items 建好再设：
+    // 两者之间是若干**同步**操作（buildRenamePayload / resolveConcurrency 等），
+    // 其中任何一个抛错都会走 catch 分支 —— 若此时 progress 还是**上一次**的终值，
+    // 淡出就会把上一次的 N / N 与 100% 定格给一次根本没跑起来的执行。
+    // selected.length === items.length（items 就是 selected.map 出来的）。
+    progress.done = 0
+    progress.total = selected.length
+    progress.current = ''
+
     // **在 await 之前**读进局部变量：这是「执行那一刻」的事实，要与载荷说的
     // 一致。放在 await 之后读的话，干跑在途时用户重选剧集（pickShow 会置位
     // scraped）会让记录下来的标志与刚发出去的载荷对不上 —— 结果对话框于是把
@@ -682,9 +697,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       showToast('操作失败: ' + (e.response?.data?.detail || e.message), 'error')
     } finally {
       executing.value = false
-      progress.done = 0
-      progress.total = 0
-      progress.current = ''
+      // **不要在这里清零 progress**：遮罩有 200ms 淡出（ExecutingOverlay 的
+      // .overlay-leave-active），清零与 executing=false 同一拍发生，于是用户看到的
+      // 最后一帧会变成「已完成 0 / 0」+「0%」+ 空条 —— 一次成功的重命名定格成
+      // 「什么都没做」。保留终值，淡出期间显示的就是真实结果（N / N、100%）。
+      // 归零的职责已挪到 executeAction 开头（与 executing=true 同拍），陈旧值在那里
+      // 被覆盖；progress 除本文件与 ExecutingOverlay 外没有别的消费者。
+      //
       // 同时复位 executeDryRun：HomeView 用 `v-if="!executeDryRun"` 把遮罩整个卸掉，
       // 若它停留在 true，后续的执行会在「已打开」的状态下第一次挂载遮罩，而
       // <Transition> 在没有 appear 时不会为首挂播放进入过渡 —— spec §11 的

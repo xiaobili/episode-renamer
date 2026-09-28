@@ -21,6 +21,7 @@
             <div
               class="h-1.5 w-full overflow-hidden rounded-full bg-sunken"
               role="progressbar"
+              aria-label="执行进度"
               :aria-valuenow="progress.done"
               aria-valuemin="0"
               :aria-valuemax="progress.total"
@@ -30,7 +31,10 @@
                 :style="{ width: percent + '%' }"
               />
             </div>
-            <div class="mt-2 flex items-center justify-between text-[12px] text-ink-2">
+            <div
+              class="mt-2 flex items-center justify-between text-[12px] text-ink-2"
+              aria-live="off"
+            >
               <span>已完成 {{ progress.done }} / {{ progress.total }}</span>
               <span>{{ percent }}%</span>
             </div>
