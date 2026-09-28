@@ -1529,7 +1529,10 @@ async def execute_rename(req: RenameExecuteRequest):
         if not client or not client.connected:
             raise HTTPException(status_code=401, detail="请先连接 OpenList")
         _apply_openlist_limits(client, req)
-        result = asyncio.run(execute_openlist_one(client, plan))
+        # 这里必须 `await`, 不能 asyncio.run —— 本函数是 async 的, 而
+        # asyncio.run 在运行中的事件循环里会抛 RuntimeError。
+        # （asyncio.run 那条约定只适用于**测试文件**, 见 Task 3 Step 3。）
+        result = await execute_openlist_one(client, plan)
         outcome = OneOutcome(result=result)
         # OpenList 路径没有 abort 合成结果, 恒传 aborted=False。
         outcome.executed, outcome.skipped, outcome.failed = count_result(result, False)
