@@ -470,6 +470,47 @@ async def dry_run_rename(req: RenameDryRunRequest):
     return result.model_dump()
 
 
+@router.post("/rename/finalize")
+async def finalize_rename(req: RenameFinalizeRequest):
+    """批次收尾: 只写剧集级 / 季级 NFO。
+
+    为什么单独一个接口: 这两级 NFO 是**整批**的事实（每部剧一份 tvshow.nfo,
+    每个季一份 season.nfo）, 拆成单文件请求后没有任何一个单文件请求能知道整批
+    的落地情况。见 spec §4.2。
+
+    **landed 必须来自前端回传的真实结果**, 不能靠这里重算「假定都成功」——
+    整批失败时那会在一个没有任何剧集文件的目录里写出 tvshow.nfo。
+
+    **单进程内存依赖**: 与 /rename/execute 同（见那里的注释）。
+    """
+    source = req.source.lower()
+    if not _nfo_supported(source):
+        # OpenList 本期不写 NFO（spec §2）。如实返回空, 不报错 —— 前端本来就
+        # 只在 local 时调它, 这里防御的是手工调用。
+        return {"success": True, "nfo_written": [], "nfo_skipped": []}
+
+    files = find_files_by_ids(req.file_ids)
+    if not files:
+        raise HTTPException(status_code=400, detail="未找到对应的文件")
+
+    pad = _pad_from_request(req)
+    _merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
+    plans = plan_files(
+        files, req.template, req.folder_template, req.create_season_folder,
+        _merged, pad=pad,
+    )
+
+    landed_paths = [p for p in req.landed.values() if p]
+    written, skipped = finalize_show_nfo(
+        plans, landed_paths, matches_by_file, _nfo_options_from_request(req)
+    )
+    return {
+        "success": True,
+        "nfo_written": written,
+        "nfo_skipped": [{"path": p, "reason": r} for p, r in skipped],
+    }
+
+
 @router.delete("/files")
 async def clear_files():
     clear_cache()
