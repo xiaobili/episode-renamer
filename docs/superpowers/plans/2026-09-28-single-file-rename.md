@@ -1132,10 +1132,15 @@ def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
         client.token = "expired-token"
         client.apply_limits(max_concurrent=1)
         _FakeAsyncClient.calls = []
+        # **四次**, 不是三次: `login()` 结尾还会 `await self._discover_mounts()`,
+        # 那又是一次请求。按 `openlist_client.py` 里 login / _discover_mounts 的
+        # 实际读取路径造响应; 少一条会在第四次 pop 时 IndexError, 红的理由就不是
+        # 死锁了（判据红得对但红得没意义）。
         _FakeAsyncClient.responses = [
-            (401, {}),                                    # 第一次: token 过期
-            (200, {"code": 200, "data": {"token": "new"}}),  # login
-            (200, {"code": 200, "data": {"ok": True}}),      # 重试
+            (401, {}),                                        # 1. fs/get: token 过期
+            (200, {"code": 200, "data": {"token": "new"}}),    # 2. auth/login
+            (200, {"code": 200, "data": {"content": []}}),     # 3. fs/list (discover_mounts)
+            (200, {"code": 200, "data": {"ok": True}}),        # 4. 重试 fs/get
         ]
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
         # 超时即红: 死锁时这个 await 永远不会返回
@@ -1143,7 +1148,62 @@ def test_reconnect_does_not_deadlock_at_limit_one(monkeypatch):
 
     data = asyncio.run(_run())
     assert data == {"code": 200, "data": {"ok": True}}
-    assert len(_FakeAsyncClient.calls) == 3, _FakeAsyncClient.calls
+    assert len(_FakeAsyncClient.calls) == 4, _FakeAsyncClient.calls
+
+
+def test_login_endpoint_401_does_not_recurse(monkeypatch):
+    """login 端点自己回 401 时**不得**无限递归。
+
+    `_reconnect` 若不清 token, login 发出的那个请求仍带着已知无效的旧 token;
+    login 端点回 401 就会再次触发重连 —— 无限递归, 实测 329 次调用后
+    RecursionError。旧实现在这里会**先死锁**, 所以这条路径此前从未被观察到,
+    是本设计的 `_request` 重构把它暴露出来的。
+
+    判据是**异常类型 + 请求次数**: 修好后是 `httpx.HTTPStatusError`（login 的
+    401 直接冒到调用方）且只发 2 次请求（fs/get + login）; 不清 token 时会一直
+    递归, 撞上响应脚本耗尽的 AssertionError 或 RecursionError → 本用例红。
+    """
+    import app.core.openlist_client as mod
+
+    class _FakeAsyncClient:
+        responses: list = []
+        calls: list = []
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def request(self, method, url, **kwargs):
+            _FakeAsyncClient.calls.append((method, url))
+            if not _FakeAsyncClient.responses:
+                # 递归时脚本会被耗尽 —— 这个 raise 让失败**看得懂**, 而不是
+                # 一直转到 RecursionError 才崩。
+                raise AssertionError(f"响应脚本耗尽, 已发 {len(_FakeAsyncClient.calls)} 次请求")
+            status, payload = _FakeAsyncClient.responses.pop(0)
+            return httpx.Response(status, json=payload, request=httpx.Request(method, url))
+
+    async def _run():
+        client = mod.OpenListClient("http://x", "u", "p")
+        client.token = "expired-token"
+        client.apply_limits(max_concurrent=2)
+        _FakeAsyncClient.calls = []
+        # 全部回 401 —— **包括 login 那一次**
+        _FakeAsyncClient.responses = [(401, {})] * 50
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
+        try:
+            await client._request("POST", "/api/fs/get")
+        except BaseException as exc:  # noqa: BLE001 — 本用例要断言异常的**类型**
+            return type(exc), len(_FakeAsyncClient.calls)
+        raise AssertionError("_request 不该正常返回")
+
+    exc_type, calls = asyncio.run(_run())
+    assert exc_type is httpx.HTTPStatusError, f"期望 HTTPStatusError, 得到 {exc_type}"
+    assert calls == 2, f"期望 2 次请求 (fs/get + login), 实际 {calls}"
 
 
 def test_apply_limits_is_a_noop_when_unchanged():
@@ -1345,6 +1405,20 @@ class _AdaptiveLimiter:
             await self._reconnect()
 ```
 
+把 `_reconnect` 改成**先清 token**：
+
+```python
+    async def _reconnect(self) -> None:
+        # 先清 token: 它正是引起这次重连的那个**已知无效**的值。不清的话,
+        # login 自己发出的那个请求还会带着它 —— 若 login 端点也回 401, 嵌套的
+        # _request 会再次触发重连, 无限递归到 RecursionError（实测 329 次调用
+        # 后崩）。旧实现在这里会**先死锁**, 所以这条路径此前从未被观察到 ——
+        # 是 _request 的重构（把重连移出限流器）把它暴露出来的。
+        self.token = None
+        self.connected = False
+        await self.login()
+```
+
 在 `login` 方法之前插入：
 
 ```python
@@ -1368,12 +1442,12 @@ class _AdaptiveLimiter:
 - [ ] **Step 4: 跑测试**
 
 Run: `cd backend && python -m pytest tests/test_openlist_limiter.py -q`
-Expected: 6 passed
+Expected: 7 passed
 
 - [ ] **Step 5: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 233 passed（227 + 6）
+Expected: 234 passed（227 + 7）
 
 - [ ] **Step 6: 提交**
 
@@ -1748,7 +1822,7 @@ Expected: 只应剩下 preview 与 dry-run 的用例（它们**仍是批量**，
 - [ ] **Step 6: 跑全套**
 
 Run: `cd backend && python -m pytest -q`
-Expected: 全绿（数量 = Task 4 结束时的 233 + 新增 6 条 = 239，以实际为准）
+Expected: 全绿（数量 = Task 4 结束时的 234 + 新增 6 条 = 240，以实际为准）
 
 - [ ] **Step 7: 提交**
 
