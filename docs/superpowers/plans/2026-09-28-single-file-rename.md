@@ -3719,7 +3719,27 @@ git commit -m "feat(frontend): 执行遮罩增加进度条（干跑仍为转圈�
 Run: `cd frontend && node scripts/check-all.mjs && npx vite build`
 Expected: 判据全绿、构建成功
 
-- [ ] **Step 3: 提交**
+- [ ] **Step 3: 刷新被跟踪的构建产物**
+
+`frontend/dist` 是**被 git 跟踪的**（19 个文件），而 `backend/app/main.py` 在它存在时会直接托管它 —— 所以**从 dist 启动会看到旧 UI、没有进度条**。仓库的既有约定是独立的 `build:` 提交（见 `git log --grep='^build'`）。
+
+```bash
+cd frontend && npx vite build
+cd .. && git add frontend/dist && git status --short   # 确认改动都在 dist 下
+```
+
+**注意**：这一步之前每个任务都刻意把 dist 还原到 HEAD（避免把构建噪音混进功能提交）。到这里才是**有意**提交它。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add frontend/dist
+git commit -m "build: 更新前端构建产物（逐文件执行 + 进度条）"
+```
+
+- [ ] **Step 5: 提交文档**
+
+（README 的提交与 dist 分开 —— 两者的读者不同：一个看代码、一个看产物。）
 
 ```bash
 git add frontend/src/views/SettingsView.vue
@@ -3728,10 +3748,11 @@ git commit -m "feat(settings): 设置页新增本地并发，OpenList 分组提�
 
 ---
 
-### Task 13: 文档
+### Task 13: 文档 + 刷新构建产物
 
 **Files:**
 - Modify: `README.md`
+- Modify: `frontend/dist/**`（**被 git 跟踪的**构建产物）
 
 - [ ] **Step 1: 更新冲突策略说明**
 
