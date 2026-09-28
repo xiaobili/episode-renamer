@@ -3189,6 +3189,12 @@ export function finalizeRename(data) {
 
       // 并发上限：批次内目标重名时降级为串行（spec §10.1）。判据在
       // renameRunner.resolveConcurrency 里，由 check-rename-runner.mjs 钉住。
+      //
+      // **`new_path` 必须先在 buildPreview 的行构造里带上**（见 Step 3b）:
+      // 预览响应里有它, 但预览**行**原先没有 —— 不带上就全是 `undefined`,
+      // `resolveConcurrency` 会恒判「重名」, 并发上限永远降级为 1,
+      // `localConcurrency` 于是成了一个改不动的摆设, **正是本功能要修的那类 bug**。
+      // 实测: 删掉行构造里那一句, 在途峰值 1 而设置是 4。
       const limit = resolveConcurrency({
         source,
         targets: selected.map(r => r.new_path),
@@ -3218,7 +3224,14 @@ export function finalizeRename(data) {
 
       // 失败条目补一条同形状的记录，让对话框照样能列出它们 —— 静默丢掉一个
       // 用户明确选中的文件，比报错更糟。
-      const settled = results.map((r, i) => r ?? {
+      //
+      // **必须是 Array.from, 不能是 results.map**: `results` 里失败条目的槽位是
+      // **空洞**（renameRunner 用 `new Array(n)` 建、失败时不赋值）, 而 `map`
+      // **跳过空洞** —— 于是 `settled` 仍是稀疏数组, 下游 `aggregateBatch` 的
+      // `for...of` 读到 `undefined` 就抛错, 被 executeAction 的 catch 吞成一句
+      // Toast: **整批结果与结果对话框一起消失**。实测: 一个文件返 500 即复现。
+      // （`??` 在这里救不了 —— 回调压根不会为空洞运行。）
+      const settled = Array.from(results, (r, i) => r ?? {
         executed: 0, skipped: 0, failed: 1,
         result: {
           id: items[i].id,
@@ -3276,6 +3289,77 @@ export function finalizeRename(data) {
   }
 ```
 
+- [ ] **Step 3b: 给预览行带上 `new_path`**
+
+在 `buildPreview` 构造预览行的地方（`previewRows` 的映射里）补一个字段：
+
+```js
+        // 执行阶段要靠它判「批次内有没有两个文件算出同一个目标名」，
+        // 从而决定是否把并发降级为串行（spec §10.1）。预览响应里有这个字段，
+        // 但**行**上原先没带上 —— 少了它 `resolveConcurrency` 恒判重名，
+        // 并发上限永远降级为 1，`localConcurrency` 就成了改不动的摆设。
+        new_path: pv.new_path || '',
+```
+
+**实测这一句能红**：删掉它，在途峰值是 1，而设置是 4。
+
+- [ ] **Step 3c: 补一条执行路径的入库判据**
+
+`workspace.js` 的**执行路径**（非干跑）此前只有一次性探针、没有任何入库判据 —— 而它正是本次改动的功能本体。新增 `frontend/scripts/check-execute-loop.mjs`（零依赖源码级断言，与 `check-workspace-gating.mjs` 同规格：那个文件 import vue/pinia，node 加载不了，所以只能断言源码）：
+
+```js
+import { readFileSync } from 'node:fs'
+
+let failed = 0
+function assert(label, actual, expected) {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected)
+  if (!ok) { failed += 1; console.log('FAIL', label, '得到', JSON.stringify(actual), '期望', JSON.stringify(expected)) }
+  else { console.log('PASS', label) }
+}
+
+const src = readFileSync(new URL('../src/stores/workspace.js', import.meta.url), 'utf8')
+
+// --- 执行载荷是**单数**形态 ---
+// 改回 `mode: 'execute'` + fileIds 会让互斥校验抛错，整条执行路径被 catch 吞成 toast。
+assert('执行载荷用 mode: execute 且传 fileId（单数）',
+  /mode:\s*'execute',\s*fileId:/.test(src), true)
+assert('执行载荷不传 fileIds',
+  /mode:\s*'execute'[\s\S]{0,200}?fileIds:/.test(src), false)
+
+// --- 干跑走它自己的 mode ---
+assert('干跑用 mode: dry-run', /mode:\s*'dry-run'/.test(src), true)
+
+// --- 逐文件并发 ---
+assert('用 runWithConcurrency 驱动', /runWithConcurrency\(/.test(src), true)
+
+// --- 失败条目必须补记录：Array.from 而非 map（map 跳过空洞）---
+// 删掉这处的 Array.from 换回 map，整批结果会在部分失败时全部消失。
+assert('失败条目用 Array.from 补记录（map 会跳过空洞）',
+  /const settled = Array.from\(results,/.test(src), true)
+
+// --- 收尾必须在 buildPreview **之前** ---
+// buildPreview 会重扫并刷新后端的文件缓存，之后 finalize 就重建不出同一批 plan。
+{
+  const fin = src.indexOf('finalizeRename(')
+  const preview = src.indexOf('await buildPreview()', fin)
+  assert('finalizeRename 在 executeAction 里被调用', fin > -1, true)
+  assert('finalizeRename 出现在 buildPreview 之前', fin > -1 && preview > fin, true)
+}
+
+// --- 聚合 ---
+assert('用 aggregateBatch 聚合结果', /aggregateBatch\(/.test(src), true)
+
+console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
+process.exitCode = failed === 0 ? 0 : 1
+```
+
+并把它加进 `check-all.mjs` 的 `SCRIPTS` 数组（**头注释里不要写脚本数**）。
+
+Run: `cd frontend && node scripts/check-execute-loop.mjs`
+Expected: 全部通过。
+
+**每条断言都要实测能红**（改坏 → 跑 → 恢复，逐个记录）。
+
 在 `executeAction` 之前加一个小助手（预览与执行两处都要收集覆盖，但行集合不同，故由调用方传行进来）：
 
 ```js
@@ -3309,16 +3393,23 @@ Expected: 全部通过。
 在 `frontend/scripts/check-rename-runner.mjs` 末尾追加：
 
 ```js
-// --- 死设置防复发：workspace.js 里的并发数必须来自 settingsStore ---
-// 这条断言**只能在这里加**: 它检查的是 workspace.js 里那一行, 而那个文件到本任务
+// --- 死设置防复发：并发上限必须来自 settingsStore，不得是字面量 ---
+// 这条断言**只能在这里加**: 它检查的是 workspace.js 里那几行, 而那个文件到本任务
 // 才被改。提前放进 Task 7 会让 Task 7–9 的 check-all 一直红 —— 一条恒红的判据
 // 等于没有判据（没人会去看它为什么红）。
+//
+// 断言的是**三个具体事实**, 不是「传给 runWithConcurrency 的第二参看起来像
+// settingsStore」—— 后者是这份计划的初版写法, 它**恒红**: 第二参是局部变量
+// `limit`（由 resolveConcurrency 算出）, 那个正则永远匹配不到 `settingsStore.*`。
+// 逐字照抄会把 check-all 卡在 6/7。
 {
   const src = readFileSync(new URL('../src/stores/workspace.js', import.meta.url), 'utf8')
-  const m = src.match(/runWithConcurrency\(\s*[^,]+,\s*([^,]+),/)
-  const arg = m ? m[1].trim() : ''
-  assert('并发数从 settingsStore 读（不是字面量）',
-    /settingsStore\.\w*[Cc]oncurrency/.test(arg), true)
+  assert('并发上限经 resolveConcurrency 算出',
+    /const limit = resolveConcurrency\(\{/.test(src), true)
+  assert('本地并发取自 settingsStore.localConcurrency',
+    /localConcurrency:\s*settingsStore\.localConcurrency/.test(src), true)
+  assert('OpenList 并发取自 settingsStore.openlist.concurrency',
+    /openlistConcurrency:\s*settingsStore\.openlist\.concurrency/.test(src), true)
 }
 ```
 
