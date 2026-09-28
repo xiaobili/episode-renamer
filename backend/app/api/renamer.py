@@ -415,6 +415,9 @@ async def execute_rename(req: RenameExecuteRequest):
         source=source,
         file_id=file.id,
         result=outcome.result,
+        # 落点的**权威判定**（未落地为 None; local 分支里字幕恒为 None ——
+        # 那条规则只有 local_renamer 一份, 前端不再自己判 status）。
+        landed_path=outcome.landed_path,
         executed=outcome.executed,
         skipped=outcome.skipped,
         failed=outcome.failed,

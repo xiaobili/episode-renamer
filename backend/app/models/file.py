@@ -104,6 +104,15 @@ class SingleRenameResult(BaseModel):
     executed: int = 0
     skipped: int = 0
     failed: int = 0
+    # 该文件**真实落点**的权威判定（未落地为 None）。前端据此构造 /rename/finalize
+    # 的 landed 表 —— file_id → 落点。
+    #
+    # 为什么必须由后端给: 前端按 result.status 自己判会得到**第二份**「哪些状态算
+    # 落地」的规则（与 local_renamer._NO_LANDING_STATUSES 必然漂移）, 且它判不出
+    # 「字幕不算落地」—— 字幕与视频走同一套 status, 但批次路径刻意不把字幕的落点
+    # 放进 landed_paths（否则混合批次里「视频失败、字幕落地」会让组级决策被保
+    # 留下来, 在没有任何剧集文件的目录里写出一份 tvshow.nfo, spec §9.4 明令禁止）。
+    landed_path: Optional[str] = None
     # 该文件的每集 NFO（生成）。剧集级/季级不属于单个文件, 由 /rename/finalize 汇总。
     nfo_written: list[str] = Field(default_factory=list)
     nfo_carried: list[str] = Field(default_factory=list)

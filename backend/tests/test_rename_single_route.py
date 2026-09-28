@@ -226,3 +226,65 @@ def test_abort_marks_the_file_as_conflict(tmp_path):
     assert body["failed"] == 1
     assert body["skipped"] == 0
     assert body["nfo_written"] == []
+
+
+def test_landed_path_is_the_real_landing_for_a_video(tmp_path):
+    """落地文件必须在响应里给出**真实落点** —— 前端拿它构造 finalize 的 landed 表。
+
+    前端不再自己按 result.status 判落地（那份判据会与 _NO_LANDING_STATUSES 漂移,
+    见 workspace.js 的注释）, 所以这个字段是 /rename/finalize 不变量**唯一**的数据
+    来源: 它为空 → 组级 NFO 一份都不写; 它错了 → 写到错误的位置上。
+    """
+    video = tmp_path / "Test.Show.S01E02.mkv"
+    video.write_text("x", encoding="utf-8")
+    cache_files([FileInfo(
+        id="f1", source="local", path=str(video),
+        filename="Test.Show.S01E02.mkv", extension=".mkv",
+        parent_dir=str(tmp_path),
+    )])
+
+    body = TestClient(app).post("/api/rename/execute", json={
+        "file_id": "f1", "template": TEMPLATE, "source": "local",
+        "path": str(tmp_path), "override": OVERRIDE, "generate_nfo": True,
+    }).json()
+
+    assert body["result"]["status"] == "renamed", body["result"]
+    assert body["landed_path"] == str(tmp_path / "Test Show - S01E02.mkv"), body["landed_path"]
+    assert body["landed_path"] == body["result"]["new_path"]
+    assert (tmp_path / "Test Show - S01E02.mkv").exists()
+
+
+def test_landed_path_is_none_for_a_subtitle(tmp_path):
+    """字幕**不算落地** —— 即便它自己改名成功。
+
+    这是 F2 那条缺陷的后端一半: 字幕与视频共用同一套 status, 前端按 status 判落地
+    时字幕会进 landed 表, 而 finalize 的 `_keep_decision` 只看「那个目录里有没有
+    landed 路径」。混合批次里「视频失败、字幕落地」于是会把组级决策保留下来, 在
+    一个没有任何剧集文件的目录里写出 tvshow.nfo（spec §9.4 的库根污染）。
+    `execute_one` 里 `if is_video:` 那道守卫就是阻止它的地方。
+
+    删掉那道守卫本用例必红（landed_path 会变成字幕的新路径）。**前端的判据抓不到
+    这一点**: 它用的是假 adapter, 夹具里的 landed_path 由夹具自己写死。
+    """
+    video = tmp_path / "Test.Show.S01E02.mkv"
+    sub = tmp_path / "Test.Show.S01E02.chs.ass"
+    video.write_text("x", encoding="utf-8")
+    sub.write_text("x", encoding="utf-8")
+    cache_files([FileInfo(
+        id="s1", source="local", path=str(sub),
+        filename="Test.Show.S01E02.chs.ass", extension=".ass",
+        parent_dir=str(tmp_path), is_subtitle=True,
+        subtitle_of="Test.Show.S01E02.mkv",
+    )])
+
+    body = TestClient(app).post("/api/rename/execute", json={
+        "file_id": "s1", "template": TEMPLATE, "source": "local",
+        "path": str(tmp_path), "override": OVERRIDE,
+    }).json()
+
+    # 字幕本身确实改名成功了 —— 判据不是「它没落地」, 而是「它的落地**不算**
+    # 组级 NFO 的依据」。
+    assert body["result"]["status"] == "renamed", body["result"]
+    assert body["landed_path"] is None, body["landed_path"]
+    # 对照: 同一个响应的 new_path 仍如实报告它去了哪里（前端在别处要用）。
+    assert body["result"]["new_path"] == str(tmp_path / "Test Show - S01E02.ass")
