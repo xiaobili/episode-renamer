@@ -3703,16 +3703,21 @@ git commit -m "feat(frontend): 执行遮罩增加进度条（干跑仍为转圈�
           >
             <Info class="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <p>
-              这两项随每次重命名请求下发，<strong class="text-ink">立即生效</strong>。
-              服务端的 <code class="font-mono">OPENLIST_MAX_CONCURRENT</code> /
-              <code class="font-mono">OPENLIST_REQUEST_INTERVAL</code> 只在这两项
-              未设置时作为初值。注意它们作用于 OpenList 客户端的<strong class="text-ink">全部</strong>请求
-              （含扫描与列目录），不只是重命名。
+              这两项随重命名请求（执行 / 试运行）下发，<strong class="text-ink">立即生效</strong>，
+              优先于服务端的 <code class="font-mono">OPENLIST_MAX_CONCURRENT</code> /
+              <code class="font-mono">OPENLIST_REQUEST_INTERVAL</code>；后两者是客户端
+              构造时的初值，在<strong class="text-ink">尚未执行过重命名</strong>时
+              （如扫描、列目录）仍然起作用。注意这两项作用于 OpenList 客户端的
+              <strong class="text-ink">全部</strong>请求，不只是重命名。
             </p>
           </div>
 ```
 
-在 `draft` 的初始化与 `apply` 回填处补上 `localConcurrency`（照 `conflictStrategy` 的既有写法各加一行）。
+**不需要在 `draft` 的初始化或回填处加代码** —— 本视图走
+`reactive(settingsStore.toObject())` 与 `Object.assign(draft, settingsStore.toObject())`，
+而 `toObject()` 已含 `localConcurrency`（Task 9 加的）。`dirty` 比的是同一个对象，
+所以保存 / 重置 / 脏标记都自动覆盖新字段。**先读一眼该文件再动手**：计划原先那句
+「照 `conflictStrategy` 的写法各加一行」基于对该文件的错误模型。
 
 - [ ] **Step 2: 跑前端判据与构建**
 
