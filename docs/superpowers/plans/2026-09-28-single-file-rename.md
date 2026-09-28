@@ -2774,7 +2774,7 @@ git commit -m "feat(frontend): 新增结果聚合 renameAggregate 及其判据�
   - `mode: 'dry-run'` → 出 `file_ids` + `overrides` + `conflict_strategy`
   - `mode: 'preview'` → 出 `file_ids` + `overrides`
   - `mode: 'finalize'` → 出 `file_ids` + `overrides` + `landed`
-  - 后三种模式都出 `openlist_max_concurrent` / `openlist_request_interval`
+  - `execute` 与 `dry-run` 出 `openlist_max_concurrent` / `openlist_request_interval`（**只有这两种**：预览的后端模型没有这两个字段，收尾路由从不调 `_apply_openlist_limits`，发下去也是死的 —— 不为死字段写断言）
 
 - [ ] **Step 1: 更新判据（先红）**
 
@@ -2782,6 +2782,9 @@ git commit -m "feat(frontend): 新增结果聚合 renameAggregate 及其判据�
 
 ```js
   fileIds: ['f1', 'f2'],
+  // **execute 的两条用例必须显式传 `fileIds: undefined`**: base 里的 fileIds 是给
+  // 预览/干跑/收尾用的, 而 execute 的互斥校验见到非空 fileIds 就抛 —— 照抄 base
+  // 会让第一个 execute 块直接抛错, 根本到不了 GREEN。
   fileId: 'f1',
   override: { title: '我的标题' },
   landed: { f1: '/media/绝命毒师/Season 02/绝命毒师 - S02E01.mkv' },
@@ -3060,7 +3063,18 @@ Expected: 全部通过
 - [ ] **Step 9: 跑全套前端判据**
 
 Run: `cd frontend && node scripts/check-all.mjs`
-Expected: 全部通过。
+Expected: **6/7 —— `check-workspace-gating.mjs` 预期红**，这是**已知且不可在本任务内消除**的：
+`workspace.js` 仍以旧契约（`mode:'execute'` + `fileIds`）构造载荷，新的互斥校验必然抛错，被
+`executeAction` 的 catch 吞成 toast，于是 gating 脚本拿不到 dry-run 请求而 TypeError。
+
+**唯一解法是改 `workspace.js`，而那是 Task 10 的文件**（逐字重写 `executeAction`）。这里
+**不要**为了让它变绿而动那个文件 —— 一个只让检查变绿、不让应用变好的改动，正是本仓库反复
+栽的形态。
+
+**这条红是说真话的**: 这两个 commit 之间应用**确实**是坏的（前端还在发旧契约）。它与「检查
+一个三个任务之后才会存在的文件」那种假红不同 —— 后者的红不携带任何信息。
+
+Task 10 落地后 `check-all.mjs` 自动 7/7 全绿，gating 脚本**不需要任何改动**。
 
 - [ ] **Step 10: 提交**
 
