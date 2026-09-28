@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, reactive, ref, watch } from 'vue'
 
 import { scanDirectory } from '../api/scanner'
-import { previewRename, executeRename, dryRunRename } from '../api/renamer'
+import { previewRename, executeRename, dryRunRename, finalizeRename } from '../api/renamer'
 import { searchTmdb } from '../api/tmdb'
 import { getPresets } from '../api/template'
 import {
@@ -25,6 +25,8 @@ import {
   tmdbPendingScrape as isTmdbPendingScrape,
 } from './scrapeGate'
 import { buildRenamePayload } from './renamePayload'
+import { runWithConcurrency, resolveConcurrency } from './renameRunner'
+import { aggregateBatch } from './renameAggregate'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const filesStore = useFilesStore()
@@ -47,6 +49,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const scraping = ref(false)
   const executing = ref(false)
   const executeDryRun = ref(false)
+  // 逐文件执行的进度。dryRun 时不填 —— 干跑仍是单次批量请求, 给一个永远 0%
+  // 的进度条就是撒谎。
+  const progress = reactive({ done: 0, total: 0, current: '' })
   // NFO 选项是本次会话的工作参数, 不进设置页 —— 它跟「扫哪个目录」一样,
   // 是这一次任务的属性, 不是长期偏好。
   const generateNfo = ref(false)
@@ -397,6 +402,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           season: pv.season,
           episode: pv.episode,
           new_filename: pv.new_filename || '',
+          // 后端预览响应里的**目标全路径**。保留它是因为执行前要在前端判「本批次
+          // 内是否有两个文件算出同一个目标名」—— resolveConcurrency 靠它决定是否
+          // 降级为串行（spec §10.1：后端 check_conflict 的第二参是空列表，
+          // duplicate_in_batch 分支从不触发，双写同一个目标在 overwrite 策略下会丢
+          // 数据）。缺了这一行，`r.new_path` 对**每一行**都是 undefined，于是
+          // `new Set(targets).size !== targets.length` 恒真 —— 并发上限永远降级为
+          // 1，设置页那个 localConcurrency 就成了一件改不动的摆设，正是本功能要修
+          // 的那类 bug（spec 事实 10）。它也是唯一会被 executeAction 读到的地方。
+          new_path: pv.new_path || '',
           needs_review: pv.needs_review || false,
           confidence: pv.confidence || 0,
           title: pv.title || '',
@@ -501,6 +515,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await executeAction(false)
   }
 
+  // 逐行覆盖收集。**由调用方传入行集合**: 预览用全部预览行、执行只从选中行收集
+  // —— 两者的行集合不同（首次预览时 previewRows 还是空的），把它写死在这里会
+  // 把这件事实藏起来。
+  function _collectOverrides(rows) {
+    const overrides = {}
+    rows.forEach((r) => { if (r.override) overrides[r.id] = r.override })
+    return overrides
+  }
+
   async function executeAction(dryRun = false) {
     const selected = previewRows.value.filter(r => r.selected)
     if (!selected.length) {
@@ -510,59 +533,141 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     executing.value = !dryRun
     executeDryRun.value = dryRun
+
+    // **在 await 之前**读进局部变量：这是「执行那一刻」的事实，要与载荷说的
+    // 一致。放在 await 之后读的话，干跑在途时用户重选剧集（pickShow 会置位
+    // scraped）会让记录下来的标志与刚发出去的载荷对不上 —— 结果对话框于是把
+    // 「本次没刮削」补在一条**已经刮削过**的载荷上，成了一句假话。
+    const nfoBlocked = nfoNeedsScrape.value
+    const source = filesStore.source
+    const baseArgs = {
+      path: selected[0].path.replace(selected[0].filename, ''),
+      source,
+      template: tplStore.currentTemplate,
+      folderTemplate: tplStore.folderTemplate,
+      createSeasonFolder: tplStore.createSeasonFolder,
+      conflictStrategy: conflictStrategy.value,
+      episodePadDigits: settingsStore.episodePadDigits,
+      seasonPadDigits: settingsStore.seasonPadDigits,
+      tmdb: settingsStore.tmdb,
+      tmdbOverrides,
+      scraped: scraped.value,
+      generateNfo: generateNfo.value,
+      nfoOverwrite: nfoOverwrite.value,
+      openlistMaxConcurrent: settingsStore.openlist.concurrency,
+      openlistRequestInterval: settingsStore.openlist.requestInterval,
+    }
+
     try {
-      const overrides = {}
-      selected.forEach(r => {
-        if (r.override) overrides[r.id] = r.override
-      })
-      const ids = selected.map(r => r.id)
-      const fn = dryRun ? dryRunRename : executeRename
-      // **在 await 之前**读进局部变量：这是「执行那一刻」的事实，要与载荷说的
-      // 一致。放在 await 之后读的话，干跑在途时用户重选剧集（pickShow 会置位
-      // scraped）会让记录下来的标志与刚发出去的载荷对不上 —— 结果对话框于是把
-      // 「本次没刮削」补在一条**已经刮削过**的载荷上，成了一句假话。
-      // （变量名不叫 nfoBlockedByScrape：那会遮蔽同名的导入函数。）
-      const nfoBlocked = nfoNeedsScrape.value
-      const res = await fn(buildRenamePayload({
-        mode: 'execute',
-        fileIds: ids,
-        path: selected[0].path.replace(selected[0].filename, ''),
-        source: filesStore.source,
-        template: tplStore.currentTemplate,
-        folderTemplate: tplStore.folderTemplate,
-        createSeasonFolder: tplStore.createSeasonFolder,
-        conflictStrategy: conflictStrategy.value,
-        overrides,
-        episodePadDigits: settingsStore.episodePadDigits,
-        seasonPadDigits: settingsStore.seasonPadDigits,
-        tmdb: settingsStore.tmdb,
-        tmdbOverrides,
-        scraped: scraped.value,
-        generateNfo: generateNfo.value,
-        nfoOverwrite: nfoOverwrite.value,
+      if (dryRun) {
+        const res = await dryRunRename(buildRenamePayload({
+          ...baseArgs, mode: 'dry-run', fileIds: selected.map(r => r.id),
+          overrides: _collectOverrides(selected),
+        }))
+        lastResult.value = {
+          ...res.data, dry_run: true, nfo_blocked_by_scrape: nfoBlocked,
+        }
+        resultDialog.value = true
+        return
+      }
+
+      // --- 单文件并发执行 ---
+      const items = selected.map(r => ({
+        id: r.id,
+        payload: buildRenamePayload({
+          ...baseArgs, mode: 'execute', fileId: r.id,
+          override: r.override || null,
+        }),
       }))
-      // dry_run 记在结果上: BatchRenameResult 的 nfo_written / nfo_skipped 在干跑时
-      // 描述的是「将写入 / 将跳过」的计划（后端的字段注释写明了这点），而载荷里
-      // 没有标记能区分。不带上这个标记, 结果对话框只能把计划报成既成事实 ——
-      // 那正是「告诉用户一件没发生的事」。
+
+      // 并发上限：批次内目标重名时降级为串行（spec §10.1）。判据在
+      // renameRunner.resolveConcurrency 里，由 check-rename-runner.mjs 钉住。
+      const limit = resolveConcurrency({
+        source,
+        targets: selected.map(r => r.new_path),
+        localConcurrency: settingsStore.localConcurrency,
+        openlistConcurrency: settingsStore.openlist.concurrency,
+      })
+      const intervalMs = source === 'openlist'
+        ? Math.round(settingsStore.openlist.requestInterval * 1000)
+        : 0
+
+      progress.done = 0
+      progress.total = items.length
+      progress.current = ''
+
+      const { results, failures } = await runWithConcurrency(
+        items, limit,
+        async (item) => {
+          progress.current = selected.find(r => r.id === item.id)?.filename || ''
+          const res = await executeRename(item.payload)
+          return res.data
+        },
+        {
+          intervalMs,
+          onProgress: (done) => { progress.done = done },
+        },
+      )
+
+      // 失败条目补一条同形状的记录，让对话框照样能列出它们 —— 静默丢掉一个
+      // 用户明确选中的文件，比报错更糟。
+      //
+      // **必须是 Array.from 而不是 results.map**: 失败条目的槽位是**空洞**
+      // （runWithConcurrency 里 `new Array(n)` 从不赋值），而 `map` 会**跳过**
+      // 空洞 —— 于是补记录这一步对失败条目根本不执行，settled 仍是稀疏数组，
+      // 下游 aggregateBatch 的 `for...of` 会读到 undefined 并抛
+      // 「Cannot read properties of undefined」，被本函数的 catch 吞成一句
+      // Toast：整批结果（含已成功的文件）连同结果对话框一起消失。
+      // Array.from 走迭代器（空洞取到 undefined）并**逐个下标**回调，正是要的语义。
+      const settled = Array.from(results, (r, i) => r ?? {
+        executed: 0, skipped: 0, failed: 1,
+        result: {
+          id: items[i].id,
+          original_path: selected[i].path,
+          new_path: '',
+          original_filename: selected[i].filename,
+          new_filename: '',
+          success: false,
+          status: 'failed',
+          error: failures.find(f => f.index === i)?.error?.message || '请求失败',
+        },
+      })
+
+      // --- 批次收尾：只写剧集级 / 季级 NFO ---
+      let finalizeBody = null
+      if (source === 'local' && generateNfo.value) {
+        const landed = {}
+        settled.forEach((s) => {
+          const st = s.result?.status
+          // 与后端 _NO_LANDING_STATUSES 同一套判据 —— 未落地的文件不进 landed 表。
+          if (st && !['skipped_conflict', 'conflict', 'failed'].includes(st)) {
+            landed[s.result.id] = s.result.new_path
+          }
+        })
+        // **必须在 buildPreview() 之前调**：buildPreview 会重扫并刷新后端的
+        // _cached_files，之后 finalize 就重建不出同一批 plan 了。
+        const fin = await finalizeRename(buildRenamePayload({
+          ...baseArgs, mode: 'finalize', fileIds: selected.map(r => r.id),
+          overrides: _collectOverrides(selected), landed,
+        }))
+        finalizeBody = fin.data
+      }
+
       lastResult.value = {
-        ...res.data,
-        dry_run: dryRun,
-        // NFO 的跳过原因由后端给（「TMDB 未匹配, 不写残缺 NFO」），但那条文案在
-        // 「本次没刮削」时会把成因说成「没匹配到」。这个标志在**执行那一刻**算好
-        // 记在结果上（与 dry_run 同样的做法：载荷里没有能区分的东西），
-        // 结果对话框据此把真实成因补上（spec §17.5）。用 await 前捕获的局部变量
-        // （见上面），保证它与同一次载荷同源。
-        nfo_blocked_by_scrape: nfoBlocked,
+        ...aggregateBatch({
+          items: settled, finalize: finalizeBody,
+          nfoBlockedByScrape: nfoBlocked, source,
+        }),
       }
       resultDialog.value = true
-      if (!dryRun) {
-        await buildPreview()
-      }
+      await buildPreview()
     } catch (e) {
       showToast('操作失败: ' + (e.response?.data?.detail || e.message), 'error')
     } finally {
       executing.value = false
+      progress.done = 0
+      progress.total = 0
+      progress.current = ''
       // 同时复位 executeDryRun：HomeView 用 `v-if="!executeDryRun"` 把遮罩整个卸掉，
       // 若它停留在 true，后续的执行会在「已打开」的状态下第一次挂载遮罩，而
       // <Transition> 在没有 appear 时不会为首挂播放进入过渡 —— spec §11 的
@@ -714,7 +819,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   return {
     activeSource, sourceStates,
-    recursive, includeSubs, scanning, executing, executeDryRun,
+    recursive, includeSubs, scanning, executing, executeDryRun, progress,
     conflictStrategy, resultDialog, lastResult, olForm,
     browse, confirm, toast,
     path, previewRows, scannedInfo, allSelected, selectedCount, totalCount,

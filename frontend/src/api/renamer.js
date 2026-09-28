@@ -11,3 +11,7 @@ export function executeRename(data) {
 export function dryRunRename(data) {
   return request.post('/rename/dry-run', data)
 }
+
+export function finalizeRename(data) {
+  return request.post('/rename/finalize', data)
+}
