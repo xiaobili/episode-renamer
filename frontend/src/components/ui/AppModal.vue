@@ -49,6 +49,10 @@ const titleId = `modal-title-${useId()}`
 let triggerEl = null
 let prevOverflow = ''
 let prevPaddingRight = ''
+// 同一个 onKeydown 被注册两次（capture / 冒泡），靠这个开关分辨当前是哪一拍。
+// 用「标志位 + try/finally」而不是两个函数：两拍的 Escape 分支必须引用**同一段**
+// 代码，拆成两份迟早会改漏一处。顺便也不依赖事件对象（原生事件不允许挂自定义字段）。
+let capturePass = false
 
 function focusableNodes() {
   if (!panelRef.value) return []
@@ -89,11 +93,27 @@ function onOverlayClick(event) {
 
 function onKeydown(event) {
   if (event.key === 'Escape') {
+    // Escape 分两拍：先让模态**内部**的控件有机会消费它（例如 BrowseDialog 的
+    // 搜索框「有搜索词时先清空」），再决定关窗。
+    //
+    // 不能靠内部控件 stopPropagation 来解决：本监听器挂在 document 的 **capture**
+    // 阶段，它比目标元素上的任何冒泡监听器都先跑，阻止已经来不及（实测：监听
+    // 顺序恒为 doc-capture → target → 冒泡）。所以捕获阶段这一拍主动让开，
+    // 只要焦点在面板内就交给下面那个**冒泡**监听器。
+    //
+    // 判断「焦点在面板内」是必须的：焦点不在面板里时（例如刚打开、或焦点掉到
+    // body）若也让开，就没人再处理 Escape，对话框会关不掉。
+    if (capturePass && panelRef.value && panelRef.value.contains(document.activeElement)) return
+
+    // 冒泡拍发现控件已经 preventDefault（它消费了这次 Escape），本层不再关窗。
+    if (event.defaultPrevented) return
     event.preventDefault()
     close()
     return
   }
-  if (event.key !== 'Tab' || !panelRef.value) return
+
+  // Tab 之外的键不管。下面这段（焦点陷阱）只走捕获阶段，与 Escape 无关。
+  if (!capturePass || event.key !== 'Tab' || !panelRef.value) return
 
   const nodes = focusableNodes()
   if (nodes.length === 0) {
@@ -118,10 +138,26 @@ function onKeydown(event) {
   }
 }
 
+function onCaptureKeydown(event) {
+  capturePass = true
+  try {
+    onKeydown(event)
+  } finally {
+    capturePass = false
+  }
+}
+
+function onBubbleKeydown(event) {
+  capturePass = false
+  onKeydown(event)
+}
+
 function onOpen() {
   triggerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
   lockScroll()
-  document.addEventListener('keydown', onKeydown, true)
+  // capture 一拍管焦点陷阱 + 让位；冒泡一拍只负责 Escape 关窗。
+  document.addEventListener('keydown', onCaptureKeydown, true)
+  document.addEventListener('keydown', onBubbleKeydown)
   nextTick(() => {
     const nodes = focusableNodes()
     if (nodes.length) nodes[0].focus()
@@ -130,7 +166,8 @@ function onOpen() {
 }
 
 function onClose() {
-  document.removeEventListener('keydown', onKeydown, true)
+  document.removeEventListener('keydown', onCaptureKeydown, true)
+  document.removeEventListener('keydown', onBubbleKeydown)
   unlockScroll()
   // 触发元素可能在模态打开期间被 v-if 卸载（FileTable 的「清空」就是这种情况），
   // 所以必须先确认它还在文档里。
@@ -148,7 +185,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeydown, true)
+  document.removeEventListener('keydown', onCaptureKeydown, true)
+  document.removeEventListener('keydown', onBubbleKeydown)
   if (props.modelValue) unlockScroll()
 })
 </script>

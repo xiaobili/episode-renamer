@@ -27,6 +27,8 @@ const SCRIPTS = [
   'check-rename-aggregate.mjs',
   'check-execute-loop.mjs',
   'check-execute-behaviour.mjs',
+  'check-browse-filter.mjs',
+  'check-appmodal-escape.mjs',
 ]
 
 let failed = 0
