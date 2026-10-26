@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: episode-renamer
     restart: unless-stopped
+    # 使用 Docker 默认网桥（docker0），Compose 不再创建项目专属网络
+    network_mode: bridge
     ports:
       - "6969:6969"
     environment:
