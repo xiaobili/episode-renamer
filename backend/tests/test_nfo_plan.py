@@ -66,6 +66,19 @@ def test_common_parent_of_single_path():
     assert common_parent(["/media/剧/S01/a.mkv"]) == "/media/剧/S01"
 
 
+def test_build_nfo_decisions_uses_posix_paths_for_remote():
+    """OpenList 的落点必须用 `/`, 与宿主机的路径分隔符无关。"""
+    import posixpath
+
+    decisions = build_nfo_decisions(
+        [entry("/media/Show/Show - S01E01.mkv")], OPTIONS, path_mod=posixpath,
+    )
+    paths = {d.kind: d.path for d in decisions if d.content}
+    assert paths["episode"] == "/media/Show/Show - S01E01.nfo"
+    assert paths["tvshow"] == "/media/Show/tvshow.nfo"
+    assert paths["season"] == "/media/Show/season.nfo"
+
+
 # --- 关闭时不产生任何决策 ---
 
 def test_disabled_produces_nothing():

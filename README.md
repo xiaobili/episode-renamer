@@ -1,7 +1,7 @@
 <!-- generated-by: gsd-doc-writer -->
 # Episode Renamer
 
-电视剧 / 番剧自动化重命名工具：同时处理**本地磁盘**与 **OpenList 云盘**两类文件源，按模板批量重命名，并可为本地文件写出符合 Emby / Jellyfin 规范、由 TMDB 元数据驱动的 NFO。
+电视剧 / 番剧自动化重命名工具：同时处理**本地磁盘**与 **OpenList 云盘**两类文件源，按模板批量重命名，并可为两类源写出符合 Emby / Jellyfin 规范、由 TMDB 元数据驱动的 NFO。
 
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-%E2%89%A50.110-009688.svg)
@@ -19,7 +19,7 @@
 
   > 执行是**逐文件**进行的，因此 `abort` 的含义是「这一个文件不执行」，不再是「整批中止」。
 
-- **TMDB 元数据** — 按剧名匹配 TMDB，可为模板提供 `{title}`，并生成 tvshow / season / episode 三级 NFO（仅本地源）
+- **TMDB 元数据** — 按剧名匹配 TMDB，可为模板提供 `{title}`，并生成 tvshow / season / episode 三级 NFO（本地与 OpenList 均支持）
 - **Docker 一键部署** — 多阶段构建（前端产物打进后端镜像），自带健康检查
 
 ## 🖥️ 界面预览
@@ -41,9 +41,10 @@
 重命名按**单个文件**执行：前端逐个并发发起 `POST /api/rename/execute`，并据此显示进度条。
 每集 NFO 随 `execute` 一起写出 —— 单个文件的改写与它自己的 NFO 是同一次请求的事实。
 
-剧集级 / 季级 NFO（`tvshow.nfo` / `season.nfo`）是整批的事实：**仅本地源且开启 NFO 生成时**，
-前端会在全部文件跑完后调用 `POST /api/rename/finalize` 写出，请求体里的 `landed` 是
-**实际落地**的文件及其真实落点。
+剧集级 / 季级 NFO（`tvshow.nfo` / `season.nfo`）是整批的事实：**开启 NFO 生成时**，
+本地与 OpenList 源都会在全部文件跑完后调用 `POST /api/rename/finalize` 写出，请求体里的
+`landed` 是**实际落地**的文件及其真实落点。OpenList 侧通过 `PUT /api/fs/put` 上传，
+因此挂载点必须可写。
 
 | 接口 | 形态 |
 | --- | --- |
@@ -144,6 +145,7 @@ TMDB_API_KEY=your_tmdb_key
 
 1. **设置页** — 填入 OpenList 服务器地址（如 `http://your-openlist:5244`，实际地址随你的部署而定）与账号密码（支持两步验证码）<!-- VERIFY: OpenList 服务器地址与端口随部署环境而定，仓库内无固定值 -->
 2. **工作区 OpenList 页签** — 登录后选择 mount 点 → 浏览进入具体子目录 → 扫描 → 重命名
+3. **NFO** — 勾选「同时生成 NFO 文件」后，每集 `.nfo` 与剧集级 / 季级 NFO 会写到所选 mount 上；挂载点只读时 NFO 会报「写入失败」，重命名本身不受影响
 
 > 🔒 前端强制要求先进入**子目录**才允许扫描或选择：根目录会被直接拒绝，避免一次拉取整个网盘。
 
@@ -207,9 +209,10 @@ episode-renamer/
 │   │   │   ├── openlist_client.py  # OpenList HTTP 客户端
 │   │   │   ├── openlist_scanner.py # 云盘并发扫描
 │   │   │   ├── openlist_renamer.py # 云盘分组批量 move
+│   │   │   ├── openlist_nfo.py     # 云盘 NFO 上传 / 跟随 / 收尾
 │   │   │   ├── tmdb_client.py      # TMDB API 客户端
 │   │   │   ├── tmdb_resolver.py    # 剧集匹配与缓存
-│   │   │   ├── nfo_writer.py       # NFO 决策与落盘
+│   │   │   ├── nfo_writer.py       # NFO 决策与本地落盘
 │   │   │   └── utils.py            # 扩展名 / 补零 / 字幕语言等工具
 │   │   ├── models/                 # Pydantic 模型（api / file / template / tmdb / nfo / openlist）
 │   │   ├── config.py               # Settings 与默认值
@@ -280,4 +283,4 @@ cd frontend
 npm run check                         # 等价于 node scripts/check-all.mjs
 ```
 
-后端用例位于 `backend/tests/`，覆盖解析补零、模板标题、重命名路由、TMDB 客户端与解析器、NFO 决策与落盘。前端 `scripts/check-*.mjs` 覆盖设置 schema、刮削门控、重命名请求体、SFC 可编译性与工作区门控，任一失败即非零退出。
+后端用例位于 `backend/tests/`，覆盖解析补零、模板标题、重命名路由、TMDB 客户端与解析器、NFO 决策与本地 / OpenList 落盘。前端 `scripts/check-*.mjs` 覆盖设置 schema、刮削门控、重命名请求体、SFC 可编译性与工作区门控，任一失败即非零退出。

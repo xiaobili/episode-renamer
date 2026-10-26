@@ -201,11 +201,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // 直接读写 activeSource 对应那一份 sourceStates，切源后自动指向新源。
 
     if (name === 'openlist') {
+      // 云盘仍不支持「创建季文件夹」（后端 OpenList builder 没有本地那条
+      // 「父目录已是季目录」的抑制逻辑）—— 但 NFO 已与本地同权, 不再关闭。
       tplStore.createSeasonFolder = false
-      // NFO 也不支持云盘（后端 _nfo_supported 只认 local）—— 留着它, 整个云盘
-      // 工作区每一行都会顶着「云盘不支持」, 而下次切回本地时它会**悄悄**仍然
-      // 开着, 用户以为自己没勾过。
-      generateNfo.value = false
     }
   }
 
@@ -656,7 +654,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
       // --- 批次收尾：只写剧集级 / 季级 NFO ---
       let finalizeBody = null
-      if (source === 'local' && generateNfo.value) {
+      if (generateNfo.value) {
         const landed = {}
         settled.forEach((s) => {
           // 键是 **file_id**（后端 SingleRenameResult.file_id）, 不是 result.id ——

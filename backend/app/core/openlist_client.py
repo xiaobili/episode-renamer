@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Optional
 from datetime import datetime
+from urllib.parse import quote
 
 import httpx
 
@@ -388,5 +389,27 @@ class OpenListClient:
 
         if data.get("code") != 200:
             raise Exception(f"创建目录失败: {data.get('message')}")
+
+        return data
+
+    async def put_file(self, path: str, content: bytes) -> dict:
+        """流式上传一个文件到远端。
+
+        `File-Path` 必须是**经过 URL 编码**的完整路径 —— 这是 OpenList /
+        AList 的 `PUT /api/fs/put` 契约（不是 body 里的 path）。不用
+        `As-Task`: NFO 很小, 同步完成比拿一个任务 id 再轮询更简单。
+        """
+        data = await self._request(
+            "PUT", "/api/fs/put",
+            content=content,
+            headers={
+                "File-Path": quote(path, safe=""),
+                "Content-Type": "application/xml; charset=utf-8",
+                "Content-Length": str(len(content)),
+            },
+        )
+
+        if data.get("code") != 200:
+            raise Exception(f"上传文件失败: {data.get('message')}")
 
         return data

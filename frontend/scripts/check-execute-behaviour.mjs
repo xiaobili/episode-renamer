@@ -56,6 +56,7 @@ const { createPinia, setActivePinia } = await import(new URL('node_modules/pinia
 const request = (await import(new URL('src/api/request.js', FE).href)).default
 const { useWorkspaceStore } = await import(new URL('src/stores/workspace.js', FE).href)
 const { useSettingsStore } = await import(new URL('src/stores/settings.js', FE).href)
+const { useFilesStore } = await import(new URL('src/stores/files.js', FE).href)
 
 const results = []
 function check(name, cond, extra = '') {
@@ -317,6 +318,28 @@ check('重扫失败时结果对话框仍然打开', ws.resultDialog === true)
 check('重扫失败时改名结果完好（4 执行 / 0 失败）',
   ws.lastResult?.executed === 4 && ws.lastResult?.failed === 0,
   `executed=${ws.lastResult?.executed} failed=${ws.lastResult?.failed}`)
+
+// ---------------------------------------------------------------------------
+// 场景 D：OpenList 源 + 勾了 NFO —— 收尾同样必须发。
+// 判据直接咬住旧的 `source === 'local'` 条件: 保留它就一条 finalize 都不会发。
+// ---------------------------------------------------------------------------
+failFinalize = false
+failExecuteIds = new Set()
+failPreview = false
+st.openlist.requestInterval = 0   // 云盘执行有请求间隔, 归零免得白等
+await ws.doScan()
+await tick(30)
+useFilesStore().source = 'openlist'
+ws.generateNfo = true
+calls = []
+ws.resultDialog = false
+ws.lastResult = null
+await ws.executeAction(false)
+
+check('OpenList 源勾 NFO 时也发 finalize', finalizes().length === 1,
+  String(finalizes().length))
+check('OpenList 源的 finalize 带 source=openlist',
+  finalizes()[0]?.body?.source === 'openlist', finalizes()[0]?.body?.source)
 
 console.log(results.join('\n'))
 const failed = results.filter(r => r.startsWith('FAIL')).length

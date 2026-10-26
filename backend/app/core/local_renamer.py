@@ -10,10 +10,14 @@ from typing import Optional
 from ..models.file import (
     FileInfo, RenamePlan, RenameResult, BatchRenameResult, OverrideInfo,
 )
-from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
+from ..models.nfo import NfoDecision, NfoOptions
 from ..config import settings
 from .nfo_writer import (
-    build_nfo_decisions, dedupe_skipped_pairs, episode_nfo_path, write_nfo_files,
+    CARRIED_NFO_TARGET_EXISTS_REASON as _CARRIED_NFO_TARGET_EXISTS_REASON,
+    DROPPED_GROUP_NFO_REASON as _DROPPED_GROUP_NFO_REASON,
+    NOT_RENAMED_NFO_REASON as _NOT_RENAMED_NFO_REASON,
+    build_nfo_decisions, dedupe_skipped_pairs, entry_from_plan,
+    episode_nfo_path, filter_landed_decisions, write_nfo_files,
 )
 from .parser import apply_override, parse_filename, _SEASON_DIR_PATTERNS
 from .template import PadConfig, apply_template, apply_folder_template
@@ -47,22 +51,6 @@ def _is_subtitle_file(file_info: Optional[FileInfo]) -> bool:
 # 判据不能写成 `result.new_path != plan.new_path` —— 那只覆盖 rename_dup 那一种,
 # 而 skip / abort 策略下 new_path 与 plan.new_path **相等**（相等恰恰是因为没动）。
 _NO_LANDING_STATUSES = frozenset({"skipped_conflict", "conflict", "failed"})
-
-# 没改名的行在 nfo_skipped 里的原因串。
-_NOT_RENAMED_NFO_REASON = "该文件未改名, 不写 NFO"
-
-# 组级决策（tvshow / season）被丢弃时的原因串。它的落点由该组全部 new_path 推出,
-# 一条都没落地时那就是凭空推出来的 —— 不写, 但要**报出来**（留白等于静默）。
-_DROPPED_GROUP_NFO_REASON = "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
-
-# 同前缀 NFO 跟随移动时的原因串（spec §9.1.1 的失败处理之一）。
-# 不写成同一类里的例外: 目标是**别人已存在的元数据**, 宁可留下可见的孤儿,
-# 也不静默改写它。
-# 串里明写「覆盖开关不影响跟随」: 同一个路径上生成侧也会报一条「已存在」, 那条
-# 带着「去勾覆盖开关」的可行动提示 —— 用户会把两条都读成同一件事, 于是去勾那个
-# **对孤儿无效**的开关（跟随无条件重查 dst.exists(), 覆盖开关管不着它）, 孤儿
-# 就这么永久留下。这条串自己说清拖住它的是文件、不是开关。
-_CARRIED_NFO_TARGET_EXISTS_REASON = "旧前缀 NFO 未跟随: 新名字处已有文件, 覆盖开关不影响跟随"
 
 # 「视频真的动了」的状态集合 —— 只有这些行的同前缀 NFO 才跟随移动。
 # dry_run 也算: 那一行**将会**真的动, 干跑要为它列出计划。
@@ -108,35 +96,6 @@ def carry_same_stem_nfo(
     except OSError as exc:
         return None, f"同名 NFO 跟随移动失败: {exc}"
     return dst, None
-
-
-def _keep_decision(
-    decision: NfoDecision, dead_file_ids: set[str], landed_paths: list[str]
-) -> bool:
-    """这条决策还该不该写 —— 没落地的行一条都不写。
-
-    每集决策钉着**某一个文件**, 那行没落地就整条丢掉: 它的落点是按 plan.new_path
-    算的, 而那个名字此刻属于**另一个视频**（skip 策略下占住目标名的那一个）。
-    写下去就是「给 A 写的 NFO 落在 B 的旁边」—— spec 明令禁止的静默错元数据,
-    也正是本计划要求写盘阶段避开的「改名失败但 NFO 已写」半状态。
-    不改成指向 `episode_nfo_path(plan.original_path)`: 无法保证原路径就是它的真实
-    位置（failed 时源文件可能压根不在, conflict 时它可能本该被移进还不存在的季
-    目录）。拒绝是安全方向 —— 少写一个 NFO 是可见的（nfo_path 为 None、清单里报
-    「该文件未改名」）, 写错一个才是不可见的。
-
-    组级决策（tvshow / season）属于**整组**, 落点由该组全部 new_path 推出, 所以
-    判据是该目录（含子树）下有没有真的落地过一个视频, 而不是组代表那一行有没有
-    落地 —— 用代表判会让「E01 冲突被跳过、E02 照常改名」这种常见批次丢掉整部剧
-    的 tvshow.nfo。整批一条都没落地时（如 abort）组级落点同样是凭空推出来的,
-    一并不写。
-    """
-    if decision.kind == "episode":
-        return decision.file_id not in dead_file_ids
-    directory = os.path.dirname(decision.path)
-    if not directory:
-        return False
-    prefix = directory.rstrip(os.sep) + os.sep
-    return any(p == directory or p.startswith(prefix) for p in landed_paths)
 
 
 def _parent_is_season_dir(parent_dir: str, season_val: Optional[int]) -> bool:
@@ -240,24 +199,6 @@ def plan_files(
     return plans
 
 
-def _entry_for(plan: RenamePlan, nfo_matches: dict[str, EpisodeMatch]) -> NfoEntry:
-    """把 plan 转成一条 NFO 条目。
-
-    nfo_matches 里没有对应项时 .get() 返回 None, getattr(None, "show", None) 也是
-    None —— 三者同时为 None, NfoEntry.has_metadata 即为 False, 于是不写残缺 NFO。
-    """
-    return NfoEntry(
-        file_id=plan.file_id,
-        new_path=plan.new_path,
-        show_name=plan.parsed.show_name if plan.parsed else "",
-        season=plan.parsed.season if plan.parsed else None,
-        episode=plan.parsed.episode if plan.parsed else None,
-        show=getattr(nfo_matches.get(plan.file_id), "show", None),
-        season_data=getattr(nfo_matches.get(plan.file_id), "season", None),
-        episode_data=getattr(nfo_matches.get(plan.file_id), "episode", None),
-    )
-
-
 def count_result(result: RenameResult, aborted: bool) -> tuple[int, int, int]:
     """(executed, skipped, failed) —— 逐字沿用 batch_rename 里那套判据。
 
@@ -289,7 +230,7 @@ def _episode_decision_for(
     """
     if not options.enabled or _is_subtitle_file(plan.file_info):
         return None
-    decisions = build_nfo_decisions([_entry_for(plan, nfo_matches)], options)
+    decisions = build_nfo_decisions([entry_from_plan(plan, nfo_matches)], options)
     return next((d for d in decisions if d.kind == "episode"), None)
 
 
@@ -519,7 +460,7 @@ def finalize_show_nfo(
         return [], []
 
     entries = [
-        _entry_for(plan, nfo_matches)
+        entry_from_plan(plan, nfo_matches)
         for plan in plans
         if not _is_subtitle_file(plan.file_info)
     ]
@@ -531,15 +472,12 @@ def finalize_show_nfo(
     ]
     skipped_pairs: list[tuple[str, str]] = []
 
-    kept: list[NfoDecision] = []
-    for decision in group_decisions:
-        if _keep_decision(decision, set(), landed_paths):
-            kept.append(decision)
-        else:
-            # 组级决策被丢弃 = 那份剧集级/季级 NFO 不会写。**丢弃要报出来**:
-            # 静默扔掉的话结果里既没有落点也没有跳过记录, 用户无从知道这部剧本该
-            # 有的 tvshow.nfo 为什么一个都没写。
-            skipped_pairs.append((decision.path, _DROPPED_GROUP_NFO_REASON))
+    kept, dropped = filter_landed_decisions(group_decisions, set(), landed_paths)
+    for decision in dropped:
+        # 组级决策被丢弃 = 那份剧集级/季级 NFO 不会写。**丢弃要报出来**:
+        # 静默扔掉的话结果里既没有落点也没有跳过记录, 用户无从知道这部剧本该
+        # 有的 tvshow.nfo 为什么一个都没写。
+        skipped_pairs.append((decision.path, _DROPPED_GROUP_NFO_REASON))
 
     written, write_skipped = write_nfo_files(kept, overwrite=options.overwrite)
     skipped_pairs.extend(write_skipped)
@@ -573,7 +511,7 @@ def batch_rename(
     if nfo_options and nfo_options.enabled:
         nfo_decisions = build_nfo_decisions(
             [
-                _entry_for(plan, nfo_matches)
+                entry_from_plan(plan, nfo_matches)
                 # 字幕不进 NFO（理由见 _is_subtitle_file）。这个过滤只作用于 NFO 的
                 # 构造 —— 字幕照常参与下面的重命名。
                 for plan in plans
@@ -679,15 +617,15 @@ def batch_rename(
     # 孤儿想过来 → 没搬成）, 理由串各说各的, 两条都留着。
     skipped_pairs: list[tuple[str, str]] = []
 
-    # 没落地的行: 它们的每集决策一律不写（理由见 _keep_decision）。组级决策由
+    # 没落地的行: 它们的每集决策一律不写（理由见 filter_landed_decisions）。组级决策由
     # landed_paths 另行判定 —— 那是「整组」的落点, 不能因为组代表那一行没落地
     # 就把整部剧的 tvshow.nfo 丢掉。
     if nfo_decisions and dead_file_ids:
-        kept: list[NfoDecision] = []
-        for decision in nfo_decisions:
-            if _keep_decision(decision, dead_file_ids, landed_paths):
-                kept.append(decision)
-            elif decision.kind != "episode":
+        kept, dropped = filter_landed_decisions(
+            nfo_decisions, dead_file_ids, landed_paths,
+        )
+        for decision in dropped:
+            if decision.kind != "episode":
                 # 组级决策被丢弃 = 那份剧集级/季级 NFO 不会写。**丢弃要报出来**:
                 # 此前它被静默扔掉, 结果里既没有落点也没有跳过记录, 用户无从知道
                 # 这部剧本该有的 tvshow.nfo 为什么一个都没写。

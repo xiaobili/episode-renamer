@@ -5,12 +5,32 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
+from ..models.file import RenamePlan
 from ..models.nfo import NfoDecision, NfoEntry, NfoOptions
 from ..models.tmdb import TmdbEpisode, TmdbSeason, TmdbShow
 from .parser import _SEASON_DIR_PATTERNS
+from .tmdb_resolver import EpisodeMatch
 
 
 XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+
+# 跳过原因串。本地与 OpenList 必须逐字一致 —— 前端 ResultDialog 的
+# 「覆盖提示」与用户看到的诊断都依赖这些字面值。
+
+# 没改名的行在 nfo_skipped 里的原因串。
+NOT_RENAMED_NFO_REASON = "该文件未改名, 不写 NFO"
+
+# 组级决策（tvshow / season）被丢弃时的原因串。它的落点由该组全部 new_path 推出,
+# 一条都没落地时那就是凭空推出来的 —— 不写, 但要**报出来**（留白等于静默）。
+DROPPED_GROUP_NFO_REASON = "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
+
+# 同前缀 NFO 跟随移动时的原因串。不写成同一类里的例外: 目标是**别人已存在的
+# 元数据**, 宁可留下可见的孤儿, 也不静默改写它。
+# 串里明写「覆盖开关不影响跟随」: 同一个路径上生成侧也会报一条「已存在」, 那条
+# 带着「去勾覆盖开关」的可行动提示 —— 用户会把两条都读成同一件事, 于是去勾那个
+# **对孤儿无效**的开关（跟随无条件重查目标是否存在, 覆盖开关管不着它）, 孤儿
+# 就这么永久留下。这条串自己说清拖住它的是文件、不是开关。
+CARRIED_NFO_TARGET_EXISTS_REASON = "旧前缀 NFO 未跟随: 新名字处已有文件, 覆盖开关不影响跟随"
 
 
 def _text(parent: ET.Element, tag: str, value) -> None:
@@ -84,17 +104,20 @@ def build_episode_nfo(episode: TmdbEpisode, season_number: int, show_title: str)
     return _serialize(root)
 
 
-def episode_nfo_path(video_path: str) -> str:
+def episode_nfo_path(video_path: str, path_mod=os.path) -> str:
     """每集 NFO 的落点: 与视频同名同目录, 扩展名换成 .nfo。
 
     Emby / Jellyfin / Kodi 都是靠**文件名配对**识别每集 NFO 的,
     不读 XML 内容来判断它属于哪一集。所以这里必须与视频严格同名。
+
+    `path_mod` 让远端路径用 `posixpath` 推导: OpenList 的路径永远是 `/`,
+    不能跟着宿主机（例如 Windows 的 `\\`）走。
     """
-    base, _extension = os.path.splitext(video_path)
+    base, _extension = path_mod.splitext(video_path)
     return base + ".nfo"
 
 
-def common_parent(paths: list[str]) -> str:
+def common_parent(paths: list[str], path_mod=os.path) -> str:
     """一组路径的公共父目录。
 
     用公共父而不是「第一个文件的所在目录」: 视频可能分处 Season 02 / Season 03
@@ -102,13 +125,13 @@ def common_parent(paths: list[str]) -> str:
     """
     if not paths:
         return ""
-    directories = [os.path.dirname(p) for p in paths]
+    directories = [path_mod.dirname(p) for p in paths]
     if len(directories) == 1:
         return directories[0]
-    return os.path.commonpath(directories)
+    return path_mod.commonpath(directories)
 
 
-def _show_root(paths: list[str]) -> str:
+def _show_root(paths: list[str], path_mod=os.path) -> str:
     """剧集根 = 公共父目录, 但**季文件夹按构造不是剧集根 —— 命中季目录时再上溯一层**。
 
     为什么非要这一步: Emby / Jellyfin 只在**剧集根**找 `tvshow.nfo`, 写进
@@ -149,21 +172,24 @@ def _show_root(paths: list[str]) -> str:
     `/m/Season 02/tvshow.nfo`（落在另一个季形目录里）—— 同一类别, 刻意不 while,
     写在这里免得后来者以为漏了。
     """
-    root = common_parent(paths)
+    root = common_parent(paths, path_mod)
     if not root:
         return root
-    if not any(p.match(os.path.basename(root.rstrip(os.sep))) for p in _SEASON_DIR_PATTERNS):
+    sep = path_mod.sep
+    if not any(p.match(path_mod.basename(root.rstrip(sep))) for p in _SEASON_DIR_PATTERNS):
         return root
 
-    parent = os.path.dirname(root.rstrip(os.sep))
+    parent = path_mod.dirname(root.rstrip(sep))
     # 上溯到空串或文件系统根时保持原样: 把 tvshow.nfo 写到 / 下比不写更糟,
     # 且路径形状（绝对/相对）必须与入参保持一致 —— common_parent 不吃混用。
-    if not parent or os.path.dirname(parent) == parent:
+    if not parent or path_mod.dirname(parent) == parent:
         return root
     return parent
 
 
-def _folder_belongs_to_single_show(root: str, show_name: str, all_entries: list[NfoEntry]) -> bool:
+def _folder_belongs_to_single_show(
+    root: str, show_name: str, all_entries: list[NfoEntry], path_mod=os.path,
+) -> bool:
     """公共父目录（及其下任意层级）不得混有别的剧。
 
     不满足时说明这是「多部剧混放」的目录（如 /media/未分类/）。把 tvshow.nfo
@@ -178,17 +204,19 @@ def _folder_belongs_to_single_show(root: str, show_name: str, all_entries: list[
     合法的分剧布局不会被误伤: 各剧各占 /media/ShowA/、/media/ShowB/ 时互不嵌套;
     同一部剧的文件分处 root/ 与 root/S01/ 时 show_name 相同, 不触发。
     """
-    root_prefix = root.rstrip(os.sep) + os.sep
+    root_prefix = root.rstrip(path_mod.sep) + path_mod.sep
     for other in all_entries:
         if other.show_name == show_name:
             continue
-        other_dir = os.path.dirname(other.new_path)
+        other_dir = path_mod.dirname(other.new_path)
         if other_dir == root or other_dir.startswith(root_prefix):
             return False
     return True
 
 
-def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[NfoDecision]:
+def build_nfo_decisions(
+    entries: list[NfoEntry], options: NfoOptions, path_mod=os.path,
+) -> list[NfoDecision]:
     """为每条 entry 算出「写什么、写哪里」, 以及不写时的原因。
 
     纯函数, 不碰文件系统 —— 库根污染的全部防护都集中在这里, 因此必须能被
@@ -212,7 +240,7 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
     # --- 每集 NFO：与视频一一对应, 按路径排序保证确定性 ---
     ordered = sorted(entries, key=lambda e: (e.show_name, e.season or 0, e.episode or 0, e.new_path))
     for item in ordered:
-        path = episode_nfo_path(item.new_path)
+        path = episode_nfo_path(item.new_path, path_mod)
         if not item.has_metadata:
             episode_decisions.append(NfoDecision(
                 file_id=item.file_id, kind="episode", path=path, content=None,
@@ -236,23 +264,23 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
         group = by_show[show_name]
         # 用**上溯后**的剧集根: 混放校验判定的是「真正的剧集根及其子树」,
         # 拿季目录去查会漏掉同剧根下的别的剧（startswith 前缀检查仍能覆盖子树）。
-        show_root = _show_root([e.new_path for e in group])
+        show_root = _show_root([e.new_path for e in group], path_mod)
 
-        if not _folder_belongs_to_single_show(show_root, show_name, entries):
+        if not _folder_belongs_to_single_show(show_root, show_name, entries, path_mod):
             for item in group:
                 tvshow_decisions.append(NfoDecision(
                     file_id=item.file_id, kind="tvshow",
-                    path=os.path.join(show_root, "tvshow.nfo"), content=None,
+                    path=path_mod.join(show_root, "tvshow.nfo"), content=None,
                     reason=f"{show_root} 下有多部剧混放, 不写剧集级 NFO",
                 ))
                 if item.season is None:
                     continue
                 season_root = common_parent([
                     e.new_path for e in group if e.season == item.season
-                ])
+                ], path_mod)
                 season_decisions.append(NfoDecision(
                     file_id=item.file_id, kind="season",
-                    path=os.path.join(season_root, "season.nfo"), content=None,
+                    path=path_mod.join(season_root, "season.nfo"), content=None,
                     reason=f"{show_root} 下有多部剧混放, 不写剧集级 NFO",
                 ))
             continue
@@ -261,13 +289,13 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
         if show_data is None:
             tvshow_decisions.append(NfoDecision(
                 file_id=group[0].file_id, kind="tvshow",
-                path=os.path.join(show_root, "tvshow.nfo"), content=None,
+                path=path_mod.join(show_root, "tvshow.nfo"), content=None,
                 reason="TMDB 未匹配, 不写残缺 NFO",
             ))
         else:
             tvshow_decisions.append(NfoDecision(
                 file_id=group[0].file_id, kind="tvshow",
-                path=os.path.join(show_root, "tvshow.nfo"),
+                path=path_mod.join(show_root, "tvshow.nfo"),
                 content=build_tvshow_nfo(show_data),
             ))
 
@@ -278,24 +306,89 @@ def build_nfo_decisions(entries: list[NfoEntry], options: NfoOptions) -> list[Nf
 
         for season_number in sorted(seasons):
             season_group = seasons[season_number]
-            season_root = common_parent([e.new_path for e in season_group])
+            season_root = common_parent(
+                [e.new_path for e in season_group], path_mod,
+            )
             season_data = next(
                 (e.season_data for e in season_group if e.season_data is not None), None,
             )
             if season_data is None:
                 season_decisions.append(NfoDecision(
                     file_id=season_group[0].file_id, kind="season",
-                    path=os.path.join(season_root, "season.nfo"), content=None,
+                    path=path_mod.join(season_root, "season.nfo"), content=None,
                     reason="TMDB 未匹配, 不写残缺 NFO",
                 ))
             else:
                 season_decisions.append(NfoDecision(
                     file_id=season_group[0].file_id, kind="season",
-                    path=os.path.join(season_root, "season.nfo"),
+                    path=path_mod.join(season_root, "season.nfo"),
                     content=build_season_nfo(season_data),
                 ))
 
     return episode_decisions + tvshow_decisions + season_decisions
+
+
+def entry_from_plan(plan: RenamePlan, nfo_matches: dict[str, EpisodeMatch]) -> NfoEntry:
+    """把 plan 转成一条 NFO 条目。
+
+    nfo_matches 里没有对应项时 `.get()` 返回 None, `getattr(None, "show", None)`
+    也是 None —— 三者同时为 None, `NfoEntry.has_metadata` 即为 False, 于是不写
+    残缺 NFO。本地与 OpenList 共用这一份映射, 避免两处漂移。
+    """
+    return NfoEntry(
+        file_id=plan.file_id,
+        new_path=plan.new_path,
+        show_name=plan.parsed.show_name if plan.parsed else "",
+        season=plan.parsed.season if plan.parsed else None,
+        episode=plan.parsed.episode if plan.parsed else None,
+        show=getattr(nfo_matches.get(plan.file_id), "show", None),
+        season_data=getattr(nfo_matches.get(plan.file_id), "season", None),
+        episode_data=getattr(nfo_matches.get(plan.file_id), "episode", None),
+    )
+
+
+def filter_landed_decisions(
+    decisions: list[NfoDecision],
+    dead_file_ids: set[str],
+    landed_paths: list[str],
+    path_mod=os.path,
+) -> tuple[list[NfoDecision], list[NfoDecision]]:
+    """把决策分成「该写」与「该丢」两桶。返回 (kept, dropped)。
+
+    规则与改动前 `local_renamer._keep_decision` 逐字一致, 抽到这里是为了让本地与
+    OpenList 共用同一份「没落地就不写」的判据 —— 两处各写一份必然漂移。
+
+    **每集决策**钉着某一个文件, 那行没落地就整条丢掉: 它的落点是按 `plan.new_path`
+    算的, 而那个名字此刻可能属于**另一个视频**。写下去就是「给 A 写的 NFO 落在 B
+    的旁边」。拒绝是安全方向 —— 少写一个 NFO 是可见的, 写错一个才是不可见的。
+
+    **组级决策**（tvshow / season）属于整组, 落点由该组全部 `new_path` 推出,
+    所以判据是该目录（含子树）下有没有真的落地过一个视频, 而不是组代表那一行
+    有没有落地。整批一条都没落地时（如 abort）组级落点同样是凭空推出来的,
+    一并不写。
+    """
+    kept: list[NfoDecision] = []
+    dropped: list[NfoDecision] = []
+
+    for decision in decisions:
+        if decision.kind == "episode":
+            if decision.file_id in dead_file_ids:
+                dropped.append(decision)
+            else:
+                kept.append(decision)
+            continue
+
+        directory = path_mod.dirname(decision.path)
+        if not directory:
+            dropped.append(decision)
+            continue
+        prefix = directory.rstrip(path_mod.sep) + path_mod.sep
+        if any(p == directory or p.startswith(prefix) for p in landed_paths):
+            kept.append(decision)
+        else:
+            dropped.append(decision)
+
+    return kept, dropped
 
 
 def dedupe_skipped_pairs(

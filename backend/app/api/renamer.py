@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import Optional
+import os
+import posixpath
 
 from ..models.api import (
     RenameBatchRequest, RenameDryRunRequest, RenameExecuteRequest,
@@ -9,7 +11,7 @@ from ..models.file import (
     FileInfo, ParsedInfo, RenamePlan, BatchRenameResult, OverrideInfo,
     SingleRenameResult,
 )
-from ..models.nfo import NfoEntry, NfoOptions
+from ..models.nfo import NfoOptions
 from ..core.local_renamer import (
     batch_rename as local_batch_rename,
     OneOutcome, count_result, execute_one, finalize_show_nfo,
@@ -18,9 +20,12 @@ from ..core.local_renamer import (
 from ..core.openlist_renamer import (
     build_openlist_rename_plan, execute_openlist_batch, execute_openlist_one,
 )
+from ..core.openlist_nfo import (
+    episode_nfo_for_plan, finalize_openlist_nfo, plan_openlist_nfo,
+)
 from ..config import settings
 from ..core.template import PadConfig
-from ..core.nfo_writer import build_nfo_decisions
+from ..core.nfo_writer import build_nfo_decisions, entry_from_plan
 from ..core.parser import apply_override, parse_filename
 from ..core.tmdb_client import TmdbAuthError, TmdbClient
 from ..core.tmdb_resolver import (
@@ -140,15 +145,6 @@ def _nfo_options_from_request(req) -> NfoOptions:
     )
 
 
-def _nfo_supported(source: str) -> bool:
-    """本期只有本地源能写 NFO。
-
-    OpenList 要写文件得先给 OpenListClient 加 /api/fs/put 上传能力,
-    那是独立的一块工作与风险, 见 spec §2 与 §14。
-    """
-    return source == "local"
-
-
 def _show_key(plan: RenamePlan) -> str:
     """plan 的剧名（解析失败时为 ""）。剧集级 NFO 按剧分组, 判定也按剧 —— 见 preview。"""
     return plan.parsed.show_name if plan.parsed else ""
@@ -252,29 +248,20 @@ async def preview_rename(req: RenamePreviewRequest):
     video_ids = {f.id for f in files if not f.is_subtitle}
 
     if nfo_options.enabled:
-        if not _nfo_supported(source):
-            nfo_scope = "unsupported_source"
-        elif _tmdb_client_from_request(req) is None:
+        if _tmdb_client_from_request(req) is None:
             # 启用了 NFO 但没有 TMDB —— 没有任何内容可写, 如实报 disabled,
             # 而不是让它落到下面算出 episode_only（那会暗示「只是没写剧集级」）。
             nfo_scope = "disabled"
         else:
             decisions = build_nfo_decisions(
                 [
-                    NfoEntry(
-                        file_id=plan.file_id,
-                        new_path=plan.new_path,
-                        show_name=_show_key(plan),
-                        season=plan.parsed.season if plan.parsed else None,
-                        episode=plan.parsed.episode if plan.parsed else None,
-                        show=getattr(matches_by_file.get(plan.file_id), "show", None),
-                        season_data=getattr(matches_by_file.get(plan.file_id), "season", None),
-                        episode_data=getattr(matches_by_file.get(plan.file_id), "episode", None),
-                    )
+                    entry_from_plan(plan, matches_by_file)
                     for plan in plans
                     if plan.file_id in video_ids
                 ],
                 nfo_options,
+                # OpenList 的落点永远是 POSIX 路径, 与宿主机无关。
+                path_mod=posixpath if source == "openlist" else os.path,
             )
             for decision in decisions:
                 if decision.content is None:
@@ -364,6 +351,8 @@ async def execute_rename(req: RenameExecuteRequest):
         _as_batch_request(req, overrides), [file]
     )
 
+    nfo_options = _nfo_options_from_request(req)
+
     if source == "local":
         # 本地用 plan_files: 它建 plan **并算冲突**（execute_one 读 plan.conflicts
         # 判 abort）。
@@ -374,9 +363,7 @@ async def execute_rename(req: RenameExecuteRequest):
         outcome = execute_one(
             plan,
             conflict_strategy=req.conflict_strategy,
-            nfo_options=(
-                _nfo_options_from_request(req) if _nfo_supported(source) else NfoOptions()
-            ),
+            nfo_options=nfo_options,
             nfo_matches=matches_by_file,
         )
     elif source == "openlist":
@@ -403,7 +390,17 @@ async def execute_rename(req: RenameExecuteRequest):
         outcome = OneOutcome(result=result)
         # OpenList 路径没有 abort 合成结果, 恒传 aborted=False。
         outcome.executed, outcome.skipped, outcome.failed = count_result(result, False)
-        outcome.landed_path = landed_path_of(result)
+        # 字幕**不算落地**: 它与视频共用同一套 status, 但落点不该给组级 NFO 背书
+        # （与本地 execute_one 的 is_video 判据一致）。不挡住的话, 「视频失败、
+        # 字幕成功」会把字幕目录算成「有视频落地」, 从而写出 tvshow.nfo。
+        outcome.landed_path = None if file.is_subtitle else landed_path_of(result)
+        (
+            outcome.nfo_written,
+            outcome.nfo_carried,
+            outcome.nfo_skipped,
+        ) = await episode_nfo_for_plan(
+            client, plan, result, matches_by_file, nfo_options,
+        )
     else:
         raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
 
@@ -436,6 +433,7 @@ async def dry_run_rename(req: RenameDryRunRequest):
 
     merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
     effective_overrides = merged
+    nfo_options = _nfo_options_from_request(req)
 
     if source == "local":
         result = local_batch_rename(
@@ -447,7 +445,7 @@ async def dry_run_rename(req: RenameDryRunRequest):
             dry_run=True,
             conflict_strategy=req.conflict_strategy,
             pad=pad,
-            nfo_options=_nfo_options_from_request(req) if _nfo_supported(source) else NfoOptions(),
+            nfo_options=nfo_options,
             nfo_matches=matches_by_file,
         )
     elif source == "openlist":
@@ -455,7 +453,6 @@ async def dry_run_rename(req: RenameDryRunRequest):
         if not client or not client.connected:
             raise HTTPException(status_code=401, detail="请先连接 OpenList")
 
-        from ..core.openlist_renamer import build_openlist_rename_plan
         plans = []
         for f in files:
             ov = effective_overrides.get(f.id)
@@ -467,6 +464,12 @@ async def dry_run_rename(req: RenameDryRunRequest):
             plans.append(plan)
 
         result = await execute_openlist_batch(client, plans, dry_run=True)
+        written, carried, skipped = await plan_openlist_nfo(
+            client, plans, result.results, matches_by_file, nfo_options,
+        )
+        result.nfo_written = written
+        result.nfo_carried = carried
+        result.nfo_skipped = [{"path": p, "reason": r} for p, r in skipped]
     else:
         raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
 
@@ -487,26 +490,40 @@ async def finalize_rename(req: RenameFinalizeRequest):
     **单进程内存依赖**: 与 /rename/execute 同（见那里的注释）。
     """
     source = req.source.lower()
-    if not _nfo_supported(source):
-        # OpenList 本期不写 NFO（spec §2）。如实返回空, 不报错 —— 前端本来就
-        # 只在 local 时调它, 这里防御的是手工调用。
-        return {"success": True, "nfo_written": [], "nfo_skipped": []}
-
     files = find_files_by_ids(req.file_ids)
     if not files:
         raise HTTPException(status_code=400, detail="未找到对应的文件")
 
     pad = _pad_from_request(req)
-    _merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
-    plans = plan_files(
-        files, req.template, req.folder_template, req.create_season_folder,
-        _merged, pad=pad,
-    )
-
+    merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
     landed_paths = [p for p in req.landed.values() if p]
-    written, skipped = finalize_show_nfo(
-        plans, landed_paths, matches_by_file, _nfo_options_from_request(req)
-    )
+    nfo_options = _nfo_options_from_request(req)
+
+    if source == "local":
+        plans = plan_files(
+            files, req.template, req.folder_template, req.create_season_folder,
+            merged, pad=pad,
+        )
+        written, skipped = finalize_show_nfo(
+            plans, landed_paths, matches_by_file, nfo_options,
+        )
+    elif source == "openlist":
+        client = get_default_client()
+        if not client or not client.connected:
+            raise HTTPException(status_code=401, detail="请先连接 OpenList")
+        plans = []
+        for f in files:
+            ov = merged.get(f.id)
+            plans.append(build_openlist_rename_plan(
+                f, req.template, req.folder_template,
+                req.create_season_folder, OverrideInfo(**ov) if ov else None, pad=pad,
+            ))
+        written, skipped = await finalize_openlist_nfo(
+            client, plans, landed_paths, matches_by_file, nfo_options,
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
+
     return {
         "success": True,
         "nfo_written": written,

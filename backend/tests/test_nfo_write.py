@@ -4,7 +4,9 @@ from pathlib import Path
 
 from app.core import local_renamer
 from app.core.local_renamer import batch_rename
-from app.core.nfo_writer import build_nfo_decisions, write_nfo_files
+from app.core.nfo_writer import (
+    build_nfo_decisions, filter_landed_decisions, write_nfo_files,
+)
 from app.core.tmdb_resolver import EpisodeMatch
 from app.models.api import RenameExecuteRequest, RenamePreviewRequest
 from app.models.file import FileInfo
@@ -26,6 +28,19 @@ def make_entry(new_path, show_name="绝命毒师", season_no=2, episode_no=5):
 
 
 OPTIONS = NfoOptions(enabled=True, overwrite=False)
+
+
+def test_filter_landed_drops_dead_episode_and_group_without_landing():
+    """没落地的每集决策与「目录里一个视频都没落地」的组级决策都要被丢掉。"""
+    decisions = [
+        NfoDecision(file_id="f1", kind="episode", path="/m/Show/a.nfo", content="<x/>"),
+        NfoDecision(file_id="f2", kind="episode", path="/m/Show/b.nfo", content="<x/>"),
+        NfoDecision(file_id="f1", kind="tvshow", path="/m/Show/tvshow.nfo", content="<x/>"),
+    ]
+    kept, dropped = filter_landed_decisions(decisions, {"f2"}, ["/m/Other/c.mkv"])
+    assert [d.file_id for d in kept if d.kind == "episode"] == ["f1"]
+    assert [d.kind for d in kept] == ["episode"]
+    assert [d.kind for d in dropped] == ["episode", "tvshow"]
 
 
 def test_writes_all_three_kinds(tmp_path):

@@ -272,8 +272,11 @@ check('未刮削时执行载荷不含 Key', !('tmdb_api_key' in last('/rename/dr
 
 // --- 8. 每源一份 ---
 ws.scraped = true
+ws.generateNfo = true
 ws.switchSource('openlist')
 check('切到未刮削的源 → scraped false', ws.scraped === false, String(ws.scraped))
+// NFO 已与本地同权: 切到云盘不得再把用户勾过的选项悄悄关掉。
+check('切到 openlist 不再关闭 generateNfo', ws.generateNfo === true, String(ws.generateNfo))
 ws.switchSource('local')
 check('切回已刮削的源 → scraped true', ws.scraped === true, String(ws.scraped))
 
@@ -283,7 +286,7 @@ check('切回已刮削的源 → scraped true', ws.scraped === true, String(ws.s
 // 「刮削前」的样子（若顺序反了，那次回刷会带着上一次的 scraped=true 重建表，
 // 于是「在途时表还是旧表」这句话就演示不出来了）。
 ws.scraped = false
-ws.generateNfo = true // switchSource('openlist') 把它关掉了
+ws.generateNfo = true // 上面那轮切源已保持开启, 这里显式复位一次
 await tick(20) // 让这次回刷落地，别把它混进「在途」那一段
 check('在途之前：表里是刮削前的文件名', ws.previewRows[0].new_filename === 'Show.S01E01.mkv', ws.previewRows[0].new_filename)
 calls = []

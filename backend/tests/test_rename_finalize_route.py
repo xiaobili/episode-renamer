@@ -344,16 +344,34 @@ def test_no_landed_files_drops_the_group_decision(env):
     assert reasons[tvshow] == "该剧（季）下没有文件真正改名落地, 不写剧集级/季级 NFO"
 
 
-def test_openlist_source_returns_empty_without_error(env):
-    """OpenList 本期不写 NFO（spec §2）—— 收尾必须**如实返回空**, 而不是报错。
+def test_openlist_finalize_writes_group_nfo(matched_env, monkeypatch):
+    """OpenList 收尾与本地同权: 用真实 landed 写出 tvshow / season。"""
+    from app.api import renamer as renamer_api
+    from tests.test_rename_nfo_route import _FakeOpenListClient
 
-    前端本来就只在 local 时调它, 这里防的是手工调用。去掉路由里
-    `_nfo_supported` 那道守卫本用例必红: 它会走到 local 的落盘逻辑。
-    """
-    res = env["client"].post("/api/rename/finalize", json=_payload(
-        env, landed={"f1": "/x"}, source="openlist"))
+    fake = _FakeOpenListClient()
+    monkeypatch.setattr(renamer_api, "get_default_client", lambda: fake)
+
+    res = matched_env["client"].post("/api/rename/finalize", json=_payload(
+        matched_env, landed=matched_env["landed"], source="openlist",
+    ))
     assert res.status_code == 200, res.text
-    assert res.json() == {"success": True, "nfo_written": [], "nfo_skipped": []}
+    body = res.json()
+
+    written = set(body["nfo_written"])
+    assert os.path.join(matched_env["dir"], "tvshow.nfo") in written
+    assert os.path.join(matched_env["dir"], "season.nfo") in written
+    assert {path for path, _content in fake.puts} == written
+
+
+def test_openlist_finalize_requires_connection(matched_env, monkeypatch):
+    from app.api import renamer as renamer_api
+
+    monkeypatch.setattr(renamer_api, "get_default_client", lambda: None)
+    res = matched_env["client"].post("/api/rename/finalize", json=_payload(
+        matched_env, landed=matched_env["landed"], source="openlist",
+    ))
+    assert res.status_code == 401, res.text
 
 
 def test_unknown_file_ids_are_rejected(env):

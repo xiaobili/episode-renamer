@@ -234,7 +234,7 @@
                        （NfoEntry.has_metadata 要求 show 与 episode_data 同时存在）,
                        不会有 episode 键 —— 此前这里渲染成一条空白行, 从不说
                        「本集没有 NFO」。这是行级状态, 与批次级的 nfo_scope
-                       （disabled / unsupported_source）不是一回事, 故不复用它的文案。 -->
+                       （disabled）不是一回事, 故不复用它的文案。 -->
                   <span v-if="row.nfo.episode" class="break-all text-ink-2" :title="row.nfo.episode">
                     {{ nfoLandingLabel(row.nfo.episode) }}
                   </span>
@@ -328,13 +328,12 @@ function tmdbTone(status) {
   return 'warn'
 }
 
-// NFO 落点列的文案表。键必须与后端 `nfo_scope` 的四个取值逐字一致
-// （Task 4 产生：disabled / unsupported_source / episode_only / full）——
-// 少一个键不会报错，只会让那一行显示成兜底的「—」，看起来像「没有 NFO 计划」，
-// 把真实原因藏起来（spec §9.4 要防的正是这种静默）。
+// NFO 落点列的文案表。键必须与后端 `nfo_scope` 的三个取值逐字一致
+// （disabled / episode_only / full）—— 少一个键不会报错，只会让那一行显示成
+// 兜底的「—」，看起来像「没有 NFO 计划」，把真实原因藏起来（spec §9.4 要防的
+// 正是这种静默）。
 const NFO_SCOPE_HINTS = {
   disabled: '未启用',
-  unsupported_source: '云盘不支持',
   episode_only: '多剧混放，仅每集 NFO',
   full: '—',
 }
@@ -359,8 +358,8 @@ function nfoScopeHint(scope) {
   return NFO_SCOPE_HINTS[scope] || '—'
 }
 
-// 只有这两个 scope 是**批次级**事实: 整批都不写 NFO, 所以按行重复报批次原因是对的。
-const BATCH_NFO_SCOPES = new Set(['disabled', 'unsupported_source'])
+// 只有 disabled 是**批次级**事实: 整批都不写 NFO, 所以按行重复报批次原因是对的。
+const BATCH_NFO_SCOPES = new Set(['disabled'])
 
 // `nfo` 为 null 的行：本行没有任何落点。三种成因必须分开说 ——
 //   · **字幕**：NFO 管线只处理视频（后端 _is_subtitle_file / video_ids 那两处过滤）。
@@ -368,7 +367,7 @@ const BATCH_NFO_SCOPES = new Set(['disabled', 'unsupported_source'])
 //     （workspace 的 includeSubs）, 所以漏掉这一支就是给默认人群的每一行都刷一条
 //     橙色假警告, 而它的 title 还会说「TMDB 未匹配到本集」—— 该行自己的 tmdb_status
 //     其实是 matched。**文字为真、title 为假、警示色误导**, 三者叠加。
-//   · disabled / unsupported_source：整批都不写, 照实报批次原因;
+//   · disabled：整批都不写, 照实报批次原因;
 //   · full / episode_only：批次里确实有东西要写, 只是不在本行（本行的 episode 决策
 //     content 为 None, 即 TMDB 没匹配到这一集）—— 那是**本行自己的**状态, 说
 //     「本集无 NFO」。若这里改报批次原因（如「多剧混放，仅每集 NFO」）, 同一文件状态
@@ -382,8 +381,8 @@ function nfoNullHint(row) {
     return { text: '字幕不写 NFO', warn: false, title: undefined }
   }
   // 「勾了生成 NFO 但本次没刮削」：后端此时同样报 disabled，而「未启用」会把用户
-  // 推去设置页翻一个本来就开着的开关。它是**批次级**成因，故与下面 disabled /
-  // unsupported_source 同一位置（在 is_subtitle 之后，与该分支的既有次序一致）。
+  // 推去设置页翻一个本来就开着的开关。它是**批次级**成因，故与下面 disabled
+  // 同一位置（在 is_subtitle 之后，与该分支的既有次序一致）。
   // nfoNeedsScrape 已经含了「勾了 NFO」这个条件 —— 没勾时这里仍是「未启用」，对的。
   //
   // **这一支能生效，靠的是一条跨端的前提**：未刮削时后端为**每一行**都返回 `nfo: None`。

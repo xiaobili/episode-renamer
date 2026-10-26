@@ -3,7 +3,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.renamer import _nfo_supported, cache_files
+from app.api.renamer import cache_files
 from app.main import app
 from app.models.file import FileInfo
 from app.models.tmdb import TmdbEpisode, TmdbSearchItem, TmdbSeason, TmdbShow
@@ -103,14 +103,20 @@ def test_generate_nfo_without_tmdb_key_produces_no_files(client, tmp_path):
     assert any("TMDB" in item["reason"] for item in body["nfo_skipped"])
 
 
-def test_openlist_source_refuses_nfo(client):
-    # Review Focus：OpenList 本期不支持写 NFO。预览不依赖连接, 可以直接断言。
-    res = client.post("/api/rename/preview", json=payload(source="openlist", generate_nfo=True))
+def test_openlist_preview_plans_nfo_with_posix_paths(matched_client, tmp_path):
+    """OpenList 预览与本地同权: 三个落点都要算出来, 且用 `/` 分隔。"""
+    res = matched_client.post(
+        "/api/rename/preview", json={**MATCHED_PAYLOAD, "source": "openlist"},
+    )
     assert res.status_code == 200, res.text
+    body = res.json()
 
-    row = res.json()["results"][0]
-    assert row["nfo_scope"] == "unsupported_source"
-    assert row["nfo"] is None
+    assert [row["nfo_scope"] for row in body["results"]] == ["full", "full"]
+    row = body["results"][0]
+    assert set(row["nfo"]) == {"episode", "tvshow", "season"}
+    for path in row["nfo"].values():
+        assert "\\" not in path, path
+    assert row["nfo"]["episode"].endswith("Test Show - S01E02.nfo")
 
 
 def test_preview_reports_disabled_scope_without_tmdb(client):
@@ -130,12 +136,87 @@ def test_preview_scope_is_disabled_when_nfo_is_off(client):
     assert res.json()["results"][0]["nfo_scope"] == "disabled"
 
 
-def test_openlist_is_not_an_nfo_capable_source():
-    # 本条与上面的预览用例是两处不同的执行点: 预览报 unsupported_source,
-    # execute/dry-run 靠 _nfo_supported 决定传给 batch_rename 的选项。
-    # 两侧共用这一个判定函数, 所以把它本身钉住。
-    assert _nfo_supported("local") is True
-    assert _nfo_supported("openlist") is False
+class _FakeOpenListClient:
+    """OpenList 执行路由的替身: 重命名成功, 远端目录为空。"""
+
+    connected = True
+
+    def __init__(self):
+        self.puts: list[tuple[str, bytes]] = []
+
+    def apply_limits(self, max_concurrent=None, request_interval=None):
+        pass
+
+    async def rename(self, path, new_name):
+        return {"code": 200}
+
+    async def move(self, src_dir, dst_dir, names):
+        return {"code": 200}
+
+    async def mkdir(self, parent_dir, dir_name):
+        return {"code": 200}
+
+    async def list_directory(self, path, refresh=False):
+        return [], True
+
+    async def put_file(self, path, content):
+        self.puts.append((path, content))
+        return {"code": 200}
+
+
+def test_openlist_execute_writes_episode_nfo(matched_client, tmp_path, monkeypatch):
+    from app.api import renamer as renamer_api
+
+    fake = _FakeOpenListClient()
+    monkeypatch.setattr(renamer_api, "get_default_client", lambda: fake)
+
+    res = matched_client.post("/api/rename/execute", json=one(
+        source="openlist", generate_nfo=True,
+    ))
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    expected = str(tmp_path / "Test Show" / "Test Show - S01E02.nfo")
+    assert body["nfo_written"] == [expected]
+    assert fake.puts[0][0] == expected
+    assert b"<episodedetails>" in fake.puts[0][1]
+
+
+def test_openlist_subtitle_has_no_landed_path_for_finalize(tmp_path, monkeypatch):
+    """字幕的 landed_path 必须是 None —— 否则它会替组级 NFO 背书。"""
+    from app.api import renamer as renamer_api
+
+    subtitle = tmp_path / "Test Show" / "Test.Show.S01E02.chs.srt"
+    subtitle.parent.mkdir(parents=True)
+    subtitle.write_bytes(b"")
+    cache_files([
+        _file("f1", subtitle).model_copy(
+            update={"is_subtitle": True, "extension": ".srt"},
+        ),
+    ])
+    fake = _FakeOpenListClient()
+    monkeypatch.setattr(renamer_api, "get_default_client", lambda: fake)
+
+    res = TestClient(app).post("/api/rename/execute", json=one(
+        source="openlist", generate_nfo=True,
+    ))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["landed_path"] is None
+    assert body["nfo_written"] == []
+    assert fake.puts == []
+
+
+def test_openlist_execute_requires_connection(tmp_path, monkeypatch):
+    from app.api import renamer as renamer_api
+
+    video = tmp_path / "Show.S01E01.mkv"
+    video.write_bytes(b"")
+    cache_files([_file("f1", video)])
+    monkeypatch.setattr(renamer_api, "get_default_client", lambda: None)
+
+    res = TestClient(app).post("/api/rename/execute", json=one(source="openlist"))
+    assert res.status_code == 401, res.text
 
 
 # --- 以下为简报未给的用例：TMDB 匹配成功时的 scope 与干跑清单 -----------------
