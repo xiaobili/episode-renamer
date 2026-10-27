@@ -14,6 +14,10 @@
 //                它是纯计划操作, 不写盘, 没有进度可言。
 //   execute   —— **单个文件**（RenameExecuteRequest）。file_id / override 用单数。
 //   finalize  —— 批量收尾（RenameFinalizeRequest）, 额外带 landed 真实落点。
+//   folders   —— 批量改剧集目录名（RenameFoldersRequest）。**不带** conflict_strategy
+//                与 strm 字段: 目录不覆盖、不自动编号, 也不写任何元数据。三个布尔
+//                （NFO / STRM / 文件夹）各管一件事, 混进同一份载荷会让「勾了没生效」
+//                又变成一处静默的分叉。
 export function buildRenamePayload({
   mode,
   // execute 用单数 fileId / override；preview / dry-run / finalize 用批量。
@@ -55,6 +59,9 @@ export function buildRenamePayload({
   // 预览是纯计划、收尾只写 NFO, 后端那两个模型也不读它们（见 api/renamer.py）。
   openlistMaxConcurrent,
   openlistRequestInterval,
+  // 本次是否连剧集目录一起改名（`剧名 (年份) [tmdbid-x]`）。批次级动作, 但不影响
+  // 载荷形状 —— 四种形态都带这一个布尔, 少了它就等于「预览不显示、执行却改了」。
+  renameFolders,
 }) {
   // 形状互斥**必须显式校验**: 传错形状时静默取其一, 会得到「预览 2 个文件、
   // 执行 0 个」这种零报错的错行为（本仓库有前科）。
@@ -63,7 +70,7 @@ export function buildRenamePayload({
     if (Array.isArray(fileIds) && fileIds.length) {
       throw new Error('buildRenamePayload: execute 模式不得传 fileIds')
     }
-  } else if (mode === 'preview' || mode === 'dry-run' || mode === 'finalize') {
+  } else if (mode === 'preview' || mode === 'dry-run' || mode === 'finalize' || mode === 'folders') {
     if (!Array.isArray(fileIds)) {
       throw new Error(`buildRenamePayload: ${mode} 模式必须传 fileIds`)
     }
@@ -102,6 +109,10 @@ export function buildRenamePayload({
       : { tmdb_enabled: false }),
     generate_nfo: generateNfo,
     nfo_overwrite: nfoOverwrite,
+    // 剧集文件夹改名。**放在 common**: 预览/干跑读它决定报不报计划, execute 虽然
+    // 不看（逐文件接口无权代表整批改目录）, 但少了它就会出现「预览里没有目录列、
+    // 执行完目录却被改了」—— 那正是本仓库最忌讳的那类分叉。
+    rename_folders: !!renameFolders,
   }
 
   // STRM 的落点配置。**不并进 common**: 收尾（finalize）不做文件操作, 带上它
@@ -130,6 +141,12 @@ export function buildRenamePayload({
   if (mode === 'finalize') {
     // finalize 不做文件操作, 故**不带** conflict_strategy（后端模型也没有它）。
     return { file_ids: fileIds, overrides, landed: { ...landed }, ...common }
+  }
+
+  if (mode === 'folders') {
+    // 改目录名：不带 conflict_strategy（目录不覆盖、不自动编号）、不带 strm 字段
+    // （它不写文件）, 也不带 openlist 限流 —— 这批请求只有「一部剧一次 rename」。
+    return { file_ids: fileIds, overrides, ...common }
   }
 
   if (mode === 'dry-run') {

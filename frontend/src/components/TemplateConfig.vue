@@ -78,6 +78,21 @@
 
     <div class="flex flex-col gap-3 border-t border-line pt-3">
       <AppCheckbox
+        :model-value="renameFolders"
+        label="同时重命名剧集文件夹"
+        @update:model-value="$emit('update:renameFolders', $event)"
+      />
+      <p v-if="renameFolders" class="text-[11px] leading-relaxed text-ink-3">
+        剧集目录改名为
+        <code class="font-mono">{剧名} ({年份}) [tmdbid-{id}]</code>，
+        例如 <code class="font-mono">绝命毒师 (2008) [tmdbid-1396]</code>。
+        剧名取 TMDB 标题，故需先刮削；目录下的 Season 子目录跟着父目录一起改名，
+        不单独处理。未匹配 TMDB 的剧会跳过并在结果里给出原因。
+      </p>
+    </div>
+
+    <div class="flex flex-col gap-3 border-t border-line pt-3">
+      <AppCheckbox
         :model-value="generateNfo"
         label="同时生成 NFO 文件"
         @update:model-value="$emit('update:generateNfo', $event)"
@@ -158,12 +173,15 @@ const props = defineProps({
   strmRemoteRoot: { type: String, default: '' },
   // 「勾了生成 NFO，但本次没刮削」—— 由 workspace 的同一个谓词给出（spec §17.5）。
   nfoNeedsScrape: { type: Boolean, default: false },
+  // 剧集目录改名（`剧名 (年份) [tmdbid-x]`）。本地与 OpenList 都支持。
+  renameFolders: { type: Boolean, default: false },
 })
 defineEmits([
   'preset-change', 'template-edit',
   'update:createSeasonFolder', 'update:folderTemplate',
   'update:generateNfo', 'update:nfoOverwrite',
   'update:generateStrm', 'update:strmRemoteRoot', 'browse-strm',
+  'update:renameFolders',
 ])
 
 const tplInputRef = ref(null)

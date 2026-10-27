@@ -172,6 +172,19 @@ request.defaults.adapter = async (config) => {
     return reply(config, { nfo_written: [{ path: GROUP_NFO, scope: 'tvshow' }], nfo_skipped: [] })
   }
 
+  if (config.url === '/rename/folders') {
+    // 夹具只演一部剧：目录就是扫描根（最常见的「直接扫剧目录」用法）。
+    return reply(config, {
+      success: true,
+      renamed: [{
+        old_path: '/m/S',
+        new_path: '/m/S/Show (2008) [tmdbid-1396]',
+        show_name: 'Show',
+      }],
+      skipped: [],
+    })
+  }
+
   return reply(config, {})
 }
 
@@ -377,6 +390,53 @@ check('STRM 清单并入结果（4 条落地视频，字幕与被跳过的行不
   ws.lastResult?.strm_written?.length === 4,
   JSON.stringify(ws.lastResult?.strm_written))
 ws.generateStrm = false
+
+// ---------------------------------------------------------------------------
+// 场景 F：勾了「重命名剧集文件夹」—— 顺序 + 载荷 + 扫描路径重写。
+//
+// 这一段钉的是**顺序**：execute → finalize → folders。排在 finalize 之前的话，
+// NFO 的写盘会在旧名下把目录重建出来（媒体库里多一个只有 tvshow.nfo 的空文件夹），
+// 而单测层面看不到任何异常 —— 只有真实驱动一遍 store 才抓得到。
+// ---------------------------------------------------------------------------
+const foldersCalls = () => calls.filter(c => c.url === '/rename/folders')
+ws.generateNfo = true
+ws.renameFolders = true
+ws.path = '/m/S'
+await ws.doScan()
+await tick(30)
+calls = []
+ws.resultDialog = false
+ws.lastResult = null
+await ws.executeAction(false)
+
+check('勾了目录改名时发一次 /rename/folders', foldersCalls().length === 1,
+  String(foldersCalls().length))
+check('目录改名排在**所有执行与收尾之后**',
+  foldersCalls().length === 1 &&
+    calls.findIndex(c => c.url === '/rename/folders') >
+      Math.max(
+        calls.map(c => c.url).lastIndexOf('/rename/execute'),
+        calls.map(c => c.url).lastIndexOf('/rename/finalize'),
+      ),
+  JSON.stringify(calls.map(c => c.url)))
+check('目录改名的载荷带 rename_folders 与批量 file_ids',
+  foldersCalls()[0]?.body?.rename_folders === true &&
+    Array.isArray(foldersCalls()[0]?.body?.file_ids) &&
+    foldersCalls()[0].body.file_ids.length === 5,
+  JSON.stringify(foldersCalls()[0]?.body?.file_ids))
+// 目录不覆盖、不写元数据 —— 这两类字段出现在载荷里会让「改目录会做什么」变得含混。
+check('目录改名的载荷不带 conflict_strategy 与 strm 字段',
+  foldersCalls()[0] && !('conflict_strategy' in foldersCalls()[0].body) &&
+    !('generate_strm' in foldersCalls()[0].body) &&
+    !('strm_mode' in foldersCalls()[0].body),
+  JSON.stringify(Object.keys(foldersCalls()[0]?.body || {})))
+// 改了名之后扫描路径必须跟着走，否则紧接着那次重扫必然失败（旧目录已不存在）。
+check('目录改名后扫描路径被改写到新目录',
+  ws.path === '/m/S/Show (2008) [tmdbid-1396]', ws.path)
+check('目录改名结果并入结果对话框',
+  ws.lastResult?.folders_renamed?.[0]?.new_path === '/m/S/Show (2008) [tmdbid-1396]',
+  JSON.stringify(ws.lastResult?.folders_renamed))
+ws.renameFolders = false
 
 console.log(results.join('\n'))
 const failed = results.filter(r => r.startsWith('FAIL')).length

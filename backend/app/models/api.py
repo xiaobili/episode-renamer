@@ -60,6 +60,10 @@ class RenamePreviewRequest(BaseModel):
     # 那是前端从首行文件路径推出来的**文件所在目录**, 递归扫描时它不是扫描根,
     # 拿它做 relpath 会让所有剧都退化成扁平落点。
     strm_scan_root: str = ""
+    # 是否把剧集目录改名为 `剧名 (年份) [tmdbid-x]`。它是**批次级**动作
+    # （改的是目录, 不是文件）, 故只在预览/干跑里读它来决定报不报计划;
+    # 真正的动作在 /rename/folders（见 core/show_folder.py 的模块注释）。
+    rename_folders: bool = False
 
 
 class RenameBatchRequest(BaseModel):
@@ -93,6 +97,21 @@ class RenameBatchRequest(BaseModel):
     # 设置页的 OpenList 限流。None = 未提供, 后端保持当前值（回落 .env）。
     openlist_max_concurrent: Optional[int] = None
     openlist_request_interval: Optional[float] = None
+    # 见 RenamePreviewRequest 里同名字段的注释。
+    rename_folders: bool = False
+
+
+class RenameDryRunRequest(RenameBatchRequest):
+    """干跑仍是批量 —— 它是纯计划操作, 不写盘, 没有进度可言。"""
+
+
+class RenameFoldersRequest(RenameBatchRequest):
+    """剧集文件夹改名（批次级, **真动盘**）。
+
+    `conflict_strategy` / `generate_nfo` / strm 相关字段都是继承带来的, 路由**不读**:
+    目录改名不覆盖、不自动编号, 也不写任何元数据 —— 这是 `/rename/folders` 与
+    `/rename/finalize` 的分工（后者只写 NFO, 前者只改目录）。
+    """
 
 
 class RenameDryRunRequest(RenameBatchRequest):
@@ -138,6 +157,10 @@ class RenameExecuteRequest(BaseModel):
     strm_scan_root: str = ""
     openlist_max_concurrent: Optional[int] = None
     openlist_request_interval: Optional[float] = None
+    # 逐文件执行**不看**它: 文件夹改名是批次级动作, 由 /rename/folders 承担。
+    # 字段保留是为了让前端的载荷构造函数只有一份（renamePayload.js 的 common）,
+    # 少一处「某个形态要带、某个形态不带」的分叉。
+    rename_folders: bool = False
 
 
 class OpenListLoginRequest(BaseModel):

@@ -92,6 +92,10 @@ class BatchRenameResult(BaseModel):
     # STRM 汇总。dry_run 时描述的是「将写入」的计划, 不落盘。
     strm_written: list[str] = Field(default_factory=list)
     strm_skipped: list[dict] = Field(default_factory=list)
+    # 剧集文件夹改名（批次级, 一个条目 = 一部剧的目录）。dry_run 时是计划,
+    # 真实执行时是结果; skipped 里每条带 (path, reason)。
+    folders_renamed: list[dict] = Field(default_factory=list)
+    folders_skipped: list[dict] = Field(default_factory=list)
 
 
 class SingleRenameResult(BaseModel):

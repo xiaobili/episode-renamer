@@ -8,7 +8,9 @@
 //
 // 零依赖纯函数: node 要能直接 import 它跑断言。
 
-export function aggregateBatch({ items, finalize = null, nfoBlockedByScrape = false, source = 'local' }) {
+export function aggregateBatch({
+  items, finalize = null, folders = null, nfoBlockedByScrape = false, source = 'local',
+}) {
   const results = []
   const errors = []
   const nfoWritten = []
@@ -45,6 +47,13 @@ export function aggregateBatch({ items, finalize = null, nfoBlockedByScrape = fa
     if (finalize.nfo_skipped) nfoSkipped.push(...finalize.nfo_skipped)
   }
 
+  // 剧集文件夹改名是**发生在途中的第四个动作**（execute → finalize → folders）,
+  // 既不属于逐文件响应, 也不属于 finalize。它的计数是「部剧」而不是「个文件」,
+  // 所以不参与 executed / skipped / failed —— 把 1 个目录算成 1 个失败会误导用户
+  // 以为有某一集没改名。
+  const foldersRenamed = folders?.renamed || []
+  const foldersSkipped = folders?.skipped || []
+
   return {
     success: failed === 0,
     source,
@@ -61,6 +70,8 @@ export function aggregateBatch({ items, finalize = null, nfoBlockedByScrape = fa
     nfo_skipped: nfoSkipped,
     strm_written: strmWritten,
     strm_skipped: strmSkipped,
+    folders_renamed: foldersRenamed,
+    folders_skipped: foldersSkipped,
     dry_run: false,
     nfo_blocked_by_scrape: nfoBlockedByScrape,
   }

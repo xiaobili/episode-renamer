@@ -14,6 +14,7 @@
 - **智能解析** — 正则识别 `S01E01`、`第2季第3话`、`[03]`、`01~`、`sbtj03` 等多种集号写法，并支持从父文件夹继承剧名与季号
 - **模板系统** — 5 个内置预设 + 自定义模板，支持 `{show}` `{season_padded}` `{quality}` 等变量
 - **季文件夹** — 可选的目录模板（如 `Season {season_padded}`），重命名时自动把文件归入对应季目录
+- **剧集文件夹重命名** — 可把剧集目录本身改成 Emby / Jellyfin 的 `剧名 (年份) [tmdbid-x]`（如 `绝命毒师 (2008) [tmdbid-1396]`）。剧名取 TMDB 标题，目录下的 `Season 01` 等季子目录随父目录一起改名；未匹配 TMDB、同目录混放、目标已存在时如实跳过
 - **试运行（Dry Run）** — 先预览再执行，执行前不动任何文件
 - **冲突策略** — `skip` / `abort` / `rename_dup` / `overwrite` 四种目标已存在时的处理方式
 
@@ -57,6 +58,14 @@
 | `POST /api/rename/dry-run` | 批量（纯计划，不写盘） |
 | `POST /api/rename/execute` | **单文件**（每集 NFO 在这里写） |
 | `POST /api/rename/finalize` | 批量收尾（只写剧集级 / 季级 NFO） |
+| `POST /api/rename/folders` | 批量（**只改剧集目录名**，见下） |
+
+**剧集文件夹重命名**（勾选「同时重命名剧集文件夹」时）走独立的 `POST /api/rename/folders`：
+改的是目录而不是文件，因此是批次级动作，且**必须排在 `finalize` 之后** —— 先改目录会让
+NFO 的写盘在旧名下把目录重建出来，媒体库里就会多出一个只有 `tvshow.nfo` 的空文件夹。
+目标已存在时跳过而不覆盖（`…[tmdbid-1396]_1` 这种名字媒体服务器认不出）。
+
+三个动作的固定顺序（前端 `executeAction` 保证）：逐文件 `execute` → `finalize` → `folders`。
 
 > 后端为单 worker 进程运行，`execute` 与 `finalize` 依赖进程内的文件缓存，**不要**加 `--workers`。
 
@@ -228,6 +237,7 @@ episode-renamer/
 │   │   │   ├── openlist_scanner.py # 云盘并发扫描
 │   │   │   ├── openlist_renamer.py # 云盘分组批量 move
 │   │   │   ├── openlist_nfo.py     # 云盘 NFO 上传 / 跟随 / 收尾
+│   │   │   ├── show_folder.py      # 剧集目录改名（剧名 (年份) [tmdbid-x]）
 │   │   │   ├── strm.py             # STRM 链接拼装、落点推导与三种写盘
 │   │   │   ├── tmdb_client.py      # TMDB API 客户端
 │   │   │   ├── tmdb_resolver.py    # 剧集匹配与缓存
@@ -272,6 +282,7 @@ episode-renamer/
 | POST   | `/api/rename/execute`     | 执行重命名（单文件）             |
 | POST   | `/api/rename/dry-run`     | 试运行重命名，不落盘             |
 | POST   | `/api/rename/finalize`    | 批次收尾：只写剧集级 / 季级 NFO    |
+| POST   | `/api/rename/folders`     | 批次级：把剧集目录改名为 `剧名 (年份) [tmdbid-x]` |
 | GET    | `/api/files`              | 获取后端缓存的扫描文件列表          |
 | DELETE | `/api/files`              | 清空后端缓存的扫描文件列表          |
 | GET    | `/api/presets`            | 获取预设模板列表               |
@@ -302,4 +313,4 @@ cd frontend
 npm run check                         # 等价于 node scripts/check-all.mjs
 ```
 
-后端用例位于 `backend/tests/`，覆盖解析补零、模板标题、重命名路由、TMDB 客户端与解析器、NFO 决策与本地 / OpenList 落盘、STRM 链接拼装（原样写入）与三种落点（含剧集名目录）。前端 `scripts/check-*.mjs` 覆盖设置 schema、刮削门控、重命名请求体、SFC 可编译性与工作区门控，任一失败即非零退出。
+后端用例位于 `backend/tests/`，覆盖解析补零、模板标题、重命名路由、TMDB 客户端与解析器、NFO 决策与本地 / OpenList 落盘、STRM 链接拼装（原样写入）与三种落点（含剧集名目录），以及剧集目录改名（季子目录上溯、混放 / 嵌套拒绝、幂等、端到端「NFO 随目录一起搬走」）。前端 `scripts/check-*.mjs` 覆盖设置 schema、刮削门控、重命名请求体、SFC 可编译性与工作区门控，任一失败即非零退出。

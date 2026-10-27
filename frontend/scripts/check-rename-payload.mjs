@@ -203,5 +203,44 @@ assert('只关 TMDB 时 create_season_folder 不受影响', tmdbOffPayload.creat
   assert('finalize 模式缺 fileIds 抛错', threw, true)
 }
 
+// --- 剧集文件夹改名：一个布尔, 四种形态都要带 ---
+//
+// 漏发的后果不是「少一个字段」: 预览不显示目录计划、执行完却照 backend 的默认值
+// （false）不动, 于是用户勾了、表里没说、目录也没改 —— 三处都静默。反过来,
+// 四种形态里只要有一处没带, 就会出现「预览显示要改、执行时没改」（或相反）。
+{
+  for (const mode of ['preview', 'dry-run', 'finalize', 'folders']) {
+    const body = buildRenamePayload({ ...base, mode, renameFolders: true })
+    assert(`${mode} 载荷下发 rename_folders`, body.rename_folders, true)
+  }
+  const one = buildRenamePayload({ ...base, mode: 'execute', fileIds: undefined, renameFolders: true })
+  assert('execute 载荷也带 rename_folders（形状统一）', one.rename_folders, true)
+  // 未勾选时必须是**显式 false** 而不是缺失: 后端对缺失取默认 false, 行为一样,
+  // 但「这个字段有没有被构造」正是上面那些断言唯一能观察到的东西。
+  const off = buildRenamePayload({ ...base, mode: 'preview', renameFolders: false })
+  assertKey('未勾选时 rename_folders 仍存在', off, 'rename_folders', true)
+  assert('未勾选时为布尔 false', off.rename_folders, false)
+}
+
+// --- 改目录的载荷不带「只有文件操作才需要」的字段 ---
+//
+// 目录不覆盖、不自动编号, 也不写 strm。带上它们不只是冗余: 一份同时声明
+// 「conflict_strategy: overwrite + generate_strm: true」的载荷会让后来者以为
+// 改目录会覆盖同名目录、会写 strm。
+{
+  const body = buildRenamePayload({ ...base, mode: 'folders' })
+  assert('folders 载荷带 file_ids', body.file_ids, ['f1', 'f2'])
+  assert('folders 载荷带 overrides', body.overrides, { f1: { title: '我的标题' } })
+  assertKey('folders 载荷不含 conflict_strategy', body, 'conflict_strategy', false)
+  assertKey('folders 载荷不含 generate_strm', body, 'generate_strm', false)
+  assertKey('folders 载荷不含 strm_mode', body, 'strm_mode', false)
+  assertKey('folders 载荷不含 strm_scan_root', body, 'strm_scan_root', false)
+  // 模板相关的字段**必须**带: 后端要靠它们推出「文件改名后的剧集根」,
+  // 少了 create_season_folder 就会推出一个不同的目录层数。
+  assert('folders 载荷带 template', body.template, base.template)
+  assert('folders 载荷带 folder_template', body.folder_template, base.folderTemplate)
+  assert('folders 载荷带 create_season_folder', body.create_season_folder, false)
+}
+
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
 process.exitCode = failed === 0 ? 0 : 1

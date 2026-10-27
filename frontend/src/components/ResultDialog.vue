@@ -154,6 +154,40 @@
             </ul>
           </div>
 
+          <!-- 剧集文件夹改名。单位是**部剧**（一个条目 = 一个目录），与 NFO / STRM 的
+               「个」不是一回事 —— 混用会让「未改名 1 项」被读成「有一集没改」。 -->
+          <div v-if="folderStats" class="mb-4 rounded-[8px] bg-sunken px-3 py-2.5 text-[12px]">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span class="font-semibold text-ink">剧集文件夹</span>
+              <span v-if="folderStats.renamedCount" class="tabular-nums text-ink-2">
+                {{ folderStats.dryRun ? '将重命名' : '已重命名' }} {{ folderStats.renamedCount }} 部剧
+              </span>
+              <span v-if="folderStats.skippedCount" class="tabular-nums text-ink-2">
+                未改名 {{ folderStats.skippedCount }} 项
+              </span>
+            </div>
+            <!-- 新目录名要列出来: 「已重命名 1 部剧」说不出它变成了什么, 而目录名
+                 正是用户在媒体库里要认的那个标识。 -->
+            <ul
+              v-if="folderStats.pairs.length"
+              class="mt-1.5 max-h-[132px] space-y-0.5 overflow-y-auto rounded-[6px] border border-line px-2 py-1.5"
+            >
+              <li class="text-[11px] text-ink-3">
+                {{ folderStats.dryRun ? '计划改成的目录' : '已改成的目录' }}
+              </li>
+              <li
+                v-for="item in folderStats.pairs"
+                :key="item.new_path"
+                class="break-all font-mono text-[11px] leading-relaxed text-ink-2"
+              >
+                {{ item.new_path }}
+              </li>
+            </ul>
+            <p v-if="folderStats.reasonText" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+              未改名原因：{{ folderStats.reasonText }}
+            </p>
+          </div>
+
           <table v-if="result.results?.length" class="w-full text-[12px]">
             <thead class="bg-sunken">
               <tr class="text-ink-2">
@@ -238,6 +272,33 @@ const nfoStats = computed(() => {
     scrapeNote: props.result?.nfo_blocked_by_scrape
       ? '本次未刮削标题，NFO 没有元数据可写：点文件列表上方的「刮削标题」后重新执行即可。'
       : '',
+  }
+})
+
+// 剧集文件夹改名清单。两个数组都空时整块不显示 —— 没勾这项的用户不该看到
+// 「剧集文件夹：0」这种噪音。
+//
+// 与 NFO / STRM 的计数口径不同: 这里的单位是**部剧**。一个条目对应一个目录,
+// 而一个目录下面可能有几十集; 把它算进 executed/skipped 会让「未改名 1 项」
+// 看起来像「有一集没改」。
+const folderStats = computed(() => {
+  const renamed = props.result?.folders_renamed || []
+  const skipped = props.result?.folders_skipped || []
+  if (!renamed.length && !skipped.length) return null
+
+  const byReason = new Map()
+  for (const item of skipped) {
+    const reason = item?.reason || '未说明原因'
+    byReason.set(reason, (byReason.get(reason) || 0) + 1)
+  }
+
+  return {
+    // 干跑时这里是计划而非事实, 由 workspace.executeAction 记在结果上。
+    dryRun: props.result?.dry_run === true,
+    renamedCount: renamed.length,
+    pairs: renamed,
+    skippedCount: skipped.length,
+    reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 项`).join('；'),
   }
 })
 

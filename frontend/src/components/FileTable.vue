@@ -89,7 +89,7 @@
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[180px]">标题</th>
             <th class="w-[80px] px-4 py-3 text-left font-semibold md:w-[96px]">状态</th>
             <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">TMDB</th>
-            <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">NFO / STRM</th>
+            <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">NFO / STRM / 目录</th>
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[220px]">新文件名</th>
           </tr>
         </thead>
@@ -228,6 +228,25 @@
                 </div>
               </td>
               <td class="hidden px-4 py-2.5 lg:table-cell">
+                <!-- 剧集目录改名。**每一行都显示**: 它是批次级事实（整部剧一次）,
+                     与「本行有没有 NFO」那种行级状态不同, 按组代表显示会让其余行
+                     看起来「这部剧的目录不会改」。勾了却做不到时用 warn 色 + 原因
+                     放在 title 里 —— 与 STRM 的「未生成」同一处置。 -->
+                <div
+                  v-if="row.folder"
+                  class="mb-1 flex max-w-[240px] flex-col gap-0.5 text-[11px]"
+                >
+                  <span
+                    v-if="row.folder.new_path"
+                    class="break-all text-ink-2"
+                    :title="row.folder.new_path"
+                  >
+                    目录: {{ folderLabel(row.folder.new_path) }}
+                  </span>
+                  <span v-else class="text-warn" :title="row.folder.reason">
+                    目录不改名
+                  </span>
+                </div>
                 <div v-if="row.nfo" class="flex max-w-[240px] flex-col gap-0.5 text-[11px]">
                   <!-- 本行的 nfo 非空, 只说明「这一行有东西要写」（剧情级 / 季级）,
                        不保证**本集**有。show 匹配上而这一集 TMDB 里没有时
@@ -373,6 +392,15 @@ function nfoLandingLabel(path) {
 // STRM 只显示文件名: 文件名就是「与视频同名」这条规则的产物, 用户核对的是名字;
 // 目录错了（输出根填错）看 title 里的全路径。
 function strmLandingLabel(path) {
+  if (!path) return ''
+  const segments = path.split('/').filter(Boolean)
+  return segments[segments.length - 1] || path
+}
+
+// 剧集目录**只显示末段**: 目录名本身就是这次要核对的东西（`绝命毒师 (2008)
+// [tmdbid-1396]`）, 前面那串绝对路径对每一行都一样, 铺开只会挤掉列宽。全路径
+// 留在 title 里, 因为「父目录对不对」同样会错（扫的是 /media 还是 /media/tv）。
+function folderLabel(path) {
   if (!path) return ''
   const segments = path.split('/').filter(Boolean)
   return segments[segments.length - 1] || path

@@ -49,11 +49,13 @@
             :nfo-overwrite="ws.nfoOverwrite"
             :nfo-needs-scrape="ws.nfoNeedsScrape"
             :generate-strm="ws.generateStrm"
+            :rename-folders="ws.renameFolders"
             :strm-mode="settingsStore.strm.mode"
             :strm-remote-root="ws.strmRemoteRoot"
             @update:generateNfo="v => ws.generateNfo = v"
             @update:nfoOverwrite="v => ws.nfoOverwrite = v"
             @update:generateStrm="v => ws.generateStrm = v"
+            @update:renameFolders="v => ws.renameFolders = v"
             @update:strmRemoteRoot="v => ws.strmRemoteRoot = v"
             @browse-strm="ws.openOpenListBrowseDialog('strm')"
           />

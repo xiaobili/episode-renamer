@@ -187,6 +187,20 @@ def _show_root(paths: list[str], path_mod=os.path) -> str:
     return parent
 
 
+def show_root_of(paths: list[str], path_mod=os.path) -> str:
+    """`_show_root` 的**公开别名**: 剧集文件夹重命名要用同一套上溯规则。
+
+    为什么不做成第二份实现: 「剧目录」这个概念只允许有一个定义 —— 文件夹改名用的是
+    `show/core/show_folder.py`, 而 `tvshow.nfo` 的落点用的是这里。两份判定一旦漂移,
+    `tvshow.nfo` 与文件夹就会落在不同层级, 而这两件事恰恰是同一件事的两面
+    （文件夹名与 NFO 都是「这部剧」的标识）。
+
+    本函数只暴露语义, 不复制逻辑: 季目录正则、单步上溯、根目录保护全部在
+    `_show_root` 里, 那边新增的任何边界都会自动被这里继承。
+    """
+    return _show_root(paths, path_mod)
+
+
 def _folder_belongs_to_single_show(
     root: str, show_name: str, all_entries: list[NfoEntry], path_mod=os.path,
 ) -> bool:

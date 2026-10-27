@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, reactive, ref, watch } from 'vue'
 
 import { scanDirectory } from '../api/scanner'
-import { previewRename, executeRename, dryRunRename, finalizeRename } from '../api/renamer'
+import { previewRename, executeRename, dryRunRename, finalizeRename, renameShowFolders } from '../api/renamer'
 import { searchTmdb } from '../api/tmdb'
 import { getPresets } from '../api/template'
 import {
@@ -81,6 +81,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // 是这一次任务的属性, 不是长期偏好。
   const generateNfo = ref(false)
   const nfoOverwrite = ref(false)
+  // 剧集文件夹改名（`剧名 (年份) [tmdbid-x]`）。同样是本次任务的工作参数: 它改变的是
+  // 目录结构, 不是长期偏好, 故不进设置页; 默认关 —— 大多数人只需要文件重命名。
+  const renameFolders = ref(false)
   // STRM 勾选框。**只对 OpenList 源有意义**（本地文件没有可播放 URL）——
   // 切到本地时强制关闭, 否则回到云盘会看到「已勾选」而那次执行根本不会写。
   const generateStrm = ref(false)
@@ -456,6 +459,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         generateNfo: generateNfo.value,
         nfoOverwrite: nfoOverwrite.value,
         generateStrm: generateStrm.value,
+        renameFolders: renameFolders.value,
         strm: strmOptions.value,
         // 镜像结构的根是**用户扫描的目录**（path.value）, 不是上面那个从首行
         // 文件推出来的 path —— 后者在递归扫描时只是第一集的目录。
@@ -491,6 +495,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           // 重算就会与真正写出的位置分叉。
           strm: pv.strm || null,
           strm_error: pv.strm_error || null,
+          // 剧集目录计划（批次级, 同一部剧的每行看到同一份）。三种取值各有含义:
+          // null = 没勾「重命名剧集文件夹」; {new_path} = 会改成这里;
+          // {new_path: null, reason} = 勾了但做不到（未匹配 TMDB / 混放 / 已是目标名）。
+          // 前端不重算 —— 重算就会与后端真正执行时推出的目录分叉。
+          folder: pv.folder || null,
           // 手动编辑在重建后**保留**（按 file id 沿用上一份 override），不再硬编码
           // 空对象。重建的触发者 —— 点「预览」、改模板、改补零位数、改 TMDB 设置
           // —— 都不是「放弃我的编辑」的意思。曾经这里是 `override: {}`，于是
@@ -588,6 +597,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await executeAction(false)
   }
 
+  // 目录改名之后同步**扫描路径**。
+  //
+  // 最常见的用法就是「直接扫剧目录本身」—— 那个目录恰恰就是被改名的对象, 于是
+  // `path` 指向一个已经不存在的路径, 紧接着那次 buildPreview 必然失败, 用户看到
+  // 「重命名已完成，但文件列表刷新失败」却不知道原因是目录换了名字。
+  //
+  // 只处理「全等」与「在其之下」两种; 前缀按 `old + '/'` 比, 避免 /media/Show 把
+  // /media/Show2 也一起改写（那会把扫描路径指到一个毫不相干的目录上）。
+  function _remapScanPath(renamed) {
+    const current = (path.value || '').replace(/\/+$/, '')
+    if (!current || !Array.isArray(renamed)) return
+    for (const item of renamed) {
+      const oldPath = (item?.old_path || '').replace(/\/+$/, '')
+      const newPath = (item?.new_path || '').replace(/\/+$/, '')
+      if (!oldPath || !newPath) continue
+      if (current === oldPath) {
+        path.value = newPath
+        return
+      }
+      if (current.startsWith(oldPath + '/')) {
+        path.value = newPath + current.slice(oldPath.length)
+        return
+      }
+    }
+  }
+
   // 逐行覆盖收集。**由调用方传入行集合**: 预览用全部预览行、执行只从选中行收集
   // —— 两者的行集合不同（首次预览时 previewRows 还是空的），把它写死在这里会
   // 把这件事实藏起来。
@@ -643,6 +678,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       generateNfo: generateNfo.value,
       nfoOverwrite: nfoOverwrite.value,
       generateStrm: generateStrm.value,
+      // 与 buildPreview 同源: 同一份布尔值决定「预览里显示的目录」与「执行后真的
+      // 去改目录」。少一处就会出现「表里什么都没说、执行完目录被改了」。
+      renameFolders: renameFolders.value,
       strm: strmOptions.value,
       // 与 buildPreview 同源: 扫描目录。执行时也用它做镜像结构的根, 否则预览与
       // 执行会给出两种目录形状。
@@ -775,9 +813,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }
       }
 
+      // --- 剧集文件夹改名：`剧名 (年份) [tmdbid-x]` ---
+      //
+      // **必须排在 finalize 之后**: 先改目录的话, NFO 的写盘（write_nfo_files 的
+      // mkdir(parents=True)）会在旧名下把目录重建出来, 把 tvshow.nfo 落进一个没有
+      // 任何剧集文件的空文件夹 —— 媒体库污染, 且不可逆。
+      //
+      // 与 NFO 开关**无关**: 没勾「生成 NFO」时这里照样跑, 所以它不能塞进 finalize。
+      let folderBody = null
+      if (renameFolders.value) {
+        try {
+          const res = await renameShowFolders(buildRenamePayload({
+            ...baseArgs, mode: 'folders', fileIds: selected.map(r => r.id),
+            overrides: _collectOverrides(selected),
+          }))
+          folderBody = res.data
+          // 目录改了名, 扫描路径可能已不存在 —— 不同步的话下面那次重扫必然失败,
+          // 用户会盯着「重命名已完成，但文件列表刷新失败」而不知道原因。
+          _remapScanPath(folderBody.renamed)
+        } catch (e) {
+          // 与 finalize 同一口径: 文件改名已经完成, 这句不能说成「操作失败」。
+          showToast(
+            '重命名已完成，但剧集文件夹未改名: ' +
+            (e.response?.data?.detail || e.message),
+            'warning',
+          )
+        }
+      }
+
       lastResult.value = {
         ...aggregateBatch({
-          items: settled, finalize: finalizeBody,
+          items: settled, finalize: finalizeBody, folders: folderBody,
           nfoBlockedByScrape: nfoBlocked, source,
         }),
       }
@@ -957,6 +1023,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // 就会出现「改了输出目录、表里还是旧路径」, 与 NFO 那两项当初的观感一样。
       // 自定义目录来自工作区（strmRemoteRoot）, 其余两项来自设置 store。
       generateStrm.value,
+      // 「重命名剧集文件夹」决定表里那一列显示目标目录还是「未勾选」, 也确实随每次
+      // 预览下发 —— 与 NFO / STRM 同因: 漏掉它就会出现「勾了、表里没变」。
+      renameFolders.value,
       settingsStore.strm.mode, settingsStore.strm.baseUrl,
       settingsStore.strm.localRoot, strmRemoteRoot.value,
     ],
@@ -977,7 +1046,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     buildPreview, previewAll, updatePreview, toggleAll, clearAll,
     askConfirm, resolveConfirm, showToast,
     tmdbOverrides, tmdbDialog, rematchShow, searchShow, pickShow,
-    generateNfo, nfoOverwrite, generateStrm, strmRemoteRoot,
+    generateNfo, nfoOverwrite, generateStrm, strmRemoteRoot, renameFolders,
     scraped, scraping, tmdbDisabled, tmdbPendingScrape, nfoNeedsScrape, scrapeTitles,
     doDryRun, doExecute, executeAction,
   }

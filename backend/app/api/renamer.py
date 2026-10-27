@@ -5,7 +5,7 @@ import posixpath
 
 from ..models.api import (
     RenameBatchRequest, RenameDryRunRequest, RenameExecuteRequest,
-    RenameFinalizeRequest, RenamePreviewRequest,
+    RenameFinalizeRequest, RenameFoldersRequest, RenamePreviewRequest,
 )
 from ..models.file import (
     FileInfo, ParsedInfo, RenamePlan, BatchRenameResult, OverrideInfo,
@@ -26,6 +26,9 @@ from ..core.openlist_nfo import (
 )
 from ..core.strm import (
     strm_target_for_plan, strm_target_for_preview, write_strm_for_plan,
+)
+from ..core.show_folder import (
+    apply_local_show_folders, apply_openlist_show_folders, plan_show_folders,
 )
 from ..config import settings
 from ..core.template import PadConfig
@@ -200,6 +203,61 @@ def _show_key(plan: RenamePlan) -> str:
     return plan.parsed.show_name if plan.parsed else ""
 
 
+def _path_mod_for(source: str):
+    """路径分隔符的归属: OpenList 永远是 POSIX, 本地跟着宿主机走。
+
+    与 `build_nfo_decisions(path_mod=...)`、`posixpath` 的 STRM 落点同一条规则 ——
+    Windows 宿主上把远端路径按 `\\` 拼, 会得到 OpenList 不认的路径。
+    """
+    return posixpath if source == "openlist" else os.path
+
+
+def _folder_payload_by_file(folder_plans) -> dict[str, dict]:
+    """file_id → 该行的剧集文件夹计划。
+
+    按 `file_ids` 摊平而不是在这里重算 `show_root`: 根的唯一权威是
+    `plan_show_folders`（它才知道混放/嵌套的结论）。在这里再推一次根, 就会
+    出现「某一行算出的根不在任何一条计划里」→ 那一行静默地没有 folder 字段,
+    而同一部剧的其它行有 —— 用户会以为是数据不一致。
+
+    未启用时调用方根本不会调它（返回空字典即「没有这一列」）。
+    """
+    payloads: dict[str, dict] = {}
+    for plan in folder_plans:
+        payload = (
+            {"path": plan.old_path, "new_path": plan.new_path}
+            if plan.reason is None
+            # 不改也要说原因: null 与「没勾选」在界面上长得一样, 而那两件事
+            # 对用户的含义完全不同（一个是「勾了但做不到」, 一个是「没勾」）。
+            else {"path": plan.old_path, "new_path": None, "reason": plan.reason}
+        )
+        for file_id in plan.file_ids:
+            payloads[file_id] = payload
+    return payloads
+
+
+def _plans_for_source(files, req, merged, pad, source: str) -> list[RenamePlan]:
+    """按数据源建 plan —— preview / dry-run / finalize / folders 四条路径共用。
+
+    两个 builder **不等价**（OpenList 没有「父目录已是季目录则抑制建季目录」那条），
+    所以必须按 source 分派, 不能统一借道其中一个（见 execute 里那段长注释）。
+    """
+    if source == "local":
+        return plan_files(
+            files, req.template, req.folder_template, req.create_season_folder,
+            merged, pad=pad,
+        )
+    if source == "openlist":
+        return [
+            build_openlist_rename_plan(
+                f, req.template, req.folder_template, req.create_season_folder,
+                OverrideInfo(**merged[f.id]) if merged.get(f.id) else None, pad=pad,
+            )
+            for f in files
+        ]
+    raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
+
+
 def _as_batch_request(
     req: RenameExecuteRequest, overrides: dict[str, dict]
 ) -> RenameBatchRequest:
@@ -265,26 +323,18 @@ async def preview_rename(req: RenamePreviewRequest):
     # TMDB 后再把标题并进 overrides, 第二遍才渲染。
     merged, summaries, matches_by_file = await _with_tmdb_titles(req, files)
 
-    # 计划只构建一次 —— NFO 落点的推导与响应共用同一批 plan,
+    # 计划只构建一次 —— NFO 落点的推导、剧集文件夹计划与响应共用同一批 plan,
     # 重复构建不但浪费, 两份结果一旦分叉就会出现「预览说写这里、实际写那里」。
-    plans: list[RenamePlan] = []
-    for f in files:
-        overrides_for_f = merged.get(f.id) or {}
-        override_for_f = OverrideInfo(**overrides_for_f) if overrides_for_f else None
+    plans = _plans_for_source(files, req, merged, pad, source)
 
-        if source == "local":
-            from ..core.local_renamer import build_rename_plan
-            plans.append(build_rename_plan(
-                f, req.template, req.folder_template,
-                req.create_season_folder, override_for_f, pad=pad,
-            ))
-        elif source == "openlist":
-            plans.append(build_openlist_rename_plan(
-                f, req.template, req.folder_template,
-                req.create_season_folder, override_for_f, pad=pad,
-            ))
-        else:
-            raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
+    # 剧集文件夹（批次级, 一部剧一条）。按 file_id 摊到每一行 —— 表里每一行都要能
+    # 看到「这部剧的目录会被改成什么」, 那是动手前唯一的可见性（spec §2.5）。
+    folder_by_file = (
+        _folder_payload_by_file(
+            plan_show_folders(plans, matches_by_file, _path_mod_for(source))
+        )
+        if getattr(req, "rename_folders", False) else {}
+    )
 
     # NFO 落点必须在预览里可见 —— 「tvshow.nfo 会写到哪里」是库根污染的
     # 唯一防线（spec §9.4）。这里只算决策, 绝不落盘。
@@ -391,6 +441,9 @@ async def preview_rename(req: RenamePreviewRequest):
             # strm 落点与「为什么没有落点」。前端两列都说人话, 不做二次推导。
             "strm": strm_by_file.get(f.id),
             "strm_error": strm_error_by_file.get(f.id),
+            # 剧集文件夹计划。未勾选时整个键为 None（与 nfo / strm 的
+            # 「没启用就没有」同构）—— 给一个空对象会让前端误以为「勾了但无计划」。
+            "folder": folder_by_file.get(f.id),
         })
 
     return {
@@ -584,6 +637,22 @@ async def dry_run_rename(req: RenameDryRunRequest):
     else:
         raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
 
+    # 剧集文件夹（干跑只列计划, 绝不 mkdir / rename）。与 NFO / STRM 的干跑同一条
+    # 原则: 执行前那一眼的全部意义就是这个清单。
+    if getattr(req, "rename_folders", False):
+        folder_plans = plan_show_folders(
+            _plans_for_source(files, req, merged, pad, source),
+            matches_by_file, _path_mod_for(source),
+        )
+        result.folders_renamed = [
+            {"old_path": p.old_path, "new_path": p.new_path, "show_name": p.show_name}
+            for p in folder_plans if p.reason is None
+        ]
+        result.folders_skipped = [
+            {"path": p.old_path, "reason": p.reason}
+            for p in folder_plans if p.reason
+        ]
+
     return result.model_dump()
 
 
@@ -639,6 +708,50 @@ async def finalize_rename(req: RenameFinalizeRequest):
         "success": True,
         "nfo_written": written,
         "nfo_skipped": [{"path": p, "reason": r} for p, r in skipped],
+    }
+
+
+@router.post("/rename/folders")
+async def rename_show_folders(req: RenameFoldersRequest):
+    """把剧集目录改名为 `剧名 (年份) [tmdbid-x]`（批次级, **真动盘**）。
+
+    **调用顺序由前端保证: 逐文件 execute → finalize（勾了 NFO 时）→ 本接口。**
+    先改目录的后果不是「顺序不好看」: `write_nfo_files` 的 `mkdir(parents=True)`
+    会在旧名下把目录重建出来, 把 `tvshow.nfo` 写进一个没有任何剧集文件的空文件夹
+    —— spec §9.4 明令禁止的库根污染。见 core/show_folder.py 的模块注释。
+
+    **不依赖 NFO 开关**: 没勾「生成 NFO」时它照样要跑, 故不能塞进 finalize。
+
+    **不读** `conflict_strategy`: 目录不覆盖、不自动编号（`…[tmdbid-1396]_1` 这种名字
+    媒体服务器认不出, 比不改更糟）。目标已存在就如实跳过。
+    """
+    source = req.source.lower()
+    files = find_files_by_ids(req.file_ids)
+    if not files:
+        raise HTTPException(status_code=400, detail="未找到对应的文件")
+
+    pad = _pad_from_request(req)
+    merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
+    plans = _plans_for_source(files, req, merged, pad, source)
+    folder_plans = plan_show_folders(plans, matches_by_file, _path_mod_for(source))
+
+    if source == "local":
+        renamed, skipped = apply_local_show_folders(folder_plans)
+    elif source == "openlist":
+        client = get_default_client()
+        if not client or not client.connected:
+            raise HTTPException(status_code=401, detail="请先连接 OpenList")
+        _apply_openlist_limits(client, req)
+        renamed, skipped = await apply_openlist_show_folders(client, folder_plans)
+    else:
+        raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
+
+    # `success` 只表示「请求跑完了」。跳过的原因分两类（拒绝 / 失败）, 前端按
+    # reason 说人话 —— 把它们折算成一个布尔会让「目标已存在」看起来像程序出错。
+    return {
+        "success": True,
+        "renamed": renamed,
+        "skipped": skipped,
     }
 
 
