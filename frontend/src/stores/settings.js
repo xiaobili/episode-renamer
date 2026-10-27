@@ -35,6 +35,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const localConcurrency = ref(initial.localConcurrency)
   const openlist = reactive({ ...initial.openlist })
   const tmdb = reactive({ ...initial.tmdb })
+  const strm = reactive({ ...initial.strm })
 
   function apply(data) {
     const next = normalizeSettings(data)
@@ -49,6 +50,10 @@ export const useSettingsStore = defineStore('settings', () => {
     openlist.serverUrl = next.openlist.serverUrl
     openlist.concurrency = next.openlist.concurrency
     openlist.requestInterval = next.openlist.requestInterval
+    strm.mode = next.strm.mode
+    strm.baseUrl = next.strm.baseUrl
+    strm.localRoot = next.strm.localRoot
+    // remoteRoot 不在设置里: 它是工作区的任务参数（见 settingsSchema 该字段处的注释）。
   }
 
   function toObject() {
@@ -60,6 +65,7 @@ export const useSettingsStore = defineStore('settings', () => {
       localConcurrency: localConcurrency.value,
       tmdb: { ...tmdb },
       openlist: { ...openlist },
+      strm: { ...strm },
     }
   }
 
@@ -73,7 +79,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     defaultTemplateId, episodePadDigits, seasonPadDigits, conflictStrategy, localConcurrency,
-    tmdb, openlist,
+    tmdb, openlist, strm,
     storageAvailable,
     load, save, apply, toObject,
   }

@@ -62,6 +62,10 @@ const FE = new URL('..', import.meta.url)
 const { createPinia, setActivePinia } = await import(new URL('node_modules/pinia/dist/pinia.mjs', FE).href)
 const request = (await import(new URL('src/api/request.js', FE).href)).default
 const { useWorkspaceStore } = await import(new URL('src/stores/workspace.js', FE).href)
+// 两个都为了末尾那组断言: 浏览对话框把 strm 目录写到哪、设置里到底还有没有
+// remoteRoot 这个字段。
+const { useOpenListStore } = await import(new URL('src/stores/openlist.js', FE).href)
+const { useSettingsStore } = await import(new URL('src/stores/settings.js', FE).href)
 
 const results = []
 function check(name, cond, extra = '') {
@@ -349,8 +353,45 @@ ws.resolveConfirm(true)
 await tick(10)
 check('clearAll 后 scraped false', ws.scraped === false, String(ws.scraped))
 
+// --- 13. STRM 只在 OpenList 源可用 ---
+// 本地文件没有可播放 URL, 勾着它等于许诺一件不会发生的事; 切到本地必须关掉,
+// 否则用户回到云盘时看到「已勾选」而那次执行根本不会写 strm。
+ws.switchSource('openlist')
+ws.generateStrm = true
+ws.switchSource('local')
+check('切到本地源关闭 generateStrm', ws.generateStrm === false, String(ws.generateStrm))
+ws.switchSource('openlist')
+ws.generateStrm = true
+ws.switchSource('openlist')
+check('不切源时 generateStrm 保持', ws.generateStrm === true, String(ws.generateStrm))
+
+// --- 14. 远端自定义目录住工作区（不在设置页）---
+// 它随任务变（扫 A 库写 A 目录）, 且左栏直接改 store —— 若与设置页那份草稿
+// 共用字段, 设置页一保存就会把它盖回去, 而那个字段在设置页根本看不见。
+const ol = useOpenListStore()
+ol.connected = true
+ol.selectedMount = '/115'
+ws.path = '/115/Show'
+ws.openOpenListBrowseDialog('strm')
+check('打开 strm 目录浏览时不改扫描路径', ws.path === '/115/Show', String(ws.path))
+check('strm 浏览的初始目录回落到挂载点', ws.browse.initialPath === '/115',
+  String(ws.browse.initialPath))
+check('strm 浏览允许选挂载根（扫描目录则不允许）', ws.browse.disallowRoot === false,
+  String(ws.browse.disallowRoot))
+ws.browseConfirm({ path: '/115/strm' })
+check('strm 浏览结果写进 strmRemoteRoot', ws.strmRemoteRoot === '/115/strm',
+  String(ws.strmRemoteRoot))
+check('strm 浏览不改扫描路径', ws.path === '/115/Show', String(ws.path))
+await tick(10)
+check('strm 目录持久化到独立键（不与设置共用）',
+  ls.getItem('episode-renamer:strm-root') === '/115/strm',
+  String(ls.getItem('episode-renamer:strm-root')))
+check('设置里的 strm 不含 remoteRoot',
+  !('remoteRoot' in useSettingsStore().strm),
+  JSON.stringify(Object.keys(useSettingsStore().strm)))
+
 // --- 12. 导出的名字都在（模板里按名字取用；少一个就是运行期 undefined）---
-for (const n of ['scraped', 'scraping', 'tmdbDisabled', 'tmdbPendingScrape', 'nfoNeedsScrape', 'scrapeTitles']) {
+for (const n of ['scraped', 'scraping', 'tmdbDisabled', 'tmdbPendingScrape', 'nfoNeedsScrape', 'scrapeTitles', 'generateStrm', 'strmRemoteRoot']) {
   check(`导出 ${n}`, ws[n] !== undefined)
 }
 

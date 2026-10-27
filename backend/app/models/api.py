@@ -1,6 +1,8 @@
 from typing import Optional
 from pydantic import BaseModel, Field
 
+from .strm import StrmMode
+
 
 class ScanRequest(BaseModel):
     source: str = "local"
@@ -49,6 +51,15 @@ class RenamePreviewRequest(BaseModel):
     tmdb_overrides: dict[str, int] = Field(default_factory=dict)
     generate_nfo: bool = False
     nfo_overwrite: bool = False
+    generate_strm: bool = False
+    strm_mode: StrmMode = "remote_same"
+    strm_base_url: str = ""
+    strm_local_root: str = ""
+    strm_remote_root: str = ""
+    # 用户实际扫描的目录。STRM 的镜像结构以它为根 —— 不能用 `path`:
+    # 那是前端从首行文件路径推出来的**文件所在目录**, 递归扫描时它不是扫描根,
+    # 拿它做 relpath 会让所有剧都退化成扁平落点。
+    strm_scan_root: str = ""
 
 
 class RenameBatchRequest(BaseModel):
@@ -73,6 +84,12 @@ class RenameBatchRequest(BaseModel):
     tmdb_overrides: dict[str, int] = Field(default_factory=dict)
     generate_nfo: bool = False
     nfo_overwrite: bool = False
+    generate_strm: bool = False
+    strm_mode: StrmMode = "remote_same"
+    strm_base_url: str = ""
+    strm_local_root: str = ""
+    strm_remote_root: str = ""
+    strm_scan_root: str = ""
     # 设置页的 OpenList 限流。None = 未提供, 后端保持当前值（回落 .env）。
     openlist_max_concurrent: Optional[int] = None
     openlist_request_interval: Optional[float] = None
@@ -113,6 +130,12 @@ class RenameExecuteRequest(BaseModel):
     tmdb_overrides: dict[str, int] = Field(default_factory=dict)
     generate_nfo: bool = False
     nfo_overwrite: bool = False
+    generate_strm: bool = False
+    strm_mode: StrmMode = "remote_same"
+    strm_base_url: str = ""
+    strm_local_root: str = ""
+    strm_remote_root: str = ""
+    strm_scan_root: str = ""
     openlist_max_concurrent: Optional[int] = None
     openlist_request_interval: Optional[float] = None
 

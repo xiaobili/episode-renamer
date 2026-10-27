@@ -91,6 +91,56 @@
         </div>
       </AppPanel>
 
+      <AppPanel title="STRM 生成">
+        <div class="flex flex-col gap-4">
+          <AppSelect v-model="draft.strm.mode" label="输出位置">
+            <option label="与视频同目录（OpenList）" value="remote_same" />
+            <option label="远端自定义目录（OpenList）" value="remote_custom" />
+            <option label="本地镜像目录" value="local" />
+          </AppSelect>
+
+          <AppInput
+            v-model="draft.strm.baseUrl"
+            label="对外访问地址"
+            placeholder="http://openlist.example.com:5244"
+            hint="播放器能访问到的 OpenList 地址（可带反代域名）。留空则使用登录时填的服务器地址 —— 容器内的 localhost 播放器访问不到。"
+          />
+
+          <!-- 远端输出目录**刻意不在这里**: 它随任务变（扫哪棵树就写哪棵树）,
+               住在工作区左栏的 STRM 勾选区。设置页是长期偏好, 放它进来只会让
+               用户每次任务都回来改设置, 而且会和左栏那份值互相覆盖。 -->
+          <p
+            v-if="draft.strm.mode === 'remote_custom'"
+            class="rounded-[8px] bg-sunken px-3 py-2.5 text-[12px] leading-relaxed text-ink-2"
+          >
+            远端输出目录不在这里配置：它随每次任务变化，请在
+            <strong class="text-ink">工作区左栏</strong>的「同时生成 STRM 文件」下方填写
+            （可用「浏览」在云盘里选）。每个视频的落点是
+            <code class="font-mono">{目录}/{剧名}/{文件名}.strm</code>，剧名目录不存在时自动创建。
+          </p>
+
+          <AppInput
+            v-if="draft.strm.mode === 'local'"
+            v-model="draft.strm.localRoot"
+            label="本地输出目录"
+            placeholder="/media/strm"
+            hint="容器部署时必须是已挂载进容器的路径（见 docker-compose.yml 的 volumes），否则文件写在容器内部，重启即丢。落点同样是 {目录}/{剧名}/{文件名}.strm。"
+          />
+
+          <div
+            class="flex items-start gap-2 rounded-[8px] bg-sunken px-3 py-2.5 text-[12px] text-ink-2"
+          >
+            <Info class="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <p>
+              勾选工作区的「同时生成 STRM」后，每个<strong class="text-ink">已落地</strong>的视频会写一个只含
+              <code class="font-mono">{地址}/d/{路径}</code> 的 .strm（内容原样写入，不做百分号转义）。
+              已存在的 strm 会被覆盖（内容只由本次落点决定）；
+              strm 写入失败不会影响重命名的成功状态。
+            </p>
+          </div>
+        </div>
+      </AppPanel>
+
       <AppPanel title="TMDB 设置">
         <div class="flex flex-col gap-4">
           <div class="flex flex-col gap-1">

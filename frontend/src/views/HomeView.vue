@@ -48,8 +48,14 @@
             :generate-nfo="ws.generateNfo"
             :nfo-overwrite="ws.nfoOverwrite"
             :nfo-needs-scrape="ws.nfoNeedsScrape"
+            :generate-strm="ws.generateStrm"
+            :strm-mode="settingsStore.strm.mode"
+            :strm-remote-root="ws.strmRemoteRoot"
             @update:generateNfo="v => ws.generateNfo = v"
             @update:nfoOverwrite="v => ws.nfoOverwrite = v"
+            @update:generateStrm="v => ws.generateStrm = v"
+            @update:strmRemoteRoot="v => ws.strmRemoteRoot = v"
+            @browse-strm="ws.openOpenListBrowseDialog('strm')"
           />
         </template>
       </AppLeftRail>
@@ -138,6 +144,7 @@ import { onMounted } from 'vue'
 import { useFilesStore } from '../stores/files'
 import { useTemplateStore } from '../stores/template'
 import { useOpenListStore } from '../stores/openlist'
+import { useSettingsStore } from '../stores/settings'
 import { useWorkspaceStore } from '../stores/workspace'
 
 import SourceConfigPanel from '../components/SourceConfigPanel.vue'
@@ -153,6 +160,11 @@ import TmdbMatchDialog from '../components/TmdbMatchDialog.vue'
 import Toast from '../components/Toast.vue'
 
 const ws = useWorkspaceStore()
+
+// STRM 的输出模式住在设置 store（长期偏好），左栏只负责显示与「远端自定义目录」
+// 那一个随任务变化的输入框。这里直接读 store 而不复制一份 —— 复制就会在设置页
+// 保存后不同步。
+const settingsStore = useSettingsStore()
 
 // 这三个 store 实例**必须保留**：模板里仍要把它们当 prop 传给本期尚未改造
 // 的子组件（FileTable 的 :files-store、TemplateConfig 的 :tpl-store、

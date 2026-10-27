@@ -89,7 +89,7 @@
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[180px]">标题</th>
             <th class="w-[80px] px-4 py-3 text-left font-semibold md:w-[96px]">状态</th>
             <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">TMDB</th>
-            <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">NFO</th>
+            <th class="hidden px-4 py-3 text-left font-semibold lg:table-cell">NFO / STRM</th>
             <th class="min-w-[140px] px-4 py-3 text-left font-semibold md:min-w-[220px]">新文件名</th>
           </tr>
         </thead>
@@ -278,6 +278,22 @@
                   :class="nfoNullHint(row).warn ? 'text-warn' : 'text-ink-3'"
                   :title="nfoNullHint(row).title"
                 >{{ nfoNullHint(row).text }}</span>
+
+                <!-- STRM 落点。与 NFO 同列: 两者都是「这次会在哪儿多出一个文件」,
+                     分列会让表宽再涨一档, 而它们的读取场景完全相同。
+                     落点用 basename 显示、全路径放在 title 里 —— 目录错了的时候
+                     （镜像根填错）只有全路径能看出来, 而长路径直接铺开会挤掉列宽。 -->
+                <div
+                  v-if="row.strm || row.strm_error"
+                  class="mt-1 flex max-w-[240px] flex-col gap-0.5 text-[11px]"
+                >
+                  <span v-if="row.strm" class="break-all text-ink-2" :title="row.strm.path">
+                    STRM: {{ strmLandingLabel(row.strm.path) }}
+                  </span>
+                  <span v-else class="text-warn" :title="row.strm_error">
+                    STRM 未生成
+                  </span>
+                </div>
               </td>
               <td class="px-4 py-2.5">
                 <div class="truncate font-medium text-ink" :class="row.new_filename ? '' : 'text-ink-3'">
@@ -352,6 +368,14 @@ function nfoLandingLabel(path) {
   if (!path) return ''
   const segments = path.split('/').filter(Boolean)
   return segments.slice(-2).join('/')
+}
+
+// STRM 只显示文件名: 文件名就是「与视频同名」这条规则的产物, 用户核对的是名字;
+// 目录错了（输出根填错）看 title 里的全路径。
+function strmLandingLabel(path) {
+  if (!path) return ''
+  const segments = path.split('/').filter(Boolean)
+  return segments[segments.length - 1] || path
 }
 
 function nfoScopeHint(scope) {

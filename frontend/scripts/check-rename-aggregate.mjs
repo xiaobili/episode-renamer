@@ -80,6 +80,22 @@ function assert(label, actual, expected) {
   assert('errors 只收非空', agg.errors, ['磁盘满了'])
 }
 
+// --- STRM 清单拼接（与 NFO 同构, 但只来自逐文件响应）---
+{
+  const agg = aggregateBatch({
+    items: [
+      { executed: 1, skipped: 0, failed: 0, result: { status: 'renamed' },
+        strm_written: ['/m/strm/a.strm'], strm_skipped: [] },
+      { executed: 1, skipped: 0, failed: 0, result: { status: 'renamed' },
+        strm_written: [],
+        strm_skipped: [{ path: '/m/strm/b.strm', reason: '未配置 STRM 输出目录' }] },
+    ],
+  })
+  assert('strm_written 拼接', agg.strm_written, ['/m/strm/a.strm'])
+  assert('strm_skipped 拼接', agg.strm_skipped,
+    [{ path: '/m/strm/b.strm', reason: '未配置 STRM 输出目录' }])
+}
+
 // --- 空批次不崩 ---
 {
   const agg = aggregateBatch({ items: [] })

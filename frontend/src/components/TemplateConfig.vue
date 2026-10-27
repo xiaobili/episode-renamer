@@ -37,6 +37,47 @@
 
     <div class="flex flex-col gap-3 border-t border-line pt-3">
       <AppCheckbox
+        :model-value="generateStrm"
+        :disabled="source !== 'openlist'"
+        :label="source === 'openlist' ? '同时生成 STRM 文件' : '同时生成 STRM 文件（仅 OpenList 源）'"
+        @update:model-value="$emit('update:generateStrm', $event)"
+      />
+
+      <template v-if="generateStrm && source === 'openlist'">
+        <!-- 远端自定义目录住在这里（而不是设置页）: 它随任务变 —— 扫 A 库写 A
+             目录、扫 B 库写 B 目录。设置页是长期偏好的仓库, 放它进去等于让用户
+             每次任务都去改一个「设置」。 -->
+        <div v-if="strmMode === 'remote_custom'" class="flex items-end gap-2">
+          <AppInput
+            :model-value="strmRemoteRoot"
+            label="STRM 输出目录"
+            placeholder="/strm"
+            mono
+            class="min-w-0 flex-1"
+            @update:model-value="$emit('update:strmRemoteRoot', $event)"
+          />
+          <AppButton variant="secondary" @click="$emit('browse-strm')">浏览</AppButton>
+        </div>
+
+        <p class="text-[11px] leading-relaxed text-ink-3">
+          <template v-if="strmMode === 'remote_custom'">
+            每个视频写到 <code class="font-mono">{输出目录}/{剧名}/{文件名}.strm</code>，
+            剧名目录不存在时自动创建。
+          </template>
+          <template v-else-if="strmMode === 'local'">
+            每个视频写到设置页的「本地输出目录」下：
+            <code class="font-mono">{目录}/{剧名}/{文件名}.strm</code>。
+          </template>
+          <template v-else>
+            .strm 写在与视频同目录处，文件名与视频同名。
+          </template>
+          输出位置与对外地址可在「设置」页切换；写入失败不影响重命名本身。
+        </p>
+      </template>
+    </div>
+
+    <div class="flex flex-col gap-3 border-t border-line pt-3">
+      <AppCheckbox
         :model-value="generateNfo"
         label="同时生成 NFO 文件"
         @update:model-value="$emit('update:generateNfo', $event)"
@@ -88,6 +129,7 @@ import { Info } from 'lucide-vue-next'
 import AppSelect from './ui/AppSelect.vue'
 import AppInput from './ui/AppInput.vue'
 import AppCheckbox from './ui/AppCheckbox.vue'
+import AppButton from './ui/AppButton.vue'
 
 const VARIABLE_DEFS = [
   { tag: '{show}', desc: '剧名（自动从路径/文件名解析）', example: '绝命毒师' },
@@ -108,6 +150,12 @@ const props = defineProps({
   source: { type: String, required: true },
   generateNfo: { type: Boolean, default: false },
   nfoOverwrite: { type: Boolean, default: false },
+  // STRM 勾选框：只有 OpenList 源有意义（本地文件没有可播放 URL）。
+  generateStrm: { type: Boolean, default: false },
+  // 输出模式与远端自定义目录。模式来自设置页（长期偏好），目录来自工作区
+  // （本次任务的参数）—— 目录输入框只在 remote_custom 时出现。
+  strmMode: { type: String, default: 'remote_same' },
+  strmRemoteRoot: { type: String, default: '' },
   // 「勾了生成 NFO，但本次没刮削」—— 由 workspace 的同一个谓词给出（spec §17.5）。
   nfoNeedsScrape: { type: Boolean, default: false },
 })
@@ -115,6 +163,7 @@ defineEmits([
   'preset-change', 'template-edit',
   'update:createSeasonFolder', 'update:folderTemplate',
   'update:generateNfo', 'update:nfoOverwrite',
+  'update:generateStrm', 'update:strmRemoteRoot', 'browse-strm',
 ])
 
 const tplInputRef = ref(null)

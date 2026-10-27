@@ -122,6 +122,38 @@
             </ul>
           </div>
 
+          <!-- STRM 汇总。与 NFO 分开一块而不是并列一行: 两者的失败原因与处理动作
+               完全不同（NFO 去看刮削/覆盖开关, STRM 去看输出目录与地址）。 -->
+          <div v-if="strmStats" class="mb-4 rounded-[8px] bg-sunken px-3 py-2.5 text-[12px]">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span class="font-semibold text-ink">STRM</span>
+              <span v-if="strmStats.writtenCount" class="tabular-nums text-ink-2">
+                {{ strmStats.dryRun ? '将写入' : '写入' }} {{ strmStats.writtenCount }} 个
+              </span>
+              <span v-if="strmStats.skippedCount" class="tabular-nums text-ink-2">
+                未生成 {{ strmStats.skippedCount }} 项
+              </span>
+            </div>
+            <p v-if="strmStats.reasonText" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+              未生成原因：{{ strmStats.reasonText }}
+            </p>
+            <ul
+              v-if="strmStats.writtenPaths.length"
+              class="mt-1.5 max-h-[132px] space-y-0.5 overflow-y-auto rounded-[6px] border border-line px-2 py-1.5"
+            >
+              <li class="text-[11px] text-ink-3">
+                {{ strmStats.dryRun ? '计划写入的落点' : '已写入的落点' }}
+              </li>
+              <li
+                v-for="path in strmStats.writtenPaths"
+                :key="path"
+                class="break-all font-mono text-[11px] leading-relaxed text-ink-2"
+              >
+                {{ path }}
+              </li>
+            </ul>
+          </div>
+
           <table v-if="result.results?.length" class="w-full text-[12px]">
             <thead class="bg-sunken">
               <tr class="text-ink-2">
@@ -206,6 +238,29 @@ const nfoStats = computed(() => {
     scrapeNote: props.result?.nfo_blocked_by_scrape
       ? '本次未刮削标题，NFO 没有元数据可写：点文件列表上方的「刮削标题」后重新执行即可。'
       : '',
+  }
+})
+
+// STRM 清单。与 NFO 同构, 但**没有**「跟随移动」这一项 —— strm 是派生文件,
+// 从不跟随改名, 内容恒由本次落点重算。两个数组都空时整块不显示。
+const strmStats = computed(() => {
+  const written = props.result?.strm_written || []
+  const skipped = props.result?.strm_skipped || []
+  if (!written.length && !skipped.length) return null
+
+  const byReason = new Map()
+  for (const item of skipped) {
+    const reason = item?.reason || '未说明原因'
+    byReason.set(reason, (byReason.get(reason) || 0) + 1)
+  }
+
+  return {
+    // 干跑时这里是计划, 由 workspace.executeAction 记在结果上。
+    dryRun: props.result?.dry_run === true,
+    writtenCount: written.length,
+    writtenPaths: written,
+    skippedCount: skipped.length,
+    reasonText: [...byReason].map(([reason, count]) => `${reason} ${count} 项`).join('；'),
   }
 })
 </script>

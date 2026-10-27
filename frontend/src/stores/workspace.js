@@ -28,6 +28,31 @@ import { buildRenamePayload } from './renamePayload'
 import { runWithConcurrency, resolveConcurrency } from './renameRunner'
 import { aggregateBatch } from './renameAggregate'
 
+// 远端 STRM 输出根（「自定义目录」）的持久化键。
+//
+// **为什么不放 settings**: 设置页是「长期偏好」的仓库, 且带草稿语义（点保存才
+// 生效）。而这个目录是**每次任务的工作参数** —— 扫 A 库往 A 目录写、扫 B 库往
+// B 目录写。放进 settings 会有两个后果: 它得在设置页出现（用户要求放在左栏）,
+// 而左栏直接改 store 的值又会被设置页那份看不见的旧草稿在保存时盖回去。
+// 独立一个键, 两个问题都不存在。
+const STRM_ROOT_KEY = 'episode-renamer:strm-root'
+
+function readStrmRoot() {
+  try {
+    return localStorage.getItem(STRM_ROOT_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStrmRoot(value) {
+  try {
+    localStorage.setItem(STRM_ROOT_KEY, value || '')
+  } catch {
+    // 隐私模式 / 配额满: 不持久化不影响本次会话可用。
+  }
+}
+
 export const useWorkspaceStore = defineStore('workspace', () => {
   const filesStore = useFilesStore()
   const tplStore = useTemplateStore()
@@ -56,6 +81,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // 是这一次任务的属性, 不是长期偏好。
   const generateNfo = ref(false)
   const nfoOverwrite = ref(false)
+  // STRM 勾选框。**只对 OpenList 源有意义**（本地文件没有可播放 URL）——
+  // 切到本地时强制关闭, 否则回到云盘会看到「已勾选」而那次执行根本不会写。
+  const generateStrm = ref(false)
+  // 远端自定义目录（strm_mode === 'remote_custom' 时的输出根）。住在左栏而不是
+  // 设置页: 目录随任务变（见 STRM_ROOT_KEY 的注释）。仍持久化, 否则每次刷新都
+  // 要重填一遍 OpenList 上的绝对路径 —— 那是个没人愿意做第二次的动作。
+  const strmRemoteRoot = ref(readStrmRoot())
+  watch(strmRemoteRoot, (value) => { writeStrmRoot(value) })
+
+  // 下发后端的 strm 配置。`settingsStore.strm` 有 mode / baseUrl / localRoot,
+  // 缺的 remoteRoot 由工作区这一份补齐 —— **单点构造**: 预览与执行各拼一份的话,
+  // 改了一处就会出现「预览显示这里、执行写到那里」。
+  const strmOptions = computed(() => ({
+    ...settingsStore.strm,
+    remoteRoot: strmRemoteRoot.value,
+  }))
   const conflictStrategy = ref('skip')
   const resultDialog = ref(false)
   const lastResult = ref(null)
@@ -80,6 +121,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     initialPath: '',
     rootPath: '',
     disallowRoot: false,
+    // 选中的路径要写回哪里: 'scan' = 扫描目录, 'strm' = STRM 输出根。
+    // 同一个对话框服务两个字段, 靠这个标记区分落点 —— 没有它, 给 strm 挑目录
+    // 会把扫描路径改掉（而用户此时正盯着一张已扫好的表）。
+    target: 'scan',
   })
 
   const confirm = reactive({ open: false, message: '' })
@@ -204,6 +249,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // 云盘仍不支持「创建季文件夹」（后端 OpenList builder 没有本地那条
       // 「父目录已是季目录」的抑制逻辑）—— 但 NFO 已与本地同权, 不再关闭。
       tplStore.createSeasonFolder = false
+    } else {
+      // 本地源没有可播放 URL, STRM 无从生起。留着勾选状态等于许诺一件不会
+      // 发生的事（后端会直接 400, 而用户只会看到一次「操作失败」）。
+      generateStrm.value = false
     }
   }
 
@@ -299,16 +348,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     path.value = ''
   }
 
-  function openOpenListBrowseDialog() {
+  function openOpenListBrowseDialog(target = 'scan') {
+    if (target === 'strm' && !olStore.connected) {
+      // 未连接时列不出目录, 打开只会给一个必然失败的入口 —— 与 rematchShow
+      // 在 TMDB 关闭时先拦一道是同一个理由。
+      showToast('请先连接 OpenList，再选择 STRM 输出目录', 'warning')
+      return
+    }
     const mount = olStore.selectedMount || ''
+    browse.target = target
     browse.source = 'openlist'
-    browse.initialPath = mount
+    // strm 输出根常与扫描目录不同（扫描目录是库, 输出根是另一棵树）,
+    // 所以它不从扫描路径起步, 只回落到上次填过的值 / 挂载点。
+    browse.initialPath = target === 'strm' ? (strmRemoteRoot.value || mount) : mount
     browse.rootPath = mount
-    browse.disallowRoot = true
+    // 扫描必须进子目录（避免一次拉取整个网盘）; STRM 输出根允许就是挂载点本身
+    // —— 用户可能确实想往 /115 根下按剧名建目录。
+    browse.disallowRoot = target !== 'strm'
     browse.open = true
   }
 
   function openLocalBrowseDialog() {
+    browse.target = 'scan'
     browse.source = 'local'
     browse.initialPath = path.value || ''
     browse.rootPath = ''
@@ -318,6 +379,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function browseConfirm(pick) {
     if (!pick) return
+    if (browse.target === 'strm') {
+      strmRemoteRoot.value = pick.path || ''
+      browse.open = false
+      return
+    }
     if (browse.source === 'openlist' && pick.path === olStore.selectedMount) {
       showToast('不能选择云盘根目录，请进入子文件夹后再选择', 'warning')
       return
@@ -389,6 +455,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         scraped: scraped.value,
         generateNfo: generateNfo.value,
         nfoOverwrite: nfoOverwrite.value,
+        generateStrm: generateStrm.value,
+        strm: strmOptions.value,
+        // 镜像结构的根是**用户扫描的目录**（path.value）, 不是上面那个从首行
+        // 文件推出来的 path —— 后者在递归扫描时只是第一集的目录。
+        strmScanRoot: path.value,
       }))
       const previews = res.data.results || []
       previewRows.value = filesStore.files.map(f => {
@@ -416,6 +487,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           tmdb_match: pv.tmdb_match || null,
           nfo: pv.nfo || null,
           nfo_scope: pv.nfo_scope || 'disabled',
+          // STRM 落点与「为什么没有落点」。两个都由后端给, 前端不重算 ——
+          // 重算就会与真正写出的位置分叉。
+          strm: pv.strm || null,
+          strm_error: pv.strm_error || null,
           // 手动编辑在重建后**保留**（按 file id 沿用上一份 override），不再硬编码
           // 空对象。重建的触发者 —— 点「预览」、改模板、改补零位数、改 TMDB 设置
           // —— 都不是「放弃我的编辑」的意思。曾经这里是 `override: {}`，于是
@@ -567,6 +642,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       scraped: scraped.value,
       generateNfo: generateNfo.value,
       nfoOverwrite: nfoOverwrite.value,
+      generateStrm: generateStrm.value,
+      strm: strmOptions.value,
+      // 与 buildPreview 同源: 扫描目录。执行时也用它做镜像结构的根, 否则预览与
+      // 执行会给出两种目录形状。
+      strmScanRoot: path.value,
       openlistMaxConcurrent: settingsStore.openlist.concurrency,
       openlistRequestInterval: settingsStore.openlist.requestInterval,
     }
@@ -873,6 +953,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       settingsStore.episodePadDigits, settingsStore.seasonPadDigits,
       settingsStore.tmdb.apiKey, settingsStore.tmdb.language, settingsStore.tmdb.enabled,
       generateNfo.value, nfoOverwrite.value,
+      // STRM 三项决定预览里那个 strm 落点列, 也确实随每次请求下发 —— 漏掉它们
+      // 就会出现「改了输出目录、表里还是旧路径」, 与 NFO 那两项当初的观感一样。
+      // 自定义目录来自工作区（strmRemoteRoot）, 其余两项来自设置 store。
+      generateStrm.value,
+      settingsStore.strm.mode, settingsStore.strm.baseUrl,
+      settingsStore.strm.localRoot, strmRemoteRoot.value,
     ],
     () => { if (filesStore.files.length) buildPreview() },
     { deep: true },
@@ -891,7 +977,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     buildPreview, previewAll, updatePreview, toggleAll, clearAll,
     askConfirm, resolveConfirm, showToast,
     tmdbOverrides, tmdbDialog, rematchShow, searchShow, pickShow,
-    generateNfo, nfoOverwrite,
+    generateNfo, nfoOverwrite, generateStrm, strmRemoteRoot,
     scraped, scraping, tmdbDisabled, tmdbPendingScrape, nfoNeedsScrape, scrapeTitles,
     doDryRun, doExecute, executeAction,
   }

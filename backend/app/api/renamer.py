@@ -12,6 +12,7 @@ from ..models.file import (
     SingleRenameResult,
 )
 from ..models.nfo import NfoOptions
+from ..models.strm import StrmOptions
 from ..core.local_renamer import (
     batch_rename as local_batch_rename,
     OneOutcome, count_result, execute_one, finalize_show_nfo,
@@ -22,6 +23,9 @@ from ..core.openlist_renamer import (
 )
 from ..core.openlist_nfo import (
     episode_nfo_for_plan, finalize_openlist_nfo, plan_openlist_nfo,
+)
+from ..core.strm import (
+    strm_target_for_plan, strm_target_for_preview, write_strm_for_plan,
 )
 from ..config import settings
 from ..core.template import PadConfig
@@ -145,6 +149,52 @@ def _nfo_options_from_request(req) -> NfoOptions:
     )
 
 
+def _strm_options_from_request(req, client=None) -> StrmOptions:
+    """把请求里的 STRM 配置收成一个对象。
+
+    **对外地址留空时回落客户端的 server_url** —— 绝大多数用户填的服务器地址就是
+    播放器要访问的那个; 只有反代 / 容器内网地址不一致时才需要显式覆盖。
+    """
+    base = (getattr(req, "strm_base_url", "") or "").strip()
+    if not base and client is not None:
+        base = (getattr(client, "server_url", "") or "").strip()
+    return StrmOptions(
+        enabled=bool(getattr(req, "generate_strm", False)),
+        mode=getattr(req, "strm_mode", "remote_same"),
+        base_url=base,
+        local_root=getattr(req, "strm_local_root", "") or "",
+        remote_root=getattr(req, "strm_remote_root", "") or "",
+    )
+
+
+def _reject_strm_for_local(source: str, req) -> None:
+    """本地源没有可播放 URL, 勾了就是误解 —— 明确拒绝, 不静默忽略。
+
+    静默忽略会让用户看到「勾了、跑了、文件没出来」而毫无提示; 界面上那个勾选
+    在本地源已经置灰, 能走到这里的是手工调用。
+    """
+    if source == "local" and bool(getattr(req, "generate_strm", False)):
+        raise HTTPException(status_code=400, detail="STRM 仅支持 OpenList 源")
+
+
+def _connected_openlist_client():
+    """预览用: 拿到已连接的客户端（没有就 None）。预览不强制连接。"""
+    client = get_default_client()
+    return client if client is not None and client.connected else None
+
+
+def _strm_scan_root(req) -> str:
+    """镜像结构的根。
+
+    优先取 `strm_scan_root`（前端传用户实际扫描的目录）; 缺省时退回 `path`。
+    `path` 在递归扫描下只是**首行文件所在目录**, 把它当根会让其它剧都退化成扁平
+    落点 —— 所以它只是给手工调用方的兜底, 不是等价替代。
+    """
+    return (getattr(req, "strm_scan_root", "") or "").strip() or (
+        getattr(req, "path", "") or ""
+    ).strip()
+
+
 def _show_key(plan: RenamePlan) -> str:
     """plan 的剧名（解析失败时为 ""）。剧集级 NFO 按剧分组, 判定也按剧 —— 见 preview。"""
     return plan.parsed.show_name if plan.parsed else ""
@@ -208,6 +258,7 @@ async def preview_rename(req: RenamePreviewRequest):
     files = find_files_by_ids(req.file_ids)
     pad = _pad_from_request(req)
     source = req.source.lower()
+    _reject_strm_for_local(source, req)
 
     # 两遍解析的原因: {title} 是模板的渲染输入之一, 所以 TMDB 的标题必须在
     # build_rename_plan 渲染之前到手。第一遍只解析拿 (剧名, 季, 集), 批量查完
@@ -293,6 +344,26 @@ async def preview_rename(req: RenamePreviewRequest):
                 nfo_scope = "episode_only"
 
     results: list[dict] = []
+    # STRM 落点：与 NFO 一样是**计划**, 不写盘、不出网。预览不要求已连接 ——
+    # 没连接时 base URL 只能来自请求里的对外地址, 缺了就如实报原因。
+    strm_options = _strm_options_from_request(
+        req, _connected_openlist_client() if source == "openlist" else None,
+    )
+    strm_by_file: dict[str, dict] = {}
+    strm_error_by_file: dict[str, str] = {}
+    if strm_options.enabled:
+        for plan in plans:
+            target, reason = strm_target_for_preview(
+                plan, strm_options, _strm_scan_root(req),
+            )
+            if target is not None:
+                strm_by_file[plan.file_id] = {
+                    "mode": target.mode, "path": target.path, "url": target.url,
+                }
+            elif reason:
+                # 不静默: 「勾了却没有落点」必须有一句能读的原因（缺目录 / 缺地址）。
+                strm_error_by_file[plan.file_id] = reason
+
     for f, plan in zip(files, plans):
         summary = summaries.get(f.id) or _tmdb_summary(STATUS_DISABLED)
         results.append({
@@ -317,6 +388,9 @@ async def preview_rename(req: RenamePreviewRequest):
             } if summary["tv_id"] else None,
             "nfo": nfo_paths_by_file.get(f.id) or None,
             "nfo_scope": nfo_scope,
+            # strm 落点与「为什么没有落点」。前端两列都说人话, 不做二次推导。
+            "strm": strm_by_file.get(f.id),
+            "strm_error": strm_error_by_file.get(f.id),
         })
 
     return {
@@ -339,6 +413,10 @@ async def execute_rename(req: RenameExecuteRequest):
     file = _find_one(req.file_id)
     source = req.source.lower()
     pad = _pad_from_request(req)
+    _reject_strm_for_local(source, req)
+
+    strm_written: list[str] = []
+    strm_skipped: list[tuple[str, str]] = []
 
     # 适配成**批量形状**喂给既有的 _with_tmdb_titles: 它读的是 `req.overrides`
     # （批量形状）, 而本接口收的是单数 `override`。
@@ -401,6 +479,12 @@ async def execute_rename(req: RenameExecuteRequest):
         ) = await episode_nfo_for_plan(
             client, plan, result, matches_by_file, nfo_options,
         )
+        # STRM 在 NFO 之后写: 两者互不依赖, 但把「元数据先就位、入口最后写」定为
+        # 顺序, 将来加回滚时有一个明确的边界。失败只进 strm_skipped（见模块注释）。
+        strm_written, strm_skipped = await write_strm_for_plan(
+            client, plan, result,
+            _strm_options_from_request(req, client), _strm_scan_root(req),
+        )
     else:
         raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
 
@@ -421,6 +505,8 @@ async def execute_rename(req: RenameExecuteRequest):
         nfo_written=outcome.nfo_written,
         nfo_carried=outcome.nfo_carried,
         nfo_skipped=[{"path": p, "reason": r} for p, r in outcome.nfo_skipped],
+        strm_written=strm_written,
+        strm_skipped=[{"path": p, "reason": r} for p, r in strm_skipped],
     ).model_dump()
 
 
@@ -430,6 +516,7 @@ async def dry_run_rename(req: RenameDryRunRequest):
 
     source = req.source.lower()
     pad = _pad_from_request(req)
+    _reject_strm_for_local(source, req)
 
     merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
     effective_overrides = merged
@@ -470,6 +557,30 @@ async def dry_run_rename(req: RenameDryRunRequest):
         result.nfo_written = written
         result.nfo_carried = carried
         result.nfo_skipped = [{"path": p, "reason": r} for p, r in skipped]
+
+        # STRM 干跑：只算落点, 不建目录、不上传。与真执行共用 strm_target_for_plan,
+        # 差别只在结果行来自 execute_openlist_batch(dry_run=True)。
+        strm_options = _strm_options_from_request(req, client)
+        if strm_options.enabled:
+            result_by_plan_id = {r.id: r for r in result.results if r.id}
+            planned: list[str] = []
+            strm_skipped: list[tuple[str, str]] = []
+            for plan in plans:
+                plan_result = result_by_plan_id.get(plan.id)
+                if plan_result is None:
+                    continue
+                target, reason = strm_target_for_plan(
+                    plan, plan_result, strm_options, _strm_scan_root(req),
+                )
+                if target is not None:
+                    if target.path not in planned:
+                        planned.append(target.path)
+                elif reason is not None:
+                    strm_skipped.append((plan_result.new_path or plan.new_path, reason))
+            result.strm_written = planned
+            result.strm_skipped = [
+                {"path": p, "reason": r} for p, r in strm_skipped
+            ]
     else:
         raise HTTPException(status_code=400, detail=f"未知数据源: {source}")
 

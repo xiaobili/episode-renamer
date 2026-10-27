@@ -44,6 +44,13 @@ export function buildRenamePayload({
   scraped,
   generateNfo,
   nfoOverwrite,
+  // STRM。`strm` = 模式 / 对外地址 / 本地根目录（设置页）+ **远端自定义目录**
+  // （工作区左栏，由 workspace 的 strmOptions 补进来 —— 它随任务变, 不在设置里）;
+  // `strmScanRoot` 是**用户实际扫描的目录** —— 镜像结构的根。不能用 `path` 代替:
+  // 那是首行文件所在目录, 递归扫描时它不是扫描根。
+  strm = {},
+  strmScanRoot,
+  generateStrm,
   // 设置页的 OpenList 限流。只随**真会做文件操作**的形态下发（execute / dry-run）:
   // 预览是纯计划、收尾只写 NFO, 后端那两个模型也不读它们（见 api/renamer.py）。
   openlistMaxConcurrent,
@@ -97,11 +104,23 @@ export function buildRenamePayload({
     nfo_overwrite: nfoOverwrite,
   }
 
+  // STRM 的落点配置。**不并进 common**: 收尾（finalize）不做文件操作, 带上它
+  // 会让载荷暗示一个不存在的副作用（后端也不读）。
+  const strmFields = {
+    generate_strm: generateStrm,
+    strm_mode: strm.mode,
+    strm_base_url: strm.baseUrl,
+    strm_local_root: strm.localRoot,
+    strm_remote_root: strm.remoteRoot,
+    strm_scan_root: strmScanRoot,
+  }
+
   if (mode === 'execute') {
     return {
       file_id: fileId,
       override: override ?? null,
       ...common,
+      ...strmFields,
       conflict_strategy: conflictStrategy,
       openlist_max_concurrent: openlistMaxConcurrent,
       openlist_request_interval: openlistRequestInterval,
@@ -118,11 +137,12 @@ export function buildRenamePayload({
       file_ids: fileIds,
       overrides,
       ...common,
+      ...strmFields,
       conflict_strategy: conflictStrategy,
       openlist_max_concurrent: openlistMaxConcurrent,
       openlist_request_interval: openlistRequestInterval,
     }
   }
 
-  return { file_ids: fileIds, overrides, ...common }
+  return { file_ids: fileIds, overrides, ...common, ...strmFields }
 }

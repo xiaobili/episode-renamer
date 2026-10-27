@@ -89,6 +89,9 @@ class BatchRenameResult(BaseModel):
     # nfo_written 分开, 因为被搬走的那个文件不是本程序**生成**的: 混在一起会让
     # 「生成 3 个」把用户自己（或别的工具）写的元数据算进去。
     nfo_carried: list[str] = Field(default_factory=list)
+    # STRM 汇总。dry_run 时描述的是「将写入」的计划, 不落盘。
+    strm_written: list[str] = Field(default_factory=list)
+    strm_skipped: list[dict] = Field(default_factory=list)
 
 
 class SingleRenameResult(BaseModel):
@@ -117,3 +120,6 @@ class SingleRenameResult(BaseModel):
     nfo_written: list[str] = Field(default_factory=list)
     nfo_carried: list[str] = Field(default_factory=list)
     nfo_skipped: list[dict] = Field(default_factory=list)
+    # 该文件写出的 strm（0 或 1 项）与未写的原因。
+    strm_written: list[str] = Field(default_factory=list)
+    strm_skipped: list[dict] = Field(default_factory=list)

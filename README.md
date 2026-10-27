@@ -20,6 +20,7 @@
   > 执行是**逐文件**进行的，因此 `abort` 的含义是「这一个文件不执行」，不再是「整批中止」。
 
 - **TMDB 元数据** — 按剧名匹配 TMDB，可为模板提供 `{title}`，并生成 tvshow / season / episode 三级 NFO（本地与 OpenList 均支持）
+- **STRM 生成** — OpenList 源可为每个视频写出只含播放直链的 `.strm`，支持本地镜像目录 / 远端自定义目录 / 远端同目录三种落点（指定根目录时自动建 `剧名/` 一层），Emby 免挂载网盘直接播放
 - **Docker 一键部署** — 多阶段构建（前端产物打进后端镜像），自带健康检查
 
 ## 🖥️ 界面预览
@@ -45,6 +46,10 @@
 本地与 OpenList 源都会在全部文件跑完后调用 `POST /api/rename/finalize` 写出，请求体里的
 `landed` 是**实际落地**的文件及其真实落点。OpenList 侧通过 `PUT /api/fs/put` 上传，
 因此挂载点必须可写。
+
+**STRM** 随单个文件的 `execute` 写出（与每集 NFO 同一拍），响应里的 `strm_written`
+是本次写出的路径、`strm_skipped` 是未写出的原因；`finalize` 不涉及 strm。
+预览响应的每行带 `strm`（落点与链接）与 `strm_error`（缺配置时的原因）。
 
 | 接口 | 形态 |
 | --- | --- |
@@ -146,8 +151,21 @@ TMDB_API_KEY=your_tmdb_key
 1. **设置页** — 填入 OpenList 服务器地址（如 `http://your-openlist:5244`，实际地址随你的部署而定）与账号密码（支持两步验证码）<!-- VERIFY: OpenList 服务器地址与端口随部署环境而定，仓库内无固定值 -->
 2. **工作区 OpenList 页签** — 登录后选择 mount 点 → 浏览进入具体子目录 → 扫描 → 重命名
 3. **NFO** — 勾选「同时生成 NFO 文件」后，每集 `.nfo` 与剧集级 / 季级 NFO 会写到所选 mount 上；挂载点只读时 NFO 会报「写入失败」，重命名本身不受影响
+4. **STRM** — 在设置页选输出位置（本地镜像 / 远端自定义目录 / 远端同目录）与对外访问地址；工作区勾选「同时生成 STRM 文件」。选「远端自定义目录」时，输出根目录在**工作区左栏**填写（可直接「浏览」云盘选），它随任务变化，不属于设置项。链接形如 `{地址}/d/{网盘路径}`，路径**原样写入不做百分号转义**；`/d/` 要求 OpenList 侧允许游客访问该路径
 
 > 🔒 前端强制要求先进入**子目录**才允许扫描或选择：根目录会被直接拒绝，避免一次拉取整个网盘。
+
+> ⚠️ STRM 的三种落点各有代价：
+>
+> - **本地镜像目录** — 容器部署时该目录必须是 `docker-compose.yml` 里已挂载进容器的 host 路径，否则文件写在容器内部，重启即丢；
+> - **远端自定义目录** — 自动逐级建目录，走 `PUT /api/fs/put`，挂载点必须可写；
+> - **远端同目录** — 与视频同目录同名（扩展名换成 `.strm`），用 rclone 挂载扫描的媒体库会**同时**看到视频和 strm，产生重复条目。
+>
+> 「指定根目录」的两种模式（本地 / 远端自定义）都会先建一层**剧集名目录**，
+> 落点是 `{根}/{剧名}/{文件名}.strm`（视频在季目录时才多一层 `Season 01`）——
+> 一次只扫一部剧也不会把所有 strm 平铺进根目录。
+> 已存在的 strm 一律被覆盖（内容只由本次落点决定）；字幕不生成 strm。
+> 内容不转义意味着文件名带 `#` / `?` 时播放器会截断链接，那类文件需自行改名。
 
 ### TMDB 集成
 
@@ -210,11 +228,12 @@ episode-renamer/
 │   │   │   ├── openlist_scanner.py # 云盘并发扫描
 │   │   │   ├── openlist_renamer.py # 云盘分组批量 move
 │   │   │   ├── openlist_nfo.py     # 云盘 NFO 上传 / 跟随 / 收尾
+│   │   │   ├── strm.py             # STRM 链接拼装、落点推导与三种写盘
 │   │   │   ├── tmdb_client.py      # TMDB API 客户端
 │   │   │   ├── tmdb_resolver.py    # 剧集匹配与缓存
 │   │   │   ├── nfo_writer.py       # NFO 决策与本地落盘
 │   │   │   └── utils.py            # 扩展名 / 补零 / 字幕语言等工具
-│   │   ├── models/                 # Pydantic 模型（api / file / template / tmdb / nfo / openlist）
+│   │   ├── models/                 # Pydantic 模型（api / file / template / tmdb / nfo / openlist / strm）
 │   │   ├── config.py               # Settings 与默认值
 │   │   └── main.py                 # FastAPI 应用、路由挂载与前端静态托管
 │   ├── tests/                      # pytest 套件
@@ -283,4 +302,4 @@ cd frontend
 npm run check                         # 等价于 node scripts/check-all.mjs
 ```
 
-后端用例位于 `backend/tests/`，覆盖解析补零、模板标题、重命名路由、TMDB 客户端与解析器、NFO 决策与本地 / OpenList 落盘。前端 `scripts/check-*.mjs` 覆盖设置 schema、刮削门控、重命名请求体、SFC 可编译性与工作区门控，任一失败即非零退出。
+后端用例位于 `backend/tests/`，覆盖解析补零、模板标题、重命名路由、TMDB 客户端与解析器、NFO 决策与本地 / OpenList 落盘、STRM 链接拼装（原样写入）与三种落点（含剧集名目录）。前端 `scripts/check-*.mjs` 覆盖设置 schema、刮削门控、重命名请求体、SFC 可编译性与工作区门控，任一失败即非零退出。

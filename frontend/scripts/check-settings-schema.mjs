@@ -97,6 +97,26 @@ assert('写盘后读回 apiKey', readSettings(tmdbStorage).tmdb.apiKey, 'secret'
 assert('写盘后读回 language', readSettings(tmdbStorage).tmdb.language, 'ja-JP')
 assert('写盘后读回 enabled', readSettings(tmdbStorage).tmdb.enabled, false)
 
+// --- STRM 分组 ---
+assert('strm 默认走远端同目录', defaultSettings().strm, {
+  mode: 'remote_same', baseUrl: '', localRoot: '',
+})
+assert('strm 半残缺也能补全', normalizeSettings({ strm: { mode: 'local' } }).strm, {
+  mode: 'local', baseUrl: '', localRoot: '',
+})
+// 远端自定义目录**不在设置里**（随任务变, 住工作区）。这条钉住它不会被人
+// 「顺手补回来」—— 补回来就会与左栏那份值互相覆盖。
+assert('strm 不含 remoteRoot 字段', 'remoteRoot' in defaultSettings().strm, false)
+// 非法 mode 必须回落, 不能让一个拼错的 localStorage 值一路走到后端 422。
+assert('非法 strm.mode 回落 remote_same',
+  normalizeSettings({ strm: { mode: 'ftp' } }).strm.mode, 'remote_same')
+assert('strm 路径被 trim',
+  normalizeSettings({ strm: { localRoot: '  /m/strm  ' } }).strm.localRoot, '/m/strm')
+assert('strm 非字符串路径回落空串',
+  normalizeSettings({ strm: { localRoot: 42 } }).strm.localRoot, '')
+assert('strm 地址被 trim',
+  normalizeSettings({ strm: { baseUrl: ' http://ol:5244/ ' } }).strm.baseUrl, 'http://ol:5244/')
+
 // --- 旧字段名迁移（旧的 SettingsView 写的是 defaultTemplate） ---
 assert('旧字段 defaultTemplate 被迁移', normalizeSettings({ defaultTemplate: 'plex' }).defaultTemplateId, 'plex')
 assert('新字段优先于旧字段', normalizeSettings({ defaultTemplate: 'plex', defaultTemplateId: 'emby_standard' }).defaultTemplateId, 'emby_standard')

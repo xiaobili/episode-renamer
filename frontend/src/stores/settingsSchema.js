@@ -5,6 +5,11 @@ export const SETTINGS_KEY = 'episode-renamer:settings'
 
 const CONFLICT_STRATEGIES = ['skip', 'abort', 'overwrite', 'rename_dup']
 
+// STRM 的三种落点。与后端 models/strm.py 的 Literal 逐字一致 —— 两边各写一份
+// 是必要的（一个跑在浏览器、一个跑在服务端), 但取值集合必须相同: 前端多一个值
+// 会让保存成功、执行时 422, 少一个则用户选不到。
+const STRM_MODES = ['local', 'remote_custom', 'remote_same']
+
 // [1,6] 的区间来自 spec 的补零位数设定，与后端 backend/app/core/template.py 的
 // PAD_MIN / PAD_MAX 一致。后端在 PadConfig 构造时钳制，前端在这里钳制 —— 两道
 // 防线各自独立，任一侧改了区间都必须同步另一侧，否则会出现「界面显示 0 而实际
@@ -35,6 +40,17 @@ export function defaultSettings() {
       concurrency: 2,
       requestInterval: 0.5,
     },
+    // STRM 的**长期**部分住设置页: 输出模式（我的库怎么组织）与对外地址
+    // （反代域名, 一年改一次）。两个根目录中, 本地根目录也在这里;
+    // 远端自定义目录**不在这里** —— 它每次任务都可能不同（扫 A 库写 A 目录,
+    // 扫 B 库写 B 目录），故住在工作区左栏, 见 workspace 的 strmRemoteRoot。
+    strm: {
+      // remote_same 是最不需要额外配置的模式（落点由视频位置决定）。
+      mode: 'remote_same',
+      // 留空 = 用 OpenList 服务器地址。反代/容器内网地址不一致时才需要填。
+      baseUrl: '',
+      localRoot: '',
+    },
   }
 }
 
@@ -63,6 +79,10 @@ export function normalizeSettings(raw) {
 
   const tmdb = (raw.tmdb && typeof raw.tmdb === 'object' && !Array.isArray(raw.tmdb))
     ? raw.tmdb
+    : {}
+
+  const strm = (raw.strm && typeof raw.strm === 'object' && !Array.isArray(raw.strm))
+    ? raw.strm
     : {}
 
   // defaultTemplate 是第一版的字段名。这里读一次做迁移，否则升级后
@@ -96,6 +116,18 @@ export function normalizeSettings(raw) {
       serverUrl: asString(openlist.serverUrl, def.openlist.serverUrl),
       concurrency: clampNumber(openlist.concurrency, 1, 10, def.openlist.concurrency, true),
       requestInterval: clampNumber(openlist.requestInterval, 0.1, 5, def.openlist.requestInterval),
+    },
+    strm: {
+      // 非法 mode 回落默认：一个拼错的值不该让每次预览都拿到 422。
+      mode: STRM_MODES.includes(strm.mode) ? strm.mode : def.strm.mode,
+      // 路径与地址都 trim：从文件管理器复制的路径常带首尾空白, 而空格开头的
+      // 本地路径会被当成相对路径, 落点静默跑到进程的工作目录下。
+      baseUrl: asString(strm.baseUrl, def.strm.baseUrl).trim(),
+      localRoot: asString(strm.localRoot, def.strm.localRoot).trim(),
+      // remoteRoot 刻意不在这里: 它是每次任务的工作参数, 存在 workspace 的
+      // 独立 localStorage 键里（episode-renamer:strm-root）。留在设置里会和
+      // 设置页的草稿语义打架 —— 左栏改了值, 设置页那份旧草稿一保存就把它盖回
+      // 去, 而那个字段在界面上根本看不见。
     },
   }
 }

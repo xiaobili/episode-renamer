@@ -14,6 +14,8 @@ export function aggregateBatch({ items, finalize = null, nfoBlockedByScrape = fa
   const nfoWritten = []
   const nfoCarried = []
   const nfoSkipped = []
+  const strmWritten = []
+  const strmSkipped = []
   let executed = 0
   let skipped = 0
   let failed = 0
@@ -30,6 +32,9 @@ export function aggregateBatch({ items, finalize = null, nfoBlockedByScrape = fa
     if (item.nfo_written) nfoWritten.push(...item.nfo_written)
     if (item.nfo_carried) nfoCarried.push(...item.nfo_carried)
     if (item.nfo_skipped) nfoSkipped.push(...item.nfo_skipped)
+    // STRM 只来自逐文件响应（收尾不写 strm）, 所以这里没有 finalize 分支。
+    if (item.strm_written) strmWritten.push(...item.strm_written)
+    if (item.strm_skipped) strmSkipped.push(...item.strm_skipped)
   }
 
   // 收尾响应只并这两项, **不并 nfo_carried**: 携带既有 NFO 是**每文件**的事
@@ -54,6 +59,8 @@ export function aggregateBatch({ items, finalize = null, nfoBlockedByScrape = fa
     nfo_written: nfoWritten,
     nfo_carried: nfoCarried,
     nfo_skipped: nfoSkipped,
+    strm_written: strmWritten,
+    strm_skipped: strmSkipped,
     dry_run: false,
     nfo_blocked_by_scrape: nfoBlockedByScrape,
   }

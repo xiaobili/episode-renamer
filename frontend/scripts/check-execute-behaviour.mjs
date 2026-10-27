@@ -160,6 +160,9 @@ request.defaults.adapter = async (config) => {
       skipped: landed ? 0 : 1,
       failed: 0,
       nfo_written: [], nfo_carried: [], nfo_skipped: [],
+      // STRM 清单：只为「勾了 strm」的请求给, 否则场景 A 的聚合里会多出无关项。
+      strm_written: body.generate_strm && landed ? [`/m/strm/${f.id}.strm`] : [],
+      strm_skipped: [],
     })
   }
 
@@ -340,6 +343,40 @@ check('OpenList 源勾 NFO 时也发 finalize', finalizes().length === 1,
   String(finalizes().length))
 check('OpenList 源的 finalize 带 source=openlist',
   finalizes()[0]?.body?.source === 'openlist', finalizes()[0]?.body?.source)
+
+// ---------------------------------------------------------------------------
+// 场景 E：OpenList 源 + 勾了 STRM —— 每个执行请求都要带配置, 结果要含清单。
+// 判据咬住三处: 载荷里的 strm 五项、扫描根、聚合后的 strm_written。
+// ---------------------------------------------------------------------------
+st.strm = {
+  mode: 'local', baseUrl: 'http://ol:5244',
+  localRoot: '/m/strm',
+}
+// 远端自定义目录不在设置里 —— 它来自 workspace（左栏那个输入框）。
+ws.strmRemoteRoot = '/strm'
+ws.generateStrm = true
+ws.path = '/m/S'
+calls = []
+ws.resultDialog = false
+ws.lastResult = null
+await ws.executeAction(false)
+
+check('勾 STRM 时每个执行请求都带 generate_strm',
+  executes().length > 0 && executes().every(c => c.body.generate_strm === true),
+  JSON.stringify(executes().map(c => c.body.generate_strm)))
+check('执行请求带 strm_mode',
+  executes().every(c => c.body.strm_mode === 'local'),
+  JSON.stringify(executes().map(c => c.body.strm_mode)))
+check('执行请求带 strm 扫描根（镜像结构的根, 不是首行文件目录）',
+  executes().every(c => c.body.strm_scan_root === '/m/S'),
+  JSON.stringify(executes().map(c => c.body.strm_scan_root)))
+check('执行请求带 strm 路径配置',
+  executes().every(c => c.body.strm_local_root === '/m/strm' &&
+    c.body.strm_remote_root === '/strm' && c.body.strm_base_url === 'http://ol:5244'))
+check('STRM 清单并入结果（4 条落地视频，字幕与被跳过的行不计）',
+  ws.lastResult?.strm_written?.length === 4,
+  JSON.stringify(ws.lastResult?.strm_written))
+ws.generateStrm = false
 
 console.log(results.join('\n'))
 const failed = results.filter(r => r.startsWith('FAIL')).length

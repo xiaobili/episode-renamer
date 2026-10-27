@@ -55,6 +55,16 @@ const base = {
   scraped: true,
   generateNfo: true,
   nfoOverwrite: false,
+  // STRM：模式取非默认值（默认是 remote_same），这样「漏发 strm_mode」不会被
+  // 后端默认值掩盖成看起来正确的结果。
+  strm: {
+    mode: 'local',
+    baseUrl: 'http://ol:5244',
+    localRoot: '/m/strm',
+    remoteRoot: '/strm',
+  },
+  strmScanRoot: '/media',
+  generateStrm: true,
 }
 
 // --- 未刮削：唯一的正确表达是显式 tmdb_enabled: false（spec §17.2）---
@@ -149,6 +159,26 @@ assert('只关 TMDB 时 create_season_folder 不受影响', tmdbOffPayload.creat
   const one = buildRenamePayload({ ...base, mode: 'execute', fileIds: undefined })
   assert('下发 OpenList 并发', one.openlist_max_concurrent, 2)
   assert('下发 OpenList 间隔', one.openlist_request_interval, 0.5)
+}
+
+// --- STRM 配置随请求下发（漏发 → 后端按默认 remote_same + 空地址, 全程零报错）---
+{
+  const one = buildRenamePayload({ ...base, mode: 'execute', fileIds: undefined })
+  assert('下发 generate_strm', one.generate_strm, true)
+  assert('下发 strm_mode', one.strm_mode, 'local')
+  assert('下发 strm_base_url', one.strm_base_url, 'http://ol:5244')
+  assert('下发 strm_local_root', one.strm_local_root, '/m/strm')
+  assert('下发 strm_remote_root', one.strm_remote_root, '/strm')
+  assert('下发 strm_scan_root', one.strm_scan_root, '/media')
+
+  const pv = buildRenamePayload({ ...base, mode: 'preview' })
+  assert('预览也下发 strm_scan_root', pv.strm_scan_root, '/media')
+
+  // 收尾不做文件操作, 不该带 strm 配置 —— 带了也不会被读, 但会让「哪个接口做什么」
+  // 这件事在载荷层面变得含混。
+  const finStr = buildRenamePayload({ ...base, mode: 'finalize' })
+  assertKey('finalize 载荷不含 strm_mode', finStr, 'strm_mode', false)
+  assertKey('finalize 载荷不含 strm_scan_root', finStr, 'strm_scan_root', false)
 }
 
 // --- 形状互斥：execute 传了 fileIds 必须抛错，而不是静默取其一 ---
