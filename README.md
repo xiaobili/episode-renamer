@@ -86,7 +86,8 @@ NFO 的写盘在旧名下把目录重建出来，媒体库里就会多出一个�
 也不需要源码目录 —— 一个镜像就是一份完整可运行的产物。
 
 ```bash
-# 构建（需能访问 npm / PyPI；Docker 24+，BuildKit 开启）
+# 构建（需能访问 npm / PyPI）
+# Dockerfile 不使用 BuildKit 专属语法，经典构建器（DOCKER_BUILDKIT=0）与 BuildKit 都能构建
 docker build -t episode-renamer:latest .
 
 # 运行：只做端口映射 + 挂媒体目录

@@ -26,8 +26,7 @@ WORKDIR /build/frontend
 
 # 先只拷清单，让 npm 层在源码变动时仍可命中缓存
 COPY frontend/package.json frontend/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 
 COPY frontend/ ./
 RUN npm run build
@@ -38,9 +37,10 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS python-deps
 
-# 注意：这里**不设** PIP_NO_CACHE_DIR —— 否则下面的 pip 缓存挂载形同虚设。
-# 缓存只存在于挂载点，不会进入镜像层。
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+# 依赖阶段不保留缓存——没有缓存挂载时，pip 缓存会实打实进镜像层。
+# （经典构建器与 BuildKit 都兼容，Dockerfile 不使用任何 BuildKit 专属语法。）
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # build-essential 只在这一层出现：万一时没有预编译 wheel，也能当场编译；
 # 它不会进入最终镜像，最终镜像里没有编译器。
@@ -52,8 +52,7 @@ RUN python -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 
 COPY backend/requirements.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip setuptools wheel \
+RUN pip install --upgrade pip setuptools wheel \
     && pip install -r requirements.txt
 
 
