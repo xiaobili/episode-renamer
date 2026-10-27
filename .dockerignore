@@ -1,16 +1,36 @@
-__pycache__/
+# ---- 版本库 / 元数据 ----
+.git/
+.gitignore
+.workbuddy/
+.trae/
+docs/
+*.md
+
+# ---- 本地运行时产物（镜像里全部重新生成）----
+data/
+logs/
+.pytest_cache/
+backend/tests/
+backend/pytest.ini
+backend/requirements-dev.txt
+frontend/dist/
+node_modules/
+**/__pycache__/
 *.pyc
 *.pyo
 *.db
-.git/
-.trae/
-*.md
-node_modules/
-.env
 *.log
 .DS_Store
-frontend/dist/
-backend/app/__pycache__/
-backend/app/api/__pycache__/
-backend/app/core/__pycache__/
-backend/app/models/__pycache__/
+
+# ---- 前端构建缓存 ----
+frontend/node_modules/
+frontend/.vite/
+frontend/.cache/
+
+# ---- 密钥与本地覆盖（绝不进镜像）----
+.env
+.env.*
+*.pem
+
+# ---- 与运行无关的大文件 ----
+screenshot/

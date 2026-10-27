@@ -22,7 +22,7 @@
 
 - **TMDB 元数据** — 按剧名匹配 TMDB，可为模板提供 `{title}`，并生成 tvshow / season / episode 三级 NFO（本地与 OpenList 均支持）
 - **STRM 生成** — OpenList 源可为每个视频写出只含播放直链的 `.strm`，支持本地镜像目录 / 远端自定义目录 / 远端同目录三种落点（指定根目录时自动建 `剧名/` 一层），Emby 免挂载网盘直接播放
-- **Docker 一键部署** — 多阶段构建（前端产物打进后端镜像），自带健康检查
+- **Docker 单镜像自包含** — 前端产物与 Python 依赖全部打进同一个镜像，运行期不依赖宿主机 Node / Python，可 `docker save` 离线分发；非 root 运行，自带健康检查
 
 ## 🖥️ 界面预览
 
@@ -75,30 +75,83 @@ NFO 的写盘在旧名下把目录重建出来，媒体库里就会多出一个�
 | -- | ----------------------------------------------------------- |
 | 前端 | Vue 3 + Pinia + Vue Router（hash 模式）+ Tailwind CSS 4 + Lucide Icons |
 | 后端 | Python 3.12 + FastAPI + Pydantic 2 + httpx + uvicorn         |
-| 部署 | Docker 多阶段构建 + docker-compose（FastAPI 直接托管前端静态产物）          |
+| 部署 | Docker 单镜像（多阶段构建：前端产物 + venv 依赖 + 非 root 运行）或 docker-compose |
 
 ## 🚀 快速开始
 
 ### 方式一：Docker 部署（推荐）
 
+镜像是**自包含**的：前端在构建期编译成静态产物、Python 依赖装进镜像内的 venv、
+系统级只依赖 `tzdata`（TLS 证书由基础镜像自带）。运行期既不需要宿主机的 Node / Python，
+也不需要源码目录 —— 一个镜像就是一份完整可运行的产物。
+
 ```bash
-# 克隆项目
-git clone https://github.com/xiaobili/episode-renamer.git
-cd episode-renamer
+# 构建（需能访问 npm / PyPI；Docker 24+，BuildKit 开启）
+docker build -t episode-renamer:latest .
 
-# 编辑 docker-compose.yml，把 volumes 里的路径改成你的媒体目录
-# volumes:
-#   - /your/media/path:/media:ro
+# 运行：只做端口映射 + 挂媒体目录
+docker run -d --name episode-renamer \
+  --restart unless-stopped \
+  -p 6969:6969 \
+  -e TZ=Asia/Shanghai \
+  -e TMDB_API_KEY=your_tmdb_key \
+  -v /your/media/path:/media:ro \
+  episode-renamer:latest
+```
 
-# 一键构建并启动
+浏览器访问 `http://localhost:6969` 即可使用。
+
+也可以继续用 compose（镜像名、构建参数、媒体目录都在里面写好了）：
+
+```bash
+# 1) 项目根目录写 .env —— compose 自动读取，用于变量替换（不进镜像）
+cat > .env <<'EOF'
+MEDIA_DIR=/your/media/path
+APP_PORT=6969
+TMDB_API_KEY=your_tmdb_key
+EOF
+
+# 2) 构建并启动
 docker compose up -d --build
 ```
 
-浏览器访问 `http://localhost:6969` 即可使用（compose 把容器的 6969 端口映射到宿主机同名端口）。
+#### 构建参数
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `APP_VERSION` | `1.0.0` | 写进 OCI label（`org.opencontainers.image.version`） |
+| `APP_UID` / `APP_GID` | `1000` | 镜像内运行用户的 uid / gid |
+| `NODE_IMAGE` | `node:20-bookworm-slim` | 前端构建阶段基础镜像 |
+| `PYTHON_IMAGE` | `python:3.12-slim-bookworm` | 依赖安装与运行阶段基础镜像 |
+
+#### 运行期环境变量
+
+`HOST`（默认 `0.0.0.0`）、`PORT`（默认 `6969`）、`DEBUG`（镜像内默认 `false`）、`TZ`
+以及下文「后端环境变量」表中的全部 `TMDB_*` / `OPENLIST_*`。端口改了记得同步 `-p`：
+
+```bash
+docker run -d -p 8080:8080 -e PORT=8080 -v /your/media/path:/media:ro episode-renamer:latest
+```
+
+#### 离线分发 / 多架构
+
+```bash
+# 导出到无网络的机器
+docker save episode-renamer:latest | gzip > episode-renamer-1.0.0.tar.gz
+docker load < episode-renamer-1.0.0.tar.gz
+
+# 多架构（amd64 + arm64）
+docker buildx build --platform linux/amd64,linux/arm64 -t episode-renamer:latest --load .
+```
+
+> ⚠️ 容器以非 root 用户（默认 uid 1000）运行。若媒体目录属主不是 1000，
+> 用 `docker build --build-arg APP_UID=$(id -u) --build-arg APP_GID=$(id -g) -t episode-renamer:latest .`
+> 重建，否则写 NFO / STRM 会因无写权限失败（重命名本身不受影响）。
+> 只读挂载（`/media:ro`）时写盘操作本就会失败，需要写 NFO 请去掉 `:ro`。
 
 ### 方式二：本地开发
 
-**前置条件**：Python 3.12、Node.js 18+（与 Dockerfile 使用的 `python:3.12-slim`、`node:20-alpine` 一致）。
+**前置条件**：Python 3.12、Node.js 18+（与 Dockerfile 使用的 `python:3.12-slim-bookworm`、`node:20-bookworm-slim` 一致）。
 
 ```bash
 # 克隆项目
@@ -120,7 +173,7 @@ npm run dev                  # http://localhost:5173
 
 `frontend/vite.config.js` 已把 `/api` 代理到 `http://localhost:8000`，因此前端开发服务器无需额外配置跨域。
 
-> 注意本地开发与容器的端口不同：`python run.py` 读 `config.py` 的 `PORT`（默认 `8000`），而容器内由 Dockerfile 的 `CMD` 显式传入 `--port 6969`。
+> 注意本地开发与容器的端口不同：`python run.py` 读 `config.py` 的 `PORT`（默认 `8000`），而容器内由 `docker/entrypoint.sh` 按环境变量 `PORT` 启动（镜像默认 `6969`）。
 
 ## ⚙️ 配置
 
@@ -153,7 +206,7 @@ DEBUG=false
 TMDB_API_KEY=your_tmdb_key
 ```
 
-> 容器部署请通过 `docker-compose.yml` 的 `environment:` 段传入。`.dockerignore` 排除了 `.env`，构建镜像时不会把它复制进镜像。
+> 容器部署用 `docker run -e KEY=VALUE` 或 compose 的 `environment:` 传入。`.dockerignore` 排除了 `.env`，构建镜像时不会把它复制进镜像。
 
 ### OpenList 集成
 
@@ -166,7 +219,7 @@ TMDB_API_KEY=your_tmdb_key
 
 > ⚠️ STRM 的三种落点各有代价：
 >
-> - **本地镜像目录** — 容器部署时该目录必须是 `docker-compose.yml` 里已挂载进容器的 host 路径，否则文件写在容器内部，重启即丢；
+> - **本地镜像目录** — 容器部署时该目录必须是 `docker run -v`（或 compose 的 `volumes:`）已挂载进容器的 host 路径，否则文件写在容器内部，重启即丢；
 > - **远端自定义目录** — 自动逐级建目录，走 `PUT /api/fs/put`，挂载点必须可写；
 > - **远端同目录** — 与视频同目录同名（扩展名换成 `.strm`），用 rclone 挂载扫描的媒体库会**同时**看到视频和 strm，产生重复条目。
 >
@@ -264,8 +317,11 @@ episode-renamer/
 │   ├── vite.config.js
 │   └── package.json
 ├── screenshot/                     # README 截图
-├── Dockerfile                      # 多阶段构建
-└── docker-compose.yml
+├── docker/
+│   └── entrypoint.sh               # 容器入口（HOST / PORT 环境变量 → uvicorn，单 worker）
+├── Dockerfile                      # 单镜像多阶段构建（前端产物 + venv 依赖 + 非 root 运行）
+├── .dockerignore                   # 构建上下文裁剪（测试、数据、.env 不进入镜像）
+└── docker-compose.yml              # 可选：端口映射 / 媒体挂载 / 环境变量
 ```
 
 ## 🔌 API 速览
