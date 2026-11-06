@@ -304,3 +304,39 @@ def test_apply_limits_sets_interval():
     client = OpenListClient("http://x", "u", "p")
     client.apply_limits(request_interval=1.25)
     assert client._request_interval == 1.25
+
+
+def test_http_client_is_reused_across_requests(monkeypatch):
+    """一次连接内的多个请求必须复用同一条 TCP 连接。
+
+    每个请求 `async with httpx.AsyncClient(...)` 等于每次重新建连（远端还要
+    完整 TLS 握手）。批量重命名每文件要 5 次请求、一季几十个文件, 这笔固定
+    成本会乘进每一次请求, 而且它让 `request_interval` 变成「间隔 + 建连」,
+    并发调大也压不下去。判据是**客户端实例数**: 5 次请求只该造 1 个。
+    """
+    import app.core.openlist_client as mod
+
+    created: list = []
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+        async def request(self, method, url, **kwargs):
+            return httpx.Response(
+                200, json={"code": 200, "data": {}},
+                request=httpx.Request(method, url),
+            )
+
+    async def _run():
+        client = mod.OpenListClient("http://x", "u", "p")
+        # 间隔归零: 本用例只判断「连了几条」, 不判断节流
+        client.apply_limits(max_concurrent=4, request_interval=0.0)
+        await asyncio.gather(
+            *(client._request("GET", f"/api/fs/list{i}") for i in range(5))
+        )
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeAsyncClient)
+    asyncio.run(_run())
+
+    assert len(created) == 1, f"创建了 {len(created)} 个 HTTP 客户端（应为 1）"

@@ -60,6 +60,8 @@ class FakeClient:
 
     async def list_directory(self, path, refresh=False):
         # NFO 跟随移动会列目录。空目录 = 没有既有 NFO, 与本组用例无关。
+        # 但**要记下来**: 「目录内容列表不得跨文件缓存」那条判据数的是它。
+        self.calls.append(("list", path))
         return [], True
 
     async def put_file(self, path, content):
@@ -271,3 +273,64 @@ def test_payload_carries_nonfatal_stage_errors():
     assert payload["nfo_error"] == "NFO 收尾炸了"
     assert payload["folders_error"] == "目录改名炸了"
     assert payload["results"][0]["status"] == "renamed"
+
+
+def test_directory_creation_is_shared_across_the_batch():
+    """整批只建一次目录 —— 不是每集一次。
+
+    判据是 **mkdir 的次数**而不是耗时: 「这个目录存在」是整批内单调的事实,
+    共用一份缓存即可。每集重建成一次, 在几十集时就会白白多出几十次请求;
+    这正是「并发调到 10 还是很慢」的一半来源（另一半是请求间隔）。
+
+    `remote_custom` 下的 STRM 是**逐级**建目录（`/strm` → `/strm/Show`）,
+    所以三个文件修好后应只有 2 次 mkdir, 修之前是 6 次。
+    """
+    plans = [_plan(_file(f"Show.S01E0{i}.mkv")) for i in range(1, 4)]
+    client = FakeClient()
+
+    _run(execute_openlist_plans(
+        client, plans,
+        nfo_options=NO_NFO,
+        strm_options=StrmOptions(
+            enabled=True, mode="remote_custom",
+            base_url="http://ol", remote_root="/strm",
+        ),
+        strm_scan_root="/media/Show",
+        max_concurrent=3,
+    ))
+
+    mkdirs = [c for c in client.calls if c[0] == "mkdir"]
+    puts = [c for c in client.calls if c[0] == "put_file"]
+    assert sorted(mkdirs) == [
+        ("mkdir", "/", "strm"), ("mkdir", "/strm", "Show"),
+    ], mkdirs
+    assert len(puts) == 3, puts
+
+
+def test_directory_cache_does_not_hide_a_name_conflict():
+    """共享的只有 mkdir 标记, **不**是目录内容列表。
+
+    目录内容在本批执行过程中会变（刚改完名的文件就在里面）。若把内容列表也
+    缓存起来, 「目标已存在」与「旧 NFO 是否存在」都会读到过期快照 —— 前者覆盖
+    用户文件, 后者漏搬 NFO, 两者都是静默的数据事故。所以判据是: 每个文件仍然
+    **各自列一次**目录（三条 list, 而不是一条）。
+    """
+    plans = []
+    for i in range(1, 4):
+        plan = _plan(_file(f"Show.S01E0{i}.mkv"))
+        # 改成「移动进季目录」: status 变 renamed_moved 才会走旧 NFO 跟随,
+        # 那条路径要列目录 —— 正是本用例要盯着的东西。
+        plan.new_dir = "/media/Show/Season 01"
+        plan.new_path = posixpath.join(plan.new_dir, plan.new_filename)
+        plans.append(plan)
+    client = FakeClient()
+
+    _run(execute_openlist_plans(
+        client, plans, nfo_options=NO_NFO, strm_options=NO_STRM, max_concurrent=3,
+    ))
+
+    lists = [c for c in client.calls if c[0] == "list"]
+    mkdirs = [c for c in client.calls if c[0] == "mkdir"]
+    assert len(lists) == 3, lists
+    # 季目录是整批共享的那份缓存: 3 个文件只建一次。
+    assert mkdirs == [("mkdir", "/media/Show", "Season 01")], mkdirs

@@ -269,11 +269,15 @@ async def ensure_remote_dir(
         current = posixpath.join(current, part)
         if current in cache:
             continue
+        # **先占位再 await**: 并发批次里多个文件会同时开始建同一串目录, 判断与
+        # 写入之间若隔着 await, 同一层目录就会被重复 mkdir 好几次。占位是廉价
+        # 的（mkdir 失败本来就被吞掉, 见下面 except 的注释), 换来的是每层目录
+        # 在整批里只建一次。
+        cache[current] = True
         try:
             await client.mkdir(posixpath.dirname(current) or "/", part)
         except Exception:  # noqa: BLE001 —— 已存在是常态, 见 docstring
             pass
-        cache[current] = True
 
 
 async def write_strm_remote(
@@ -294,11 +298,18 @@ async def write_strm_for_plan(
     result: RenameResult,
     options: StrmOptions,
     scan_root: str = "",
+    dir_cache: Optional[dict[str, bool]] = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """单文件执行后的 strm 副作用。返回 (写入的路径, [(未写的原因, 路径)])。
 
     **绝不抛异常** —— strm 是重命名的附属品, 它失败不能让一次已经成功的改名
     变成「操作失败」（与 NFO 同一条纪律）。
+
+    `dir_cache` 由批量执行传入整批共用的一份: `remote_custom` 模式下
+    `ensure_remote_dir` 是**逐级** mkdir（从 `/` 开始）, 而每个文件新建一份空
+    缓存意味着 `/strm`、`/strm/剧名` 这类目录会被每一集重建成一次 —— 实测占
+    每文件请求数的 2/5。共享的只是「这个目录我已经确保存在」这个单调事实,
+    不会过期。
     """
     target, reason = strm_target_for_plan(plan, result, options, scan_root)
     if target is None:
@@ -321,7 +332,10 @@ async def write_strm_for_plan(
             # 仍按「写入失败」降级, 不让它冒到路由层变成 500。
             if client is None:
                 raise RuntimeError("OpenList 客户端未连接")
-            await write_strm_remote(client, target.path, content, {})
+            await write_strm_remote(
+                client, target.path, content,
+                {} if dir_cache is None else dir_cache,
+            )
     except Exception as exc:  # noqa: BLE001
         return [], [(target.path, f"写入失败: {exc}")]
     return [target.path], []

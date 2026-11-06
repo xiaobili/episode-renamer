@@ -66,6 +66,7 @@
               label="最大并发请求"
               :min="1"
               :max="10"
+              hint="同时在飞的请求上限。实际速度还取决于请求间隔与每文件请求数 —— 间隔 0.5s 时这个值调到 10，吞吐也只有约 20 请求/秒。"
             />
             <AppInput
               v-model="draft.openlist.requestInterval"

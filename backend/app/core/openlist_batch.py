@@ -103,6 +103,7 @@ async def execute_openlist_plan_once(
     nfo_matches: dict[str, EpisodeMatch],
     strm_options: StrmOptions,
     strm_scan_root: str = "",
+    dir_cache: Optional[dict[str, bool]] = None,
 ) -> PlanOutcome:
     """一个文件的完整流水线：改名 → 每集 NFO → STRM。
 
@@ -113,7 +114,7 @@ async def execute_openlist_plan_once(
     这一步文件已经改名成功，把一条已完成的重命名报成「操作失败」会骗用户再跑
     一遍，然后撞上「目标已存在」。
     """
-    result = await execute_openlist_one(client, plan)
+    result = await execute_openlist_one(client, plan, dir_cache)
     executed, skipped, failed = count_result(result, False)
 
     is_subtitle = bool(plan.file_info is not None and plan.file_info.is_subtitle)
@@ -136,7 +137,7 @@ async def execute_openlist_plan_once(
     strm_skipped: list[tuple[str, str]] = []
     try:
         strm_written, strm_skipped = await write_strm_for_plan(
-            client, plan, result, strm_options, strm_scan_root,
+            client, plan, result, strm_options, strm_scan_root, dir_cache,
         )
     except Exception as exc:  # noqa: BLE001
         strm_skipped = [(fallback_path, f"STRM 写入失败: {exc}")]
@@ -206,6 +207,16 @@ async def execute_openlist_plans(
     semaphore = asyncio.Semaphore(limit)
     outcomes: list[Optional[PlanOutcome]] = [None] * len(plans)
     done = 0
+    # 整批共用一份「目录已确保存在」的缓存（含 STRM 的逐级 mkdir）。
+    # 一季几十集落在同一个季目录 / 同一个 STRM 根下, 每集重建一遍目录是纯
+    # 浪费: 实测同目录改名 + 远端 STRM 时, 每文件 5 次请求里有 2 次是这种
+    # 重复 mkdir, 共享后降到 3 次。
+    #
+    # **只共享 mkdir 标记, 不共享目录内容列表**: 目录内容会在本批执行过程中
+    # 变化（刚改完名的文件就在里面）, 缓存住会让「目标已存在」与「旧 NFO 是否
+    # 存在」的判断读到过期快照 —— 前者导致覆盖用户文件, 后者导致漏搬 NFO。
+    # 两者都是静默的数据事故, 而多一次 list 只是慢。
+    dir_cache: dict[str, bool] = {}
 
     async def run(index: int, plan: RenamePlan) -> None:
         nonlocal done
@@ -217,6 +228,7 @@ async def execute_openlist_plans(
                     nfo_matches=nfo_matches,
                     strm_options=strm_options,
                     strm_scan_root=strm_scan_root,
+                    dir_cache=dir_cache,
                 )
             except Exception as exc:  # noqa: BLE001
                 outcome = _failed_outcome(plan, exc)

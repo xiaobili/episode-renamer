@@ -54,11 +54,13 @@ async def _ensure_dir(client: OpenListClient, dir_path: str, _cache: dict[str, b
         return
     parent = str(PurePosixPath(dir_path).parent)
     folder = PurePosixPath(dir_path).name
+    # 先占位再 await: 并发批次里同目录的多个文件会同时走到这里, 判断与写入
+    # 之间隔着 await 的话, 季目录会被并发重建好几次。理由同 strm.ensure_remote_dir。
+    _cache[dir_path] = True
     try:
         await client.mkdir(parent, folder)
     except Exception:
         pass
-    _cache[dir_path] = True
 
 
 async def execute_openlist_batch(
@@ -253,6 +255,7 @@ async def execute_openlist_batch(
 async def execute_openlist_one(
     client: OpenListClient,
     plan: RenamePlan,
+    dir_cache: Optional[dict[str, bool]] = None,
 ) -> RenameResult:
     """执行**一个** OpenList plan。
 
@@ -281,7 +284,12 @@ async def execute_openlist_one(
         result.status = "skipped_same"
         return result
 
-    dir_cache: dict[str, bool] = {}
+    # 目标目录的「已确保存在」标记。批量执行传入**同一份**缓存: 一季几十集
+    # 落到同一个季目录, 每集都重新 mkdir 一次既是纯浪费, 也是一串必然失败的
+    # 调用（mkdir 撞已存在会抛, 被 _ensure_dir 吞掉）。
+    # 只共享 mkdir 标记, **不**共享目录内容列表 —— 后者会因缓存过期让
+    # 「目标已存在」的判断出错（见 openlist_batch 的注释）。
+    dir_cache = {} if dir_cache is None else dir_cache
     # move 成功之后文件的**真实位置**。它是下面那段补偿的源路径: 移动已经发生,
     # original_path 那个位置**已经空了**。
     moved_to: Optional[str] = None

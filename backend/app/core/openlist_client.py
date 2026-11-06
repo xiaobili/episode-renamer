@@ -112,6 +112,8 @@ class OpenListClient:
         # 在运行时生效 —— 见 spec §7.2。
         self._request_interval = settings.openlist_request_interval
         self._lock = asyncio.Lock()
+        # 复用的 HTTP 客户端（连接池）。见 `_http_client` 的注释。
+        self._http: Optional[httpx.AsyncClient] = None
 
     @property
     def max_concurrent(self) -> int:
@@ -122,6 +124,30 @@ class OpenListClient:
         「限流器是 2、文件级并发仍是 3」的静默偏差。
         """
         return self._limiter._limit
+
+    def _http_client(self) -> httpx.AsyncClient:
+        """取（必要时创建）本连接复用的 HTTP 客户端。
+
+        原来每个请求都 `async with httpx.AsyncClient(...)`, 也就是**每次请求都
+        新建一条 TCP 连接**, 远端还是完整 TLS 握手。批量重命名一个文件就要 5 次
+        请求、一季几十个文件, 这笔固定成本会叠在每一次请求上; 而且它把
+        `openlist_request_interval` 的效果放大成「间隔 + 建连」, 并发调大也压不
+        下去。连接池让 keep-alive 生效, 代价是必须显式关（见 `aclose`）。
+
+        `httpx.AsyncClient` 本身支持并发使用, 这里不需要额外加锁: 创建是同步的,
+        事件循环里不会在两个 await 之间被切走。
+        """
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=httpx.Timeout(60.0, connect=10.0), verify=False,
+            )
+        return self._http
+
+    async def aclose(self) -> None:
+        """关闭连接池。断开连接 / 应用退出时调用; 重复调用是安全的。"""
+        http, self._http = self._http, None
+        if http is not None:
+            await http.aclose()
 
     async def _wait_interval(self) -> None:
         now = time.monotonic()
@@ -165,11 +191,12 @@ class OpenListClient:
                     req_headers["Authorization"] = self.token
 
                 try:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), verify=False) as client:
-                        resp = await client.request(method, url, headers=req_headers, **kwargs)
-                        self.last_request_time = time.monotonic()
-                        resp.raise_for_status()
-                        return resp.json()
+                    resp = await self._http_client().request(
+                        method, url, headers=req_headers, **kwargs
+                    )
+                    self.last_request_time = time.monotonic()
+                    resp.raise_for_status()
+                    return resp.json()
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code != 401 or not self.token:
                         raise

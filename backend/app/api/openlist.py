@@ -16,6 +16,12 @@ async def login(req: OpenListLoginRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # 同一服务器 + 账号重新登录时, 旧客户端持有的连接池必须显式关掉: 客户端
+    # 现在自带一条复用的 httpx 连接（见 `_http_client`）, 直接覆盖字典会把它
+    # 连同 socket 一起丢掉, 只能等 GC。
+    previous = get_client(client.server_url, client.username)
+    if previous is not None and previous is not client:
+        await previous.aclose()
     register_client(client)
 
     return {
@@ -40,6 +46,9 @@ async def test_connection(req: OpenListLoginRequest):
         }
     except Exception as e:
         return {"success": False, "connected": False, "error": str(e)}
+    finally:
+        # 试连用的是一次性客户端, 用完就关: 它的连接池没有别人会用。
+        await client.aclose()
 
 
 @router.get("/status")
@@ -76,6 +85,9 @@ async def get_mounts():
 @router.post("/logout")
 async def logout():
     from .scanner import _openlist_clients
+    # 先关连接池再清字典: 断开之后没人会再用这些客户端, 留着 socket 只是泄漏。
+    for client in list(_openlist_clients.values()):
+        await client.aclose()
     _openlist_clients.clear()
     return {"success": True, "message": "已断开连接"}
 
