@@ -336,31 +336,175 @@ check('重扫失败时改名结果完好（4 执行 / 0 失败）',
   `executed=${ws.lastResult?.executed} failed=${ws.lastResult?.failed}`)
 
 // ---------------------------------------------------------------------------
-// 场景 D：OpenList 源 + 勾了 NFO —— 收尾同样必须发。
-// 判据直接咬住旧的 `source === 'local'` 条件: 保留它就一条 finalize 都不会发。
+// 场景 D / E / F / G：OpenList 源 —— **整批一次请求**，收尾与目录改名都归后端。
+//
+// 与 A/B/C 的分工不同：A/B/C 钉的是本地逐文件路径（axios，一次一个文件）；
+// OpenList 现在走 `/rename/batch-execute`（fetch + SSE），前端只剩三件事 ——
+// 发一次请求、把 progress 帧转成进度、把 result 交给对话框。所以这里钉的是
+// **边界**，而不是逐文件的细节：
+//   · 只发一次批量请求，不再逐文件、不再单独 finalize、不再单独 folders；
+//   · 载荷必须带齐模板 / 覆盖 / NFO / STRM / 目录三个布尔 / 限流设置；
+//   · 进度来自 progress 帧；收尾阶段的失败只降级成提示，不吞掉改名结果。
+//
+// fetch 替身必须造出**真的流**：Node 22 的 Response / ReadableStream 直接可用。
+// 换成「一次性返回 JSON」的假实现，SSE 解析与逐帧进度就完全没有判据了。
+// ---------------------------------------------------------------------------
+let batchBodies = []
+let failBatchNfo = false
+let failBatchFolders = false
+
+const batchOutcome = (id) => {
+  const f = byId(id)
+  if (failExecuteIds.has(id)) {
+    return {
+      row: {
+        id: `plan-${id}`, original_path: f.path, new_path: '',
+        original_filename: f.filename, new_filename: '',
+        success: false, status: 'failed', error: '磁盘炸了', nfo_path: null,
+      },
+      counts: [0, 0, 1], landed: null,
+    }
+  }
+  if (id === 'f3') {
+    // 目标已存在 → skipped_conflict（不在落地集合里）
+    return {
+      row: {
+        id: `plan-${id}`, original_path: f.path, new_path: f.path,
+        original_filename: f.filename, new_filename: f.filename,
+        success: false, status: 'skipped_conflict', error: null, nfo_path: null,
+      },
+      counts: [0, 1, 0], landed: null,
+    }
+  }
+  return {
+    row: {
+      id: `plan-${id}`, original_path: f.path, new_path: newPathOf(f),
+      original_filename: f.filename, new_filename: newPathOf(f).split('/').pop(),
+      success: true, status: 'renamed', error: null, nfo_path: null,
+    },
+    counts: [1, 0, 0],
+    // **字幕不算落地**：与后端 landed_path_of 的判据一致。字幕与视频共用同一套
+    // status, 但它的落点不该给组级 NFO / 后续动作背书。
+    landed: f.is_subtitle ? null : newPathOf(f),
+  }
+}
+
+globalThis.fetch = async (url, options = {}) => {
+  const body = JSON.parse(options.body)
+  // 与 axios adapter 记的 `config.url` 对齐（axios 的 baseURL 不含在 url 里,
+  // fetch 拿到的是完整的 /api/...）。不归一化的话, 「只发一次批量请求」这条
+  // 断言会对着 0 个调用恒真 —— 而那正好是它要抓的东西。
+  calls.push({ url: url.replace(/^\/api/, ''), body })
+  batchBodies.push(body)
+
+  const outcomes = body.file_ids.map(batchOutcome)
+  const rows = outcomes.map(o => o.row)
+  const executed = outcomes.reduce((n, o) => n + o.counts[0], 0)
+  const skipped = outcomes.reduce((n, o) => n + o.counts[1], 0)
+  const failed = outcomes.reduce((n, o) => n + o.counts[2], 0)
+  const landings = outcomes.filter(o => o.landed).map(o => o.landed)
+
+  const frames = [{ type: 'start', total: body.file_ids.length, source: 'openlist' }]
+  body.file_ids.forEach((id, i) => {
+    frames.push({
+      type: 'progress', done: i + 1, total: body.file_ids.length,
+      current: byId(id).filename,
+    })
+  })
+
+  const result = {
+    success: failed === 0,
+    source: 'openlist',
+    executed,
+    skipped,
+    failed,
+    total: body.file_ids.length,
+    conflicts: [],
+    results: rows,
+    errors: rows.filter(r => r.error).map(r => r.error),
+    // 后端只在真有落地时才写组级 NFO; 收尾炸了则一份都没有。
+    nfo_written: body.generate_nfo && landings.length && !failBatchNfo ? [GROUP_NFO] : [],
+    nfo_carried: [],
+    nfo_skipped: [],
+    strm_written: body.generate_strm
+      ? landings.map(p => p.replace(/\.[^.]+$/, '.strm'))
+      : [],
+    strm_skipped: [],
+    folders_renamed: body.rename_folders && !failBatchFolders
+      ? [{ old_path: '/m/S', new_path: '/m/S/Show (2008) [tmdbid-1396]', show_name: 'Show' }]
+      : [],
+    folders_skipped: [],
+    nfo_error: failBatchNfo ? '收尾炸了' : null,
+    folders_error: failBatchFolders ? '目录改名炸了' : null,
+    dry_run: false,
+  }
+  frames.push({ type: 'result', result })
+
+  const text = frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('')
+  return new Response(text, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  })
+}
+
+const batchCalls = () => calls.filter(c => c.url === '/rename/batch-execute')
+
+// ---------------------------------------------------------------------------
+// 场景 D：整批一次请求 + NFO 收尾归后端 + 部分失败只占自己的行
 // ---------------------------------------------------------------------------
 failFinalize = false
-failExecuteIds = new Set()
+failExecuteIds = new Set(['f2'])
 failPreview = false
-st.openlist.requestInterval = 0   // 云盘执行有请求间隔, 归零免得白等
+failBatchNfo = false
+failBatchFolders = false
+st.openlist.requestInterval = 0   // 值要随载荷下发, 归零也让断言好读
 await ws.doScan()
 await tick(30)
 useFilesStore().source = 'openlist'
 ws.generateNfo = true
 calls = []
+batchBodies = []
 ws.resultDialog = false
 ws.lastResult = null
 await ws.executeAction(false)
 
-check('OpenList 源勾 NFO 时也发 finalize', finalizes().length === 1,
+check('OpenList 源整批只发一次请求', batchCalls().length === 1, String(batchCalls().length))
+check('OpenList 源不再逐文件发 /rename/execute', executes().length === 0,
+  String(executes().length))
+check('OpenList 源不再单独发 finalize（收尾归后端）', finalizes().length === 0,
   String(finalizes().length))
-check('OpenList 源的 finalize 带 source=openlist',
-  finalizes()[0]?.body?.source === 'openlist', finalizes()[0]?.body?.source)
+check('批量载荷用 file_ids（不是单数 file_id）',
+  Array.isArray(batchBodies[0]?.file_ids) && batchBodies[0].file_ids.length === 5 &&
+    !('file_id' in (batchBodies[0] || {})),
+  JSON.stringify(batchBodies[0]?.file_ids))
+check('批量载荷带 source=openlist 与 generate_nfo',
+  batchBodies[0]?.source === 'openlist' && batchBodies[0]?.generate_nfo === true,
+  `${batchBodies[0]?.source} / ${batchBodies[0]?.generate_nfo}`)
+check('批量载荷带限流设置（并发数 / 请求间隔在后端生效）',
+  batchBodies[0]?.openlist_max_concurrent === st.openlist.concurrency &&
+    batchBodies[0]?.openlist_request_interval === st.openlist.requestInterval,
+  `${batchBodies[0]?.openlist_max_concurrent} / ${batchBodies[0]?.openlist_request_interval}`)
+check('部分失败时结果仍按后端计数（3 执行 / 1 失败 / 1 跳过）',
+  ws.lastResult?.executed === 3 && ws.lastResult?.failed === 1 &&
+    ws.lastResult?.skipped === 1,
+  `executed=${ws.lastResult?.executed} failed=${ws.lastResult?.failed} skipped=${ws.lastResult?.skipped}`)
+check('结果里仍列出全部 5 个文件', ws.lastResult?.results?.length === 5,
+  String(ws.lastResult?.results?.length))
+check('失败那一行带后端给的 detail（不是 axios 的 500 文案）',
+  ws.lastResult?.results?.find(r => r.status === 'failed')?.error === '磁盘炸了',
+  JSON.stringify(ws.lastResult?.results?.find(r => r.status === 'failed')?.error))
+check('组级 NFO 并入结果（后端收尾真的接了）',
+  (ws.lastResult?.nfo_written || []).some(n => n === GROUP_NFO),
+  JSON.stringify(ws.lastResult?.nfo_written))
+// 进度必须来自 progress 帧：批量接口只有一条连接, 「done/total」除了流没有别的来源。
+check('进度按 progress 帧推进到终值',
+  ws.progress.done === 5 && ws.progress.total === 5,
+  `done=${ws.progress.done} total=${ws.progress.total}`)
 
 // ---------------------------------------------------------------------------
-// 场景 E：OpenList 源 + 勾了 STRM —— 每个执行请求都要带配置, 结果要含清单。
-// 判据咬住三处: 载荷里的 strm 五项、扫描根、聚合后的 strm_written。
+// 场景 E：STRM —— 配置随批量载荷下发，清单由后端汇总
 // ---------------------------------------------------------------------------
+failExecuteIds = new Set()
 st.strm = {
   mode: 'local', baseUrl: 'http://ol:5244',
   localRoot: '/m/strm',
@@ -370,33 +514,32 @@ ws.strmRemoteRoot = '/strm'
 ws.generateStrm = true
 ws.path = '/m/S'
 calls = []
+batchBodies = []
 ws.resultDialog = false
 ws.lastResult = null
 await ws.executeAction(false)
 
-check('勾 STRM 时每个执行请求都带 generate_strm',
-  executes().length > 0 && executes().every(c => c.body.generate_strm === true),
-  JSON.stringify(executes().map(c => c.body.generate_strm)))
-check('执行请求带 strm_mode',
-  executes().every(c => c.body.strm_mode === 'local'),
-  JSON.stringify(executes().map(c => c.body.strm_mode)))
-check('执行请求带 strm 扫描根（镜像结构的根, 不是首行文件目录）',
-  executes().every(c => c.body.strm_scan_root === '/m/S'),
-  JSON.stringify(executes().map(c => c.body.strm_scan_root)))
-check('执行请求带 strm 路径配置',
-  executes().every(c => c.body.strm_local_root === '/m/strm' &&
-    c.body.strm_remote_root === '/strm' && c.body.strm_base_url === 'http://ol:5244'))
-check('STRM 清单并入结果（4 条落地视频，字幕与被跳过的行不计）',
-  ws.lastResult?.strm_written?.length === 4,
+check('批量载荷带 generate_strm',
+  batchBodies[0]?.generate_strm === true, String(batchBodies[0]?.generate_strm))
+check('批量载荷带 strm_mode', batchBodies[0]?.strm_mode === 'local',
+  String(batchBodies[0]?.strm_mode))
+check('批量载荷带 strm 扫描根（镜像结构的根, 不是首行文件目录）',
+  batchBodies[0]?.strm_scan_root === '/m/S', String(batchBodies[0]?.strm_scan_root))
+check('批量载荷带 strm 路径配置',
+  batchBodies[0]?.strm_local_root === '/m/strm' &&
+    batchBodies[0]?.strm_remote_root === '/strm' &&
+    batchBodies[0]?.strm_base_url === 'http://ol:5244',
+  JSON.stringify([batchBodies[0]?.strm_local_root, batchBodies[0]?.strm_remote_root]))
+check('STRM 清单并入结果（3 条落地视频，字幕与被跳过的行不计）',
+  ws.lastResult?.strm_written?.length === 3,
   JSON.stringify(ws.lastResult?.strm_written))
 ws.generateStrm = false
 
 // ---------------------------------------------------------------------------
-// 场景 F：勾了「重命名剧集文件夹」—— 顺序 + 载荷 + 扫描路径重写。
+// 场景 F：勾了「重命名剧集文件夹」—— 归后端做，前端只重写扫描路径。
 //
-// 这一段钉的是**顺序**：execute → finalize → folders。排在 finalize 之前的话，
-// NFO 的写盘会在旧名下把目录重建出来（媒体库里多一个只有 tvshow.nfo 的空文件夹），
-// 而单测层面看不到任何异常 —— 只有真实驱动一遍 store 才抓得到。
+// 后端把它排在 NFO 收尾之后（顺序在后端判据里钉住）。前端这里钉的是**边界**：
+// 不能再单独发 /rename/folders, 否则目录会被改两次（第二次必然失败或撞名）。
 // ---------------------------------------------------------------------------
 const foldersCalls = () => calls.filter(c => c.url === '/rename/folders')
 ws.generateNfo = true
@@ -404,39 +547,64 @@ ws.renameFolders = true
 ws.path = '/m/S'
 await ws.doScan()
 await tick(30)
+// doScan 会把 filesStore.source 钉回 'local'（它只扫本地）—— 本场景要的是
+// OpenList 的批量路径, 所以在扫描之后、执行之前再置一次。
+useFilesStore().source = 'openlist'
 calls = []
+batchBodies = []
 ws.resultDialog = false
 ws.lastResult = null
 await ws.executeAction(false)
 
-check('勾了目录改名时发一次 /rename/folders', foldersCalls().length === 1,
+check('目录改名不再单独发请求（已并入批量执行）', foldersCalls().length === 0,
   String(foldersCalls().length))
-check('目录改名排在**所有执行与收尾之后**',
-  foldersCalls().length === 1 &&
-    calls.findIndex(c => c.url === '/rename/folders') >
-      Math.max(
-        calls.map(c => c.url).lastIndexOf('/rename/execute'),
-        calls.map(c => c.url).lastIndexOf('/rename/finalize'),
-      ),
-  JSON.stringify(calls.map(c => c.url)))
-check('目录改名的载荷带 rename_folders 与批量 file_ids',
-  foldersCalls()[0]?.body?.rename_folders === true &&
-    Array.isArray(foldersCalls()[0]?.body?.file_ids) &&
-    foldersCalls()[0].body.file_ids.length === 5,
-  JSON.stringify(foldersCalls()[0]?.body?.file_ids))
-// 目录不覆盖、不写元数据 —— 这两类字段出现在载荷里会让「改目录会做什么」变得含混。
-check('目录改名的载荷不带 conflict_strategy 与 strm 字段',
-  foldersCalls()[0] && !('conflict_strategy' in foldersCalls()[0].body) &&
-    !('generate_strm' in foldersCalls()[0].body) &&
-    !('strm_mode' in foldersCalls()[0].body),
-  JSON.stringify(Object.keys(foldersCalls()[0]?.body || {})))
+check('批量载荷带 rename_folders 与批量 file_ids',
+  batchBodies[0]?.rename_folders === true &&
+    Array.isArray(batchBodies[0]?.file_ids) && batchBodies[0].file_ids.length === 5,
+  JSON.stringify(batchBodies[0]?.file_ids))
 // 改了名之后扫描路径必须跟着走，否则紧接着那次重扫必然失败（旧目录已不存在）。
 check('目录改名后扫描路径被改写到新目录',
   ws.path === '/m/S/Show (2008) [tmdbid-1396]', ws.path)
 check('目录改名结果并入结果对话框',
   ws.lastResult?.folders_renamed?.[0]?.new_path === '/m/S/Show (2008) [tmdbid-1396]',
   JSON.stringify(ws.lastResult?.folders_renamed))
+
+// ---------------------------------------------------------------------------
+// 场景 G：收尾阶段的失败 —— 只降级成提示，不吞掉已完成的改名结果。
+//
+// 这两句与本地路径的 finalize / folders 失败**同一口径**：走到这里每个文件的
+// 改名都已经做完了, 报「操作失败」会让用户再跑一遍并撞上「目标已存在」。
+// ---------------------------------------------------------------------------
+failBatchNfo = true
+failBatchFolders = true
+ws.toast.msg = ''
+ws.toast.type = ''
+await ws.doScan()
+await tick(30)
+useFilesStore().source = 'openlist'
+ws.toast.msg = ''
+ws.toast.type = ''
+calls = []
+batchBodies = []
+ws.resultDialog = false
+ws.lastResult = null
+await ws.executeAction(false)
+
+check('收尾失败时改名结果完好（4 执行 / 1 跳过 / 0 失败）',
+  ws.lastResult?.executed === 4 && ws.lastResult?.failed === 0 &&
+    ws.lastResult?.skipped === 1,
+  `executed=${ws.lastResult?.executed} failed=${ws.lastResult?.failed} skipped=${ws.lastResult?.skipped}`)
+check('收尾失败时降级为「没有组级 NFO」',
+  (ws.lastResult?.nfo_written || []).length === 0,
+  JSON.stringify(ws.lastResult?.nfo_written))
+check('目录改名失败时如实告知（不是「操作失败」）',
+  ws.toast.type === 'warning' && ws.toast.msg.startsWith('重命名已完成，但剧集文件夹未改名'),
+  `${ws.toast.type} / ${ws.toast.msg}`)
+check('NFO 收尾失败时结果对话框仍然打开', ws.resultDialog === true)
+check('收尾失败时 executing 已复位', ws.executing === false && ws.executeDryRun === false)
 ws.renameFolders = false
+failBatchNfo = false
+failBatchFolders = false
 
 console.log(results.join('\n'))
 const failed = results.filter(r => r.startsWith('FAIL')).length

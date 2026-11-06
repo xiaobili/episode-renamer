@@ -8,11 +8,14 @@
 //
 // 与 settingsSchema.js 同规格：纯函数 + node 断言（scripts/check-rename-payload.mjs）。
 // 本模块**不得** import 任何东西 —— 否则 node 加载不了它。
-// 四种形态:
+// 五种形态:
 //   preview   —— 批量计划（RenamePreviewRequest）
 //   dry-run   —— 批量计划 + 冲突策略（RenameDryRunRequest）。**干跑仍是批量**:
 //                它是纯计划操作, 不写盘, 没有进度可言。
 //   execute   —— **单个文件**（RenameExecuteRequest）。file_id / override 用单数。
+//   batch     —— **整批一次执行**（RenameBatchExecuteRequest, 仅 OpenList 源）。
+//                字段与 dry-run 相同: 它也要冲突策略与限流。区别不在载荷, 而在
+//                「谁拥有批次视野」—— 并发与收尾顺序全在后端。
 //   finalize  —— 批量收尾（RenameFinalizeRequest）, 额外带 landed 真实落点。
 //   folders   —— 批量改剧集目录名（RenameFoldersRequest）。**不带** conflict_strategy
 //                与 strm 字段: 目录不覆盖、不自动编号, 也不写任何元数据。三个布尔
@@ -70,7 +73,7 @@ export function buildRenamePayload({
     if (Array.isArray(fileIds) && fileIds.length) {
       throw new Error('buildRenamePayload: execute 模式不得传 fileIds')
     }
-  } else if (mode === 'preview' || mode === 'dry-run' || mode === 'finalize' || mode === 'folders') {
+  } else if (mode === 'preview' || mode === 'dry-run' || mode === 'batch' || mode === 'finalize' || mode === 'folders') {
     if (!Array.isArray(fileIds)) {
       throw new Error(`buildRenamePayload: ${mode} 模式必须传 fileIds`)
     }
@@ -149,7 +152,7 @@ export function buildRenamePayload({
     return { file_ids: fileIds, overrides, ...common }
   }
 
-  if (mode === 'dry-run') {
+  if (mode === 'dry-run' || mode === 'batch') {
     return {
       file_ids: fileIds,
       overrides,

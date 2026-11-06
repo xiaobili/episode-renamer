@@ -105,6 +105,17 @@ class RenameDryRunRequest(RenameBatchRequest):
     """干跑仍是批量 —— 它是纯计划操作, 不写盘, 没有进度可言。"""
 
 
+class RenameBatchExecuteRequest(RenameBatchRequest):
+    """**整批一次执行**（当前仅 OpenList 源）。
+
+    与 `RenameExecuteRequest` 的区别不是「少发几次请求」, 而是**谁拥有批次视野**:
+    并发上限、请求间隔、批次内重名降级、收尾顺序全部由后端裁决, 调用方不再需要
+    自己拼并发池, 也不需要回传 `landed` 让收尾接口重建计划。
+
+    `file_ids` 的顺序就是结果顺序 —— 前端按行对回表格, 不能按扫描缓存顺序返回。
+    """
+
+
 class RenameFoldersRequest(RenameBatchRequest):
     """剧集文件夹改名（批次级, **真动盘**）。
 

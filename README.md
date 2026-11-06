@@ -40,34 +40,53 @@
 
 ## 🔌 执行接口
 
-重命名按**单个文件**执行：前端逐个并发发起 `POST /api/rename/execute`，并据此显示进度条。
+两个数据源各有一条执行路径，差别是**谁拥有批次视野**：
+
+**本地源 —— 逐文件执行。** 前端逐个并发发起 `POST /api/rename/execute`，并据此显示进度条。
 每集 NFO 随 `execute` 一起写出 —— 单个文件的改写与它自己的 NFO 是同一次请求的事实。
-
 剧集级 / 季级 NFO（`tvshow.nfo` / `season.nfo`）是整批的事实：**开启 NFO 生成时**，
-本地与 OpenList 源都会在全部文件跑完后调用 `POST /api/rename/finalize` 写出，请求体里的
-`landed` 是**实际落地**的文件及其真实落点。OpenList 侧通过 `PUT /api/fs/put` 上传，
-因此挂载点必须可写。
+全部文件跑完后前端调用 `POST /api/rename/finalize`，请求体里的 `landed` 是**实际落地**
+的文件及其真实落点。固定顺序由前端 `executeAction` 保证：逐文件 `execute` → `finalize`
+→ `folders`。
 
-**STRM** 随单个文件的 `execute` 写出（与每集 NFO 同一拍），响应里的 `strm_written`
-是本次写出的路径、`strm_skipped` 是未写出的原因；`finalize` 不涉及 strm。
-预览响应的每行带 `strm`（落点与链接）与 `strm_error`（缺配置时的原因）。
+**OpenList 源 —— 整批一次请求。** 前端只发一次 `POST /api/rename/batch-execute`
+（`text/event-stream`），后端在一次请求里完成**并发控制 + 重命名 + 每集 NFO + STRM +
+剧集级 NFO 收尾 + 剧集文件夹改名**，并用 SSE 逐帧回传进度：
+
+| 帧 | 内容 |
+| --- | --- |
+| `start` | `{total, source}` |
+| `progress` | `{done, total, current}` —— 进度条的唯一来源 |
+| `result` | 与 `BatchRenameResult` 同形的整批结果 |
+| `error` | 批次级硬失败（单文件失败仍在 `result` 里） |
+
+四件**批次级**事实因此归后端所有：并发上限（文件级信号量 + 客户端限流器各管一层）、
+批次内目标重名时自动降级为串行（避免并发双写同一目标）、执行 → NFO 收尾 → 目录改名的
+顺序、以及 `landed` 的判定。收尾阶段的失败以 `nfo_error` / `folders_error` **非致命**
+返回 —— 那时每个文件的改名都已完成，报「整批失败」会让用户重跑并撞上「目标已存在」。
+OpenList 侧 NFO 通过 `PUT /api/fs/put` 上传，因此挂载点必须可写。
+
+**STRM** 随单个文件的执行写出（与每集 NFO 同一拍），`strm_written` 是写出的路径、
+`strm_skipped` 是未写出的原因；收尾不涉及 strm。预览响应的每行带 `strm`（落点与链接）
+与 `strm_error`（缺配置时的原因）。
 
 | 接口 | 形态 |
 | --- | --- |
 | `POST /api/rename/preview` | 批量（纯计划，不写盘） |
 | `POST /api/rename/dry-run` | 批量（纯计划，不写盘） |
-| `POST /api/rename/execute` | **单文件**（每集 NFO 在这里写） |
-| `POST /api/rename/finalize` | 批量收尾（只写剧集级 / 季级 NFO） |
-| `POST /api/rename/folders` | 批量（**只改剧集目录名**，见下） |
+| `POST /api/rename/execute` | **单文件**（本地源；每集 NFO 在这里写） |
+| `POST /api/rename/batch-execute` | **整批一次**（OpenList 源；SSE 流式进度） |
+| `POST /api/rename/finalize` | 批量收尾（本地源；只写剧集级 / 季级 NFO） |
+| `POST /api/rename/folders` | 批量（本地源；**只改剧集目录名**，见下） |
 
-**剧集文件夹重命名**（勾选「同时重命名剧集文件夹」时）走独立的 `POST /api/rename/folders`：
-改的是目录而不是文件，因此是批次级动作，且**必须排在 `finalize` 之后** —— 先改目录会让
-NFO 的写盘在旧名下把目录重建出来，媒体库里就会多出一个只有 `tvshow.nfo` 的空文件夹。
-目标已存在时跳过而不覆盖（`…[tmdbid-1396]_1` 这种名字媒体服务器认不出）。
+**剧集文件夹重命名**（勾选「同时重命名剧集文件夹」时）改的是目录而不是文件，因此是
+批次级动作，且**必须排在 NFO 收尾之后** —— 先改目录会让 NFO 的写盘在旧名下把目录重建
+出来，媒体库里就会多出一个只有 `tvshow.nfo` 的空文件夹。目标已存在时跳过而不覆盖
+（`…[tmdbid-1396]_1` 这种名字媒体服务器认不出）。本地源走独立的
+`POST /api/rename/folders`（由前端在 `finalize` 之后调用），OpenList 源由后端在批量
+执行内部按同一顺序完成。
 
-三个动作的固定顺序（前端 `executeAction` 保证）：逐文件 `execute` → `finalize` → `folders`。
-
-> 后端为单 worker 进程运行，`execute` 与 `finalize` 依赖进程内的文件缓存，**不要**加 `--workers`。
+> 后端为单 worker 进程运行，逐文件接口依赖进程内的文件缓存，**不要**加 `--workers`。
 
 ## 🛠️ 技术栈
 

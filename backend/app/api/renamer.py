@@ -1,11 +1,15 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from typing import Optional
+import asyncio
+import json
 import os
 import posixpath
 
 from ..models.api import (
-    RenameBatchRequest, RenameDryRunRequest, RenameExecuteRequest,
-    RenameFinalizeRequest, RenameFoldersRequest, RenamePreviewRequest,
+    RenameBatchRequest, RenameBatchExecuteRequest, RenameDryRunRequest,
+    RenameExecuteRequest, RenameFinalizeRequest, RenameFoldersRequest,
+    RenamePreviewRequest,
 )
 from ..models.file import (
     FileInfo, ParsedInfo, RenamePlan, BatchRenameResult, OverrideInfo,
@@ -20,6 +24,9 @@ from ..core.local_renamer import (
 )
 from ..core.openlist_renamer import (
     build_openlist_rename_plan, execute_openlist_batch, execute_openlist_one,
+)
+from ..core.openlist_batch import (
+    batch_result_payload, execute_openlist_plans,
 )
 from ..core.openlist_nfo import (
     episode_nfo_for_plan, finalize_openlist_nfo, plan_openlist_nfo,
@@ -561,6 +568,191 @@ async def execute_rename(req: RenameExecuteRequest):
         strm_written=strm_written,
         strm_skipped=[{"path": p, "reason": r} for p, r in strm_skipped],
     ).model_dump()
+
+
+def _files_in_request_order(file_ids: list[str]) -> list[FileInfo]:
+    """按**请求里的 id 顺序**取文件，重复 id 只保留一次。
+
+    不能用 `find_files_by_ids` 的返回顺序: 它按扫描缓存的顺序返回, 而结果要按
+    用户看见的行顺序对回去。重复 id 必须去重 —— 同一个文件生成两个 plan 会让它
+    被改两次名（第二次必然失败, 而第一次已经改完）。
+
+    缺 id 时整批拒绝（与 `/rename/execute` 的 `_find_one` 同一口径）: 静默跳过
+    会让 total 与实际行数对不上, 用户只看到「少了一集」而没有任何原因。
+    """
+    ordered_ids = list(dict.fromkeys(file_ids))
+    by_id = {f.id: f for f in find_files_by_ids(ordered_ids)}
+    files = [by_id[fid] for fid in ordered_ids if fid in by_id]
+    if len(files) != len(ordered_ids):
+        raise HTTPException(status_code=400, detail="未找到对应的文件")
+    return files
+
+
+def _sse_event(payload: dict) -> str:
+    """一帧 SSE。
+
+    只发 `data:`（类型放在 JSON 的 `type` 里）, 不额外用 `event:` 行: 多一个字段
+    就多一处「前端按 event 名分派、后端按 type 分派」的分叉。`ensure_ascii=False`
+    让中文文件名在流里保持可读 —— 调试时能直接看懂。
+    """
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.post("/rename/batch-execute")
+async def batch_execute_rename(req: RenameBatchExecuteRequest):
+    """**一次请求跑完整批**（仅 OpenList 源），进度以 SSE 逐帧回传。
+
+    这个接口存在的理由是「批次级事实必须由后端拥有」: 并发上限、批次内重名降级、
+    「执行 → 剧集级 NFO → 目录改名」的顺序, 以及 `landed` 的判定。过去这四件事
+    全在前端, 任何一件漏掉都不会报错 —— 只是结果悄悄不对（见
+    `core/openlist_batch.py` 的模块注释）。
+
+    **响应是 `text/event-stream`**, 帧类型四种:
+      · `start`    — `{total, source}`
+      · `progress` — `{done, total, current}`
+      · `result`   — `{result: <与 BatchRenameResult 同形的对象>}`
+      · `error`    — `{detail}`（批次级硬失败; 单个文件的失败在 result 里）
+
+    为什么用流而不是普通 JSON: 前端只发**一次**请求, 但进度条不能退化成
+    「转圈等一分钟」。流是唯一能同时满足这两件事的形状。
+
+    TMDB 解析在**建流之前**完成: 401 这类配置错误必须以普通 HTTP 错误返回,
+    否则前端先拿到 200、再在流里收到一个错误帧, 提示文案会变成两句拼在一起。
+    """
+    source = req.source.lower()
+    if source != "openlist":
+        # 本地源仍走逐文件接口: 本地执行是同步文件操作, 没有远程限流可言,
+        # 语义与 OpenList 的异步流水线不同, 不宜强行合并成一条路径。
+        raise HTTPException(
+            status_code=400,
+            detail="批量执行接口仅支持 OpenList 源, 本地源请使用 /api/rename/execute",
+        )
+
+    client = get_default_client()
+    if not client or not client.connected:
+        raise HTTPException(status_code=401, detail="请先连接 OpenList")
+
+    files = _files_in_request_order(req.file_ids)
+    if not files:
+        raise HTTPException(status_code=400, detail="未找到对应的文件")
+
+    pad = _pad_from_request(req)
+    merged, _summaries, matches_by_file = await _with_tmdb_titles(req, files)
+
+    # 与预览 / 干跑 / 单文件执行**同一个 builder**: 借道 plan_files 会在
+    # 「父目录已是季目录」时分道扬镳（spec §9.4 的那类分叉）。
+    plans = [
+        build_openlist_rename_plan(
+            f, req.template, req.folder_template, req.create_season_folder,
+            OverrideInfo(**merged[f.id]) if merged.get(f.id) else None, pad=pad,
+        )
+        for f in files
+    ]
+
+    _apply_openlist_limits(client, req)
+    # 文件级并发取自**客户端当前生效值**: 设置页改过之后, 未提供该字段的请求
+    # 应当沿用那个值, 而不是悄悄退回 .env 的默认值（apply_limits 的语义如此）。
+    limit = getattr(client, "max_concurrent", req.openlist_max_concurrent)
+    nfo_options = _nfo_options_from_request(req)
+    strm_options = _strm_options_from_request(req, client)
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_progress(done: int, total: int, current: str) -> None:
+            await queue.put({
+                "type": "progress", "done": done, "total": total, "current": current,
+            })
+
+        async def run_batch() -> None:
+            """整批的唯一一条执行序列。异常一律折成 `error` 帧, 不留未取异常。"""
+            try:
+                await queue.put({"type": "start", "total": len(plans), "source": "openlist"})
+                outcomes = await execute_openlist_plans(
+                    client, plans,
+                    nfo_options=nfo_options,
+                    nfo_matches=matches_by_file,
+                    strm_options=strm_options,
+                    strm_scan_root=_strm_scan_root(req),
+                    max_concurrent=limit,
+                    on_progress=on_progress,
+                )
+
+                # --- 剧集级 / 季级 NFO 收尾：整批的事实，必须等全部文件跑完 ---
+                # landed 只收**真实落点**（字幕恒为 None，见 openlist_batch 的判定）。
+                landed_paths = [o.landed_path for o in outcomes if o.landed_path]
+                nfo_written: list[str] = []
+                nfo_skipped: list[tuple[str, str]] = []
+                nfo_error: Optional[str] = None
+                if nfo_options.enabled:
+                    try:
+                        nfo_written, nfo_skipped = await finalize_openlist_nfo(
+                            client, plans, landed_paths, matches_by_file, nfo_options,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        # 走到这里每个文件的改名**都已完成**。把它变成整批失败会
+                        # 骗用户再跑一遍, 然后撞上「目标已存在」的跳过。
+                        nfo_error = str(exc)
+
+                # --- 剧集文件夹改名：必须排在 NFO 收尾之后 ---
+                folders_renamed: list[dict] = []
+                folders_skipped: list[dict] = []
+                folders_error: Optional[str] = None
+                if getattr(req, "rename_folders", False):
+                    try:
+                        folder_plans = plan_show_folders(
+                            plans, matches_by_file, posixpath,
+                        )
+                        folders_renamed, folders_skipped = await apply_openlist_show_folders(
+                            client, folder_plans,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        folders_error = str(exc)
+
+                await queue.put({
+                    "type": "result",
+                    "result": batch_result_payload(
+                        outcomes,
+                        nfo_written=nfo_written,
+                        nfo_skipped=nfo_skipped,
+                        folders_renamed=folders_renamed,
+                        folders_skipped=folders_skipped,
+                        nfo_error=nfo_error,
+                        folders_error=folders_error,
+                    ),
+                })
+            except Exception as exc:  # noqa: BLE001
+                await queue.put({"type": "error", "detail": str(exc)})
+            finally:
+                # None 是哨兵: 让消费端**确定地**知道不会再有帧。
+                await queue.put(None)
+
+        task = asyncio.create_task(run_batch())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield _sse_event(event)
+        finally:
+            # 客户端断开时**不取消** rename: 半途取消会留下「已 move、未 rename」
+            # 的文件, 比让它自己跑完更糟。这里只保证任务不会被静默丢弃 ——
+            # 取走异常, 免得事件循环打一条 "Task exception was never retrieved"。
+            if not task.done():
+                task.add_done_callback(
+                    lambda t: None if t.cancelled() else t.exception()
+                )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # 反向代理（nginx）默认会把流缓冲到结束才发, 那会让进度条在最后
+            # 一秒跳满 —— 与服务端「边跑边报」的意图正好相反。
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/rename/dry-run")

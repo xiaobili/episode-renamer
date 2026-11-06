@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, reactive, ref, watch } from 'vue'
 
 import { scanDirectory } from '../api/scanner'
-import { previewRename, executeRename, dryRunRename, finalizeRename, renameShowFolders } from '../api/renamer'
+import { previewRename, executeRename, executeRenameBatch, dryRunRename, finalizeRename, renameShowFolders } from '../api/renamer'
 import { searchTmdb } from '../api/tmdb'
 import { getPresets } from '../api/template'
 import {
@@ -702,7 +702,64 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return
       }
 
-      // --- 单文件并发执行 ---
+      // --- OpenList：整批交给后端（**一次请求**）---
+      //
+      // 为什么在这里分叉、而不是把本地也合并进来: 本地是同步文件操作, 没有远端
+      // 限流、也没有「先 move 再 rename」的两段式语义。强行合并会让两条失败方式
+      // 不同的路径共用一份载荷与结果形状。
+      //
+      // 交给后端的是四件**批次级**事实: 并发上限、请求间隔、批次内重名降级、
+      // 「逐文件执行 → 剧集级 NFO → 剧集文件夹改名」的顺序。上一版把这四件放在
+      // 前端, 任何一件漏掉都不会报错 —— 只是结果悄悄不对（见
+      // backend/app/core/openlist_batch.py 的模块注释）。
+      //
+      // 前端只剩两件事: 发一次请求、把 SSE 的 progress 帧转成进度。
+      if (source === 'openlist') {
+        const batch = await executeRenameBatch(buildRenamePayload({
+          ...baseArgs, mode: 'batch', fileIds: selected.map(r => r.id),
+          overrides: _collectOverrides(selected),
+        }), {
+          onProgress: (p) => {
+            progress.done = p.done
+            progress.total = p.total
+            progress.current = p.current
+          },
+        })
+
+        // 后端返回的已经是聚合后的 BatchRenameResult（与 aggregateBatch 同形）,
+        // 这里只补两个**前端独有**的事实: 本次是执行而非干跑, 以及「本次没刮削」。
+        lastResult.value = {
+          ...batch, dry_run: false, nfo_blocked_by_scrape: nfoBlocked,
+        }
+        resultDialog.value = true
+
+        // 收尾与目录改名的失败是**非致命**的: 走到这里每个文件的改名都已完成。
+        // 后端刻意把它们从「整批失败」里摘出来单独回传（nfo_error /
+        // folders_error）—— 报「操作失败」会让用户再跑一遍, 撞上「目标已存在」。
+        if (batch.nfo_error) {
+          showToast(
+            '重命名已完成，但剧集级 NFO 未写出: ' + batch.nfo_error, 'warning',
+          )
+        }
+        if (batch.folders_error) {
+          showToast(
+            '重命名已完成，但剧集文件夹未改名: ' + batch.folders_error, 'warning',
+          )
+        }
+        // 目录改了名, 扫描路径可能已不存在 —— 与逐文件路径同一处置, 否则下面
+        // 那次重扫必然失败, 用户会盯着「刷新失败」而不知道原因是目录换了名字。
+        _remapScanPath(batch.folders_renamed)
+
+        if (!await buildPreview()) {
+          showToast(
+            '重命名已完成，但文件列表刷新失败: ' + (previewError.value || '未知错误'),
+            'warning',
+          )
+        }
+        return
+      }
+
+      // --- 单文件并发执行（本地源） ---
       const items = selected.map(r => ({
         id: r.id,
         payload: buildRenamePayload({
@@ -713,15 +770,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
       // 并发上限：批次内目标重名时降级为串行（spec §10.1）。判据在
       // renameRunner.resolveConcurrency 里，由 check-rename-runner.mjs 钉住。
+      //
+      // 走到这里 source 必然是 'local'（OpenList 已在上面整批交给后端）。请求
+      // 间隔因此不再需要: 那是 OpenList 的限流参数, 现在随载荷下发、由后端的
+      // 客户端限流器执行 —— 前端在这里 sleep 只会拖慢本地文件操作。
       const limit = resolveConcurrency({
         source,
         targets: selected.map(r => r.new_path),
         localConcurrency: settingsStore.localConcurrency,
         openlistConcurrency: settingsStore.openlist.concurrency,
       })
-      const intervalMs = source === 'openlist'
-        ? Math.round(settingsStore.openlist.requestInterval * 1000)
-        : 0
 
       // （progress 已在进入 try 之前归零 —— 见那里的注释。这里**不要**再来一遍:
       // 同一个函数里出现两次 `progress.done = 0`, 后人很可能删错那处承重的。）
@@ -734,7 +792,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           return res.data
         },
         {
-          intervalMs,
           onProgress: (done) => { progress.done = done },
         },
       )

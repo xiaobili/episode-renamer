@@ -25,6 +25,7 @@ const SCRIPTS = [
   'check-workspace-gating.mjs',
   'check-rename-runner.mjs',
   'check-rename-aggregate.mjs',
+  'check-rename-batch.mjs',
   'check-execute-loop.mjs',
   'check-execute-behaviour.mjs',
   'check-browse-filter.mjs',

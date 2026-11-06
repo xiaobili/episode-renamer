@@ -113,6 +113,16 @@ class OpenListClient:
         self._request_interval = settings.openlist_request_interval
         self._lock = asyncio.Lock()
 
+    @property
+    def max_concurrent(self) -> int:
+        """当前生效的**单次请求**并发上限。
+
+        批量执行要据此决定「几个文件同时跑」—— 两处必须同源。若批量那边的上限
+        另行读配置，`apply_limits` 调过之后再发一次「未提供」的请求就会出现
+        「限流器是 2、文件级并发仍是 3」的静默偏差。
+        """
+        return self._limiter._limit
+
     async def _wait_interval(self) -> None:
         now = time.monotonic()
         elapsed = now - self.last_request_time
