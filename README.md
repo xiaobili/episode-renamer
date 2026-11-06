@@ -182,6 +182,38 @@ docker buildx build --platform linux/amd64,linux/arm64 -t episode-renamer:latest
 > 重建，否则写 NFO / STRM 会因无写权限失败（重命名本身不受影响）。
 > 只读挂载（`/media:ro`）时写盘操作本就会失败，需要写 NFO 请去掉 `:ro`。
 
+#### 构建并推送到 GHCR
+
+镜像发布到 GitHub Container Registry：`ghcr.io/xiaobili/episode-renamer`。
+两条路都是同一个产物，本地脚本适合手动发版，Actions 适合打 tag 自动发版。
+
+```bash
+# 本地一键构建 + 推送（镜像名、版本号自动从 git remote / package.json 推断）
+./docker/build-and-push.sh
+
+# 指定版本号；多架构；额外打 sha 标签
+./docker/build-and-push.sh -t 1.0.0 -p linux/amd64,linux/arm64 --sha
+
+# 只构建不推送（验证 Dockerfile）
+./docker/build-and-push.sh --no-push
+
+# 只回显命令，不真执行
+./docker/build-and-push.sh --dry-run
+```
+
+认证按顺序尝试 `$GHCR_TOKEN` / `$GITHUB_TOKEN` → `gh auth token` → 已有 `~/.docker/config.json`
+凭据 → 交互式输入。PAT 需要 `write:packages` 权限，其余参数见 `./docker/build-and-push.sh --help`。
+
+自动发版：`.github/workflows/docker-publish.yml` 在推送 `v1.2.3` 形式的 tag 时
+构建 amd64 + arm64 并推送 `1.2.3` / `1.2` / `latest` / `sha-xxxxxxx` 标签，
+推送到 `main` 则只出 `latest` + `sha-xxxxxxx`；PR 只构建不推送。用的是 Actions 自带的
+`GITHUB_TOKEN`，无需配置 secret。首包默认 private，去仓库 Packages 页改成 public 才能匿名拉取。
+
+```bash
+# 从 GHCR 拉取运行
+docker run -d -p 6969:6969 -v /your/media/path:/media:ro ghcr.io/xiaobili/episode-renamer:latest
+```
+
 ### 方式二：本地开发
 
 **前置条件**：Python 3.12、Node.js 18+（与 Dockerfile 使用的 `python:3.12-slim-bookworm`、`node:20-bookworm-slim` 一致）。
@@ -351,7 +383,10 @@ episode-renamer/
 │   └── package.json
 ├── screenshot/                     # README 截图
 ├── docker/
-│   └── entrypoint.sh               # 容器入口（HOST / PORT 环境变量 → uvicorn，单 worker）
+│   ├── entrypoint.sh               # 容器入口（HOST / PORT 环境变量 → uvicorn，单 worker）
+│   └── build-and-push.sh           # 构建并推送镜像到 ghcr.io（多架构 / dry-run / 自动推断版本）
+├── .github/workflows/
+│   └── docker-publish.yml          # 打 tag 时自动构建 amd64+arm64 并推送 GHCR
 ├── Dockerfile                      # 单镜像多阶段构建（前端产物 + venv 依赖 + 非 root 运行）
 ├── .dockerignore                   # 构建上下文裁剪（测试、数据、.env 不进入镜像）
 └── docker-compose.yml              # 可选：端口映射 / 媒体挂载 / 环境变量

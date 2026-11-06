@@ -1,0 +1,115 @@
+# =============================================================================
+# Episode Renamer —— GitHub Actions 自动构建并推送镜像到 GHCR
+#
+#   触发条件：
+#     - push 到 main              → 打 latest + sha-<短哈希> 标签
+#     - push 形如 v1.2.3 的 tag   → 打 1.2.3 / 1.2 / latest + sha-<短哈希>
+#     - 手动 workflow_dispatch    → 同上
+#     - pull_request              → 只构建不推送，验证 Dockerfile 没坏
+#
+#   目标镜像：ghcr.io/<owner>/<repo>，架构 linux/amd64 + linux/arm64。
+#   认证用 Actions 自带的 GITHUB_TOKEN，无需配置任何 secret。
+#   首次推送后包默认 private，可在仓库 Packages 页改为 public。
+#
+#   本地等价操作见 docker/build-and-push.sh
+# =============================================================================
+name: docker-publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+    paths-ignore:
+      - 'docs/**'
+      - 'screenshot/**'
+      - '**.md'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'screenshot/**'
+      - '**.md'
+  workflow_dispatch:
+
+# 同一 ref 有新构建时取消旧构建
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 QEMU（arm64 模拟）
+        uses: docker/setup-qemu-action@v3
+
+      - name: 准备 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        # 来自 fork 的 PR 拿不到 packages:write，跳过登录
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 计算镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # semver → 1.2.3 与 1.2；默认分支 → latest；每次都带 sha-xxxxxxx
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+          labels: |
+            org.opencontainers.image.title=Episode Renamer
+            org.opencontainers.image.description=电视剧/番剧自动化重命名工具：本地磁盘 + OpenList 双源，FastAPI + Vue 3 单镜像
+
+      - name: 构建并推送
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          # buildx 一次构建两个平台，直接产出多架构 manifest 列表
+          platforms: linux/amd64,linux/arm64
+          # PR 只验证构建，不推送
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_UID=1000
+            APP_GID=1000
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: 输出摘要
+        run: |
+          {
+            echo "### 镜像已就绪"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

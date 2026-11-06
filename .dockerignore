@@ -1,5 +1,6 @@
 # ---- 版本库 / 元数据 ----
 .git/
+.github/
 .gitignore
 .workbuddy/
 .trae/
